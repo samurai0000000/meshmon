@@ -1,0 +1,3 @@
+[submodule "libmeshtastic"]
+	path = libmeshtastic
+	url = https://github.com/samurai0000000/libmeshtastic.git
