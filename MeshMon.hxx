@@ -11,6 +11,8 @@
 
 using namespace std;
 
+class MqttClient;
+
 class MeshMon : public MeshClient {
 
 public:
@@ -20,6 +22,8 @@ public:
 
 protected:
 
+    virtual void gotModuleConfigMQTT(const meshtastic_ModuleConfig_MQTTConfig &c);
+    virtual void gotMqttClientProxyMessage(const meshtastic_MqttClientProxyMessage &m);
     virtual void gotTextMessage(const meshtastic_MeshPacket &packet,
                                 const string &message);
     virtual void gotPosition(const meshtastic_MeshPacket &packet,
@@ -44,6 +48,11 @@ protected:
                                 const meshtastic_HostMetrics &metrics);
     virtual void gotTraceRoute(const meshtastic_MeshPacket &packet,
                                const meshtastic_RouteDiscovery &routeDiscovery);
+
+private:
+
+    shared_ptr<MqttClient> _meshtasticMqtt;
+    shared_ptr<MqttClient> _myownMqtt;
 
 };
 

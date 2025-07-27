@@ -7,6 +7,8 @@
 #include <sstream>
 #include <iostream>
 #include <iomanip>
+#include <algorithm>
+#include <MqttClient.hxx>
 #include <MeshMon.hxx>
 
 MeshMon::MeshMon()
@@ -20,39 +22,144 @@ MeshMon::~MeshMon()
 
 }
 
+void MeshMon::gotModuleConfigMQTT(const meshtastic_ModuleConfig_MQTTConfig &c)
+{
+    if (c.proxy_to_client_enabled && (_meshtasticMqtt == NULL)) {
+        // Turn on MQTT client proxy
+        //_meshtasticMqtt = make_shared<MqttClient>();
+        //_meshtasticMqtt->start();
+    }
+}
+
+void MeshMon::gotMqttClientProxyMessage(const meshtastic_MqttClientProxyMessage &m)
+{
+    MeshClient::gotMqttClientProxyMessage(m);
+
+    meshtastic_MeshPacket packet;
+    bool found = false;
+
+#if 0
+    // Can't get this to work!
+    char channel_id[32];
+    char gateway_id[32];
+    meshtastic_ServiceEnvelope q = {
+        .packet = &packet,
+        .channel_id = channel_id,
+        .gateway_id = gateway_id,
+    };
+    pb_istream_t stream;
+
+    stream = pb_istream_from_buffer(m.payload_variant.data.bytes,
+                                    m.payload_variant.data.size);
+    found = pb_decode(&stream, meshtastic_ServiceEnvelope_fields, &q);
+#else
+    // This is a hack... until we can directly decode ServiceEnvelope above
+    const uint8_t *bytes = m.payload_variant.data.bytes;
+    size_t size = m.payload_variant.data.size;
+    pb_istream_t stream;
+
+    while (isprint(bytes[size - 1])) {
+        size--;
+    }
+
+    for (size_t i = 7; i < 10 && !found; i++) {
+        for (size_t l = size; l > i; l--) {
+            stream = pb_istream_from_buffer(bytes + i, l);
+            found = pb_decode(&stream, meshtastic_MeshPacket_fields,
+                              &packet);
+            if (found) {
+                break;
+            }
+        }
+    }
+#endif
+
+    if (!found) {
+        cerr << "pb_decode failed!" << endl;
+        goto done;
+    }
+
+    if (packet.which_payload_variant != meshtastic_MeshPacket_decoded_tag) {
+        goto done;
+    }
+
+    switch (packet.decoded.portnum) {
+    case meshtastic_PortNum_POSITION_APP:
+    case meshtastic_PortNum_NODEINFO_APP:
+    case meshtastic_PortNum_TELEMETRY_APP:
+        // The list above are sanctioned for upload for the benefit of
+        // meshmap.net
+        if (_meshtasticMqtt != NULL) {
+            _meshtasticMqtt->publish(m);
+        }
+        break;
+    default:
+        // Don't allow any other app to upload to MQTT
+        // We don't want to upload conversations to the MQTT server!
+        goto done;
+        break;
+    }
+
+    cout << "MQTT Proxy: " << packet.decoded.portnum << endl;
+
+done:
+
+    return;
+}
+
 void MeshMon::gotTextMessage(const meshtastic_MeshPacket &packet,
                              const string &message)
 {
     MeshClient::gotTextMessage(packet, message);
 
-    stringstream ss;
     string reply;
+    bool result;
 
     if (packet.to == whoami()) {
-        bool result;
-
-        cout << getDisplayName(packet.from) << " : "
+        cout << getDisplayName(packet.from) << ": "
              << message << endl;
 
-        ss << lookupShortName(packet.from) << ", you said '"
-           <<  message << "'!";
-        reply = ss.str();
+        reply = lookupShortName(packet.from) + ", you said '" + message + "'!";
         if (reply.size() > 200) {
-            reply = "Oopsie daisie!";
+            reply = "oopsie daisie!";
         }
 
         result = textMessage(packet.from, packet.channel, reply);
         if (result == false) {
-            cerr << "textMessage '" << ss.str() << "' failed!" << endl;
+            cerr << "textMessage '" << reply << "' failed!" << endl;
         } else {
-            cout << "my reply to " << getDisplayName(packet.from) << " : "
+            cout << "my reply to " << getDisplayName(packet.from) << ": "
                  << reply << endl;
         }
     } else {
-        cout << getDisplayName(packet.from) << " -> "
-             << getDisplayName(packet.to) << " #"
-             << getChannelName(packet.channel) << " : "
+        cout << getDisplayName(packet.from) << " on #"
+             << getChannelName(packet.channel) << ": "
              << message << endl;
+        if (getChannelName(packet.channel) == "serial") {
+            string msg = message;
+            transform(msg.begin(), msg.end(), msg.begin(),
+                      [](unsigned char c) {
+                          return tolower(c); });
+            if (msg.find("hello") != string::npos) {
+                reply = "greetings, " + lookupShortName(packet.from) + "!";
+            } else if (msg.find(lookupShortName(whoami())) != string::npos) {
+                reply = lookupShortName(packet.from) + ", you said '" +
+                    message + "'!";
+                if (reply.size() > 200) {
+                    reply = "oopsie daisie!";
+                }
+            }
+
+            if (!reply.empty()) {
+                result = textMessage(0xffffffffU, packet.channel, reply);
+                if (result == false) {
+                    cerr << "textMessage '" << reply << "' failed!" << endl;
+                } else {
+                    cout << "my reply to " << getDisplayName(packet.from)
+                         << ": " << reply << endl;
+                }
+            }
+        }
     }
 }
 
@@ -64,6 +171,10 @@ void MeshMon::gotPosition(const meshtastic_MeshPacket &packet,
     if (!verbose()) {
         cout << getDisplayName(packet.from)
              << " sent position" << endl;
+    }
+
+    if (_myownMqtt != NULL) {
+        _myownMqtt->publish(packet);
     }
 }
 
@@ -101,6 +212,10 @@ void MeshMon::gotDeviceMetrics(const meshtastic_MeshPacket &packet,
         cout << getDisplayName(packet.from)
              << " sent device metrics" << endl;
     }
+
+    if (_myownMqtt != NULL) {
+        _myownMqtt->publish(packet);
+    }
 }
 
 void MeshMon::gotEnvironmentMetrics(const meshtastic_MeshPacket &packet,
@@ -111,6 +226,10 @@ void MeshMon::gotEnvironmentMetrics(const meshtastic_MeshPacket &packet,
     if (!verbose()) {
         cout << getDisplayName(packet.from)
              << " sent environment metrics" << endl;
+    }
+
+    if (_myownMqtt != NULL) {
+        _myownMqtt->publish(packet);
     }
 }
 
@@ -123,6 +242,10 @@ void MeshMon::gotAirQualityMetrics(const meshtastic_MeshPacket &packet,
         cout << getDisplayName(packet.from)
              << " sent air quality metrics" << endl;
     }
+
+    if (_myownMqtt != NULL) {
+        _myownMqtt->publish(packet);
+    }
 }
 
 void MeshMon::gotPowerMetrics(const meshtastic_MeshPacket &packet,
@@ -133,6 +256,10 @@ void MeshMon::gotPowerMetrics(const meshtastic_MeshPacket &packet,
     if (!verbose()) {
         cout << getDisplayName(packet.from)
              << " sent power metrics" << endl;
+    }
+
+    if (_myownMqtt != NULL) {
+        _myownMqtt->publish(packet);
     }
 }
 
@@ -156,6 +283,10 @@ void MeshMon::gotHealthMetrics(const meshtastic_MeshPacket &packet,
         cout << getDisplayName(packet.from)
              << " sent health metrics" << endl;
     }
+
+    if (_myownMqtt != NULL) {
+        _myownMqtt->publish(packet);
+    }
 }
 
 void MeshMon::gotHostMetrics(const meshtastic_MeshPacket &packet,
@@ -166,6 +297,10 @@ void MeshMon::gotHostMetrics(const meshtastic_MeshPacket &packet,
     if (!verbose()) {
         cout << getDisplayName(packet.from)
              << "sent host metrics" << endl;
+    }
+
+    if (_myownMqtt != NULL) {
+        _myownMqtt->publish(packet);
     }
 }
 
@@ -196,6 +331,10 @@ void MeshMon::gotTraceRoute(const meshtastic_MeshPacket &packet,
             cout << " -> " << getDisplayName(packet.to)
                  << "[" << rx_snr << "dB]" << endl;
         }
+    }
+
+    if (_myownMqtt != NULL) {
+        _myownMqtt->publish(packet);
     }
 }
 

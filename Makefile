@@ -2,27 +2,28 @@
 #
 # Copyright (C) 2025, Charles Chiou
 
+ARCH :=		$(shell uname -m)
 MAKEFLAGS =	--no-print-dir
 
-TARGETS +=	build/meshmon
+TARGETS +=	build/$(ARCH)/meshmon
 
 .PHONY: default clean distclean $(TARGETS)
 
 default: $(TARGETS)
 
 clean:
-	@test -f build/Makefile && $(MAKE) -C build clean
+	@test -f build/$(ARCH)/Makefile && $(MAKE) -C build/$(ARCH) clean
 
 distclean:
-	rm -rf build
+	rm -rf build/
 
 .PHONY: meshmon
 
-meshmon: build/meshmon
+meshmon: build/$(ARCH)/meshmon
 
-build/meshmon: build/Makefile
-	@$(MAKE) -C build
+build/$(ARCH)/meshmon: build/$(ARCH)/Makefile
+	@$(MAKE) -C build/$(ARCH)
 
-build/Makefile: CMakeLists.txt
-	@mkdir -p build
-	@cd build && cmake ..
+build/$(ARCH)/Makefile: CMakeLists.txt
+	@mkdir -p build/$(ARCH)
+	@cd build/$(ARCH) && cmake ../..
