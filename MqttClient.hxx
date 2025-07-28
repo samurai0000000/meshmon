@@ -26,9 +26,8 @@ public:
 
     unsigned int published(void) const;
     unsigned int publishConfirmed(void) const;
-    unsigned int messaged(void) const;
-    bool isConnected() const;
 
+    bool isConnected(void) const;
     bool isRunning(void) const;
     void start(void);
     void stop(void);
@@ -45,8 +44,6 @@ private:
     static void onPublish(struct mosquitto *mosq, void *obj, int mid);
     static void onSubscribe(struct mosquitto *mosq, void *obj,
                             int mid, int qos_count, const int *granted_qos);
-    static void onMessage(struct mosquitto *mosq, void *obj,
-                          const struct mosquitto_message *msg);
 
     static void thread_function(MqttClient *mqtt);
     void run(void);
@@ -65,6 +62,7 @@ private:
     bool _isRunning;
 
     struct mosquitto *_mosq;
+    unsigned int _grantedQos;
     queue<meshtastic_MqttClientProxyMessage> _proxyQueue;
     queue<meshtastic_MeshPacket> _packetQueue;
     unsigned int _published;

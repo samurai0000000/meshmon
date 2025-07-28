@@ -20,6 +20,8 @@ public:
     MeshMon();
     ~MeshMon();
 
+    void join(void);
+
 protected:
 
     virtual void gotModuleConfigMQTT(const meshtastic_ModuleConfig_MQTTConfig &c);

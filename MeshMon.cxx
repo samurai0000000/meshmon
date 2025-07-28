@@ -19,15 +19,42 @@ MeshMon::MeshMon()
 
 MeshMon::~MeshMon()
 {
+    if (_meshtasticMqtt != NULL) {
+        _meshtasticMqtt->stop();
+        _meshtasticMqtt->join();
+        _meshtasticMqtt = NULL;
+    }
 
+    if (_myownMqtt != NULL) {
+        _myownMqtt->stop();
+        _myownMqtt->join();
+        _myownMqtt = NULL;
+    }
+}
+
+void MeshMon::join(void)
+{
+    MeshClient::join();
+
+    if (_meshtasticMqtt != NULL) {
+        _meshtasticMqtt->stop();
+        _meshtasticMqtt->join();
+        _meshtasticMqtt = NULL;
+    }
+
+    if (_myownMqtt != NULL) {
+        _myownMqtt->stop();
+        _myownMqtt->join();
+        _myownMqtt = NULL;
+    }
 }
 
 void MeshMon::gotModuleConfigMQTT(const meshtastic_ModuleConfig_MQTTConfig &c)
 {
     if (c.proxy_to_client_enabled && (_meshtasticMqtt == NULL)) {
         // Turn on MQTT client proxy
-        //_meshtasticMqtt = make_shared<MqttClient>();
-        //_meshtasticMqtt->start();
+        _meshtasticMqtt = make_shared<MqttClient>();
+        _meshtasticMqtt->start();
     }
 }
 
@@ -91,6 +118,11 @@ void MeshMon::gotMqttClientProxyMessage(const meshtastic_MqttClientProxyMessage 
         // meshmap.net
         if (_meshtasticMqtt != NULL) {
             _meshtasticMqtt->publish(m);
+            cout << "mqtt-proxy: " << packet.decoded.portnum << " "
+                 << "published="
+                 << _meshtasticMqtt->publishConfirmed() << "/"
+                 << _meshtasticMqtt->published()
+                 << endl;
         }
         break;
     default:
@@ -99,8 +131,6 @@ void MeshMon::gotMqttClientProxyMessage(const meshtastic_MqttClientProxyMessage 
         goto done;
         break;
     }
-
-    cout << "MQTT Proxy: " << packet.decoded.portnum << endl;
 
 done:
 
