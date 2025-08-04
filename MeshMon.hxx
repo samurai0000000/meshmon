@@ -30,10 +30,12 @@ protected:
                                 const string &message);
     virtual void gotPosition(const meshtastic_MeshPacket &packet,
                              const meshtastic_Position &position);
-    virtual void gotRouting(const meshtastic_MeshPacket &packet,
-                            const meshtastic_Routing &routing);
     virtual void gotUser(const meshtastic_MeshPacket &packet,
                          const meshtastic_User &user);
+    virtual void gotRouting(const meshtastic_MeshPacket &packet,
+                            const meshtastic_Routing &routing);
+    virtual void gotAdminMessage(const meshtastic_MeshPacket &packet,
+                                 const meshtastic_AdminMessage &adminMessage);
     virtual void gotDeviceMetrics(const meshtastic_MeshPacket &packet,
                                   const meshtastic_DeviceMetrics &metrics);
     virtual void gotEnvironmentMetrics(const meshtastic_MeshPacket &packet,
