@@ -141,56 +141,12 @@ done:
 void MeshMon::gotTextMessage(const meshtastic_MeshPacket &packet,
                              const string &message)
 {
+    bool result = false;
+
     MeshClient::gotTextMessage(packet, message);
-
-    string reply;
-    bool result;
-
-    if (packet.to == whoami()) {
-        cout << getDisplayName(packet.from) << ": "
-             << message << endl;
-
-        reply = lookupShortName(packet.from) + ", you said '" + message + "'!";
-        if (reply.size() > 200) {
-            reply = "oopsie daisie!";
-        }
-
-        result = textMessage(packet.from, packet.channel, reply);
-        if (result == false) {
-            cerr << "textMessage '" << reply << "' failed!" << endl;
-        } else {
-            cout << "my reply to " << getDisplayName(packet.from) << ": "
-                 << reply << endl;
-        }
-    } else {
-        cout << getDisplayName(packet.from) << " on #"
-             << getChannelName(packet.channel) << ": "
-             << message << endl;
-        if ((packet.channel == 0) || (packet.channel == 1)) {
-            string msg = message;
-            transform(msg.begin(), msg.end(), msg.begin(),
-                      [](unsigned char c) {
-                          return tolower(c); });
-            if (msg.find("hello") != string::npos) {
-                reply = "greetings, " + lookupShortName(packet.from) + "!";
-            } else if (msg.find(lookupShortName(whoami())) != string::npos) {
-                reply = lookupShortName(packet.from) + ", you said '" +
-                    message + "'!";
-                if (reply.size() > 200) {
-                    reply = "oopsie daisie!";
-                }
-            }
-
-            if (!reply.empty()) {
-                result = textMessage(0xffffffffU, packet.channel, reply);
-                if (result == false) {
-                    cerr << "textMessage '" << reply << "' failed!" << endl;
-                } else {
-                    cout << "my reply to " << getDisplayName(packet.from)
-                         << ": " << reply << endl;
-                }
-            }
-        }
+    result = handleTextMessage(packet, message);
+    if (result) {
+        return;
     }
 }
 
@@ -423,6 +379,16 @@ void MeshMon::gotTraceRoute(const meshtastic_MeshPacket &packet,
     if (_myownMqtt != NULL) {
         _myownMqtt->publish(packet);
     }
+}
+
+static inline int stdio_vprintf(const char *format, va_list ap)
+{
+    return vprintf(format, ap);
+}
+
+int MeshMon::vprintf(const char *format, va_list ap) const
+{
+    return stdio_vprintf(format, ap);
 }
 
 /*

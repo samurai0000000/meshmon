@@ -8,12 +8,14 @@
 #define MESHMON_HXX
 
 #include <LibMeshtastic.hxx>
+#include <HomeChat.hxx>
 
 using namespace std;
 
 class MqttClient;
 
-class MeshMon : public MeshClient {
+class MeshMon : public MeshClient, public HomeChat,
+                public enable_shared_from_this<MeshMon> {
 
 public:
 
@@ -52,6 +54,10 @@ protected:
                                 const meshtastic_HostMetrics &metrics);
     virtual void gotTraceRoute(const meshtastic_MeshPacket &packet,
                                const meshtastic_RouteDiscovery &routeDiscovery);
+
+protected:
+
+    virtual int vprintf(const char *format, va_list ap) const;
 
 private:
 

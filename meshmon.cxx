@@ -87,6 +87,7 @@ int main(int argc, char **argv)
             cerr << "Unable to attch to " << *it << endl;
             continue;
         } else {
+            mon->setClient(mon);
             mon->setVerbose(verbose);
             mon->enableLogStderr(log);
             mons.push_back(mon);
