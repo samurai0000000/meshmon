@@ -155,6 +155,7 @@ void MeshMon::gotPosition(const meshtastic_MeshPacket &packet,
 {
     MeshClient::gotPosition(packet, position);
 
+#if 0
     if (!verbose()) {
         if (packet.from != whoami()) {
             cout << getDisplayName(packet.from)
@@ -164,6 +165,7 @@ void MeshMon::gotPosition(const meshtastic_MeshPacket &packet,
                  << endl;
         }
     }
+#endif
 
     if (_myownMqtt != NULL) {
         _myownMqtt->publish(packet);
@@ -175,6 +177,7 @@ void MeshMon::gotUser(const meshtastic_MeshPacket &packet,
 {
     MeshClient::gotUser(packet, user);
 
+#if 0
     if (!verbose()) {
         if (packet.from != whoami()) {
             cout << getDisplayName(packet.from)
@@ -184,6 +187,7 @@ void MeshMon::gotUser(const meshtastic_MeshPacket &packet,
                  << endl;
         }
     }
+#endif
 }
 
 void MeshMon::gotRouting(const meshtastic_MeshPacket &packet,
@@ -191,6 +195,7 @@ void MeshMon::gotRouting(const meshtastic_MeshPacket &packet,
 {
     MeshClient::gotRouting(packet, routing);
 
+#if 0
     if ((routing.which_variant == meshtastic_Routing_error_reason_tag) &&
         (routing.error_reason == meshtastic_Routing_Error_NONE) &&
         (packet.from != packet.to)) {
@@ -198,6 +203,7 @@ void MeshMon::gotRouting(const meshtastic_MeshPacket &packet,
         cout << getDisplayName(packet.to)
              << "[" << packet.rx_snr << "dB]" << endl;
     }
+#endif
 }
 
 void MeshMon::gotAdminMessage(const meshtastic_MeshPacket &packet,
@@ -216,6 +222,7 @@ void MeshMon::gotDeviceMetrics(const meshtastic_MeshPacket &packet,
 {
     MeshClient::gotDeviceMetrics(packet, metrics);
 
+#if 0
     if (!verbose()) {
         if (packet.from != whoami()) {
             cout << getDisplayName(packet.from)
@@ -225,6 +232,7 @@ void MeshMon::gotDeviceMetrics(const meshtastic_MeshPacket &packet,
                  << endl;
         }
     }
+#endif
 
     if (_myownMqtt != NULL) {
         _myownMqtt->publish(packet);
@@ -236,6 +244,7 @@ void MeshMon::gotEnvironmentMetrics(const meshtastic_MeshPacket &packet,
 {
     MeshClient::gotEnvironmentMetrics(packet, metrics);
 
+#if 0
     if (!verbose()) {
         if (packet.from != whoami()) {
             cout << getDisplayName(packet.from)
@@ -245,6 +254,7 @@ void MeshMon::gotEnvironmentMetrics(const meshtastic_MeshPacket &packet,
                  << endl;
         }
     }
+#endif
 
     if (_myownMqtt != NULL) {
         _myownMqtt->publish(packet);
@@ -256,6 +266,7 @@ void MeshMon::gotAirQualityMetrics(const meshtastic_MeshPacket &packet,
 {
     MeshClient::gotAirQualityMetrics(packet, metrics);
 
+#if 0
     if (!verbose()) {
         if (packet.from != whoami()) {
             cout << getDisplayName(packet.from)
@@ -265,6 +276,7 @@ void MeshMon::gotAirQualityMetrics(const meshtastic_MeshPacket &packet,
                  << endl;
         }
     }
+#endif
 
     if (_myownMqtt != NULL) {
         _myownMqtt->publish(packet);
@@ -276,6 +288,7 @@ void MeshMon::gotPowerMetrics(const meshtastic_MeshPacket &packet,
 {
     MeshClient::gotPowerMetrics(packet, metrics);
 
+#if 0
     if (!verbose()) {
         if (packet.from != whoami()) {
             cout << getDisplayName(packet.from)
@@ -285,6 +298,7 @@ void MeshMon::gotPowerMetrics(const meshtastic_MeshPacket &packet,
                  << endl;
         }
     }
+#endif
 
     if (_myownMqtt != NULL) {
         _myownMqtt->publish(packet);
@@ -296,6 +310,7 @@ void MeshMon::gotLocalStats(const meshtastic_MeshPacket &packet,
 {
     MeshClient::gotLocalStats(packet, stats);
 
+#if 0
     if (!verbose()) {
         if (packet.from != whoami()) {
             cout << getDisplayName(packet.from)
@@ -305,6 +320,7 @@ void MeshMon::gotLocalStats(const meshtastic_MeshPacket &packet,
                  << endl;
         }
     }
+#endif
 }
 
 void MeshMon::gotHealthMetrics(const meshtastic_MeshPacket &packet,
@@ -312,6 +328,7 @@ void MeshMon::gotHealthMetrics(const meshtastic_MeshPacket &packet,
 {
     MeshClient::gotHealthMetrics(packet, metrics);
 
+#if 0
     if (!verbose()) {
         if (packet.from != whoami()) {
             cout << getDisplayName(packet.from)
@@ -321,6 +338,7 @@ void MeshMon::gotHealthMetrics(const meshtastic_MeshPacket &packet,
                  << endl;
         }
     }
+#endif
 
     if (_myownMqtt != NULL) {
         _myownMqtt->publish(packet);
@@ -332,6 +350,7 @@ void MeshMon::gotHostMetrics(const meshtastic_MeshPacket &packet,
 {
     MeshClient::gotHostMetrics(packet, metrics);
 
+#if 0
     if (!verbose()) {
         if (packet.from != whoami()) {
             cout << getDisplayName(packet.from)
@@ -341,6 +360,7 @@ void MeshMon::gotHostMetrics(const meshtastic_MeshPacket &packet,
                  << endl;
         }
     }
+#endif
 
     if (_myownMqtt != NULL) {
         _myownMqtt->publish(packet);
@@ -351,6 +371,7 @@ void MeshMon::gotTraceRoute(const meshtastic_MeshPacket &packet,
                             const meshtastic_RouteDiscovery &routeDiscovery)
 {
     MeshClient::gotTraceRoute(packet, routeDiscovery);
+#if 0
     if (!verbose()) {
         if ((routeDiscovery.route_count > 0) &&
             (routeDiscovery.route_back_count == 0)) {
@@ -375,10 +396,29 @@ void MeshMon::gotTraceRoute(const meshtastic_MeshPacket &packet,
                  << "[" << rx_snr << "dB]" << endl;
         }
     }
+#endif
 
     if (_myownMqtt != NULL) {
         _myownMqtt->publish(packet);
     }
+}
+
+bool MeshMon::loadNvm(void)
+{
+    bool result;
+
+    result = MeshNVM::loadNvm();
+
+    return result;
+}
+
+bool MeshMon::saveNvm(void)
+{
+    bool result;
+
+    result = MeshNVM::saveNvm();
+
+    return result;
 }
 
 static inline int stdio_vprintf(const char *format, va_list ap)

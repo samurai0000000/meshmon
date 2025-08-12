@@ -25,5 +25,7 @@ add_compile_options(-g -O2)
 
 add_executable(meshmon meshmon.cxx MeshMon.cxx MqttClient.cxx)
 target_include_directories(meshmon PRIVATE ${MOSQUITTO_INCLUDE_DIR})
-target_link_libraries(meshmon PRIVATE libmeshtastic)
-target_link_libraries(meshmon PRIVATE ${MOSQUITTO_LIBRARY})
+target_link_libraries(meshmon PRIVATE
+  libmeshtastic
+  ${MOSQUITTO_LIBRARY}
+  ${CONFIG++_LIBRARY})
