@@ -27,3 +27,9 @@ build/$(ARCH)/meshmon: build/$(ARCH)/Makefile
 build/$(ARCH)/Makefile: CMakeLists.txt
 	@mkdir -p build/$(ARCH)
 	@cd build/$(ARCH) && cmake ../..
+
+.PHONY: release
+
+release: build/$(ARCH)/Makefile
+	@rm -f build/$(ARCH)/version.h
+	@$(MAKE) -C build/$(ARCH)

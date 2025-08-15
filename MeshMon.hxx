@@ -75,6 +75,17 @@ protected:
 
     virtual int vprintf(const char *format, va_list ap) const;
 
+
+public:
+
+    inline const shared_ptr<MqttClient> meshtasticMqtt(void) const {
+        return _meshtasticMqtt;
+    }
+
+    inline const shared_ptr<MqttClient> myownMqtt(void) const {
+        return _myownMqtt;
+    }
+
 private:
 
     shared_ptr<MqttClient> _meshtasticMqtt;

@@ -13,7 +13,7 @@
 #include <iostream>
 #include <vector>
 #include <algorithm>
-#include <MeshShell.hxx>
+#include <MeshMonShell.hxx>
 #include "MeshMon.hxx"
 #include "version.h"
 
@@ -22,8 +22,8 @@ using namespace libconfig;
 #define DEFAULT_DEVICE "/dev/ttyAMA0"
 
 static vector<shared_ptr<MeshMon>> mons;
-static shared_ptr<MeshShell> stdioShell;
-static vector<shared_ptr<MeshShell>> netShells;
+static shared_ptr<MeshMonShell> stdioShell;
+static vector<shared_ptr<MeshMonShell>> netShells;
 
 void sighandler(int signum)
 {
@@ -36,7 +36,7 @@ void sighandler(int signum)
     if (stdioShell) {
         stdioShell->detach();
     }
-    for (vector< shared_ptr<MeshShell>>::iterator it = netShells.begin();
+    for (vector< shared_ptr<MeshMonShell>>::iterator it = netShells.begin();
          it != netShells.end(); it++) {
         (*it)->detach();
     }
@@ -253,7 +253,7 @@ int main(int argc, char **argv)
             cerr << "Unable to attch to " << *it << endl;
             continue;
         } else {
-            shared_ptr<MeshShell> shell;
+            shared_ptr<MeshMonShell> shell;
 
             mon->setClient(mon);
             mon->setVerbose(verbose);
@@ -261,7 +261,7 @@ int main(int argc, char **argv)
             mons.push_back(mon);
 
             if (useStdioShell && (stdioShell == NULL)) {
-                stdioShell = make_shared<MeshShell>();
+                stdioShell = make_shared<MeshMonShell>();
                 stdioShell->setBanner(banner);
                 stdioShell->setVersion(version);
                 stdioShell->setBuilt(built);
@@ -271,7 +271,7 @@ int main(int argc, char **argv)
             }
 
             if (port != 0) {
-                shell = make_shared<MeshShell>();
+                shell = make_shared<MeshMonShell>();
                 shell->setClient(mon);
                 shell->setBanner(banner);
                 shell->setVersion(version);
@@ -300,7 +300,7 @@ int main(int argc, char **argv)
     if (stdioShell) {
         stdioShell->join();
     }
-    for (vector< shared_ptr<MeshShell>>::iterator it = netShells.begin();
+    for (vector< shared_ptr<MeshMonShell>>::iterator it = netShells.begin();
          it != netShells.end(); it++) {
         (*it)->join();
     }

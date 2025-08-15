@@ -53,7 +53,7 @@ configure_file(
   @ONLY
   )
 
-add_executable(meshmon meshmon.cxx MeshMon.cxx MqttClient.cxx)
+add_executable(meshmon meshmon.cxx MeshMon.cxx MeshMonShell.cxx MqttClient.cxx)
 target_include_directories(meshmon PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
 target_include_directories(meshmon PRIVATE ${MOSQUITTO_INCLUDE_DIR})
 target_link_libraries(meshmon PRIVATE
