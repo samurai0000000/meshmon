@@ -407,7 +407,7 @@ bool MeshMon::loadNvm(void)
 {
     bool result;
 
-    result = MeshNVM::loadNvm();
+    result = MeshNvm::loadNvm();
 
     return result;
 }
@@ -416,7 +416,7 @@ bool MeshMon::saveNvm(void)
 {
     bool result;
 
-    result = MeshNVM::saveNvm();
+    result = MeshNvm::saveNvm();
 
     return result;
 }

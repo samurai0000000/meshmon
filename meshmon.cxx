@@ -256,6 +256,7 @@ int main(int argc, char **argv)
             shared_ptr<MeshMonShell> shell;
 
             mon->setClient(mon);
+            mon->setNvm(mon);
             mon->setVerbose(verbose);
             mon->enableLogStderr(log);
             mons.push_back(mon);
@@ -267,7 +268,7 @@ int main(int argc, char **argv)
                 stdioShell->setBuilt(built);
                 stdioShell->setCopyright(copyright);
                 stdioShell->setClient(mon);
-                stdioShell->setNVM(mon);
+                stdioShell->setNvm(mon);
             }
 
             if (port != 0) {
@@ -278,7 +279,7 @@ int main(int argc, char **argv)
                 shell->setBuilt(built);
                 shell->setCopyright(copyright);
                 shell->bindPort(port);
-                shell->setNVM(mon);
+                shell->setNvm(mon);
                 netShells.push_back(shell);
                 port++;
             }
