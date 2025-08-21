@@ -19,6 +19,11 @@ MeshMonShell::~MeshMonShell()
 
 }
 
+shared_ptr<MeshShell> MeshMonShell::newInstance(void)
+{
+    return make_shared<MeshMonShell>();
+}
+
 int MeshMonShell::system(int argc, char **argv)
 {
     shared_ptr<MeshMon> meshmon = dynamic_pointer_cast<MeshMon>(_client);

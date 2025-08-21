@@ -4,7 +4,7 @@
 
 cmake_minimum_required(VERSION 3.13)
 
-project(meshmon VERSION 1.3.2 LANGUAGES C CXX ASM)
+project(meshmon VERSION 1.3.3 LANGUAGES C CXX ASM)
 
 find_package(Mosquitto QUIET)
 if (NOT Mosquitto_FOUND)

@@ -20,6 +20,7 @@ public:
 
 protected:
 
+    virtual shared_ptr<MeshShell> newInstance(void);
     virtual int system(int argc, char **argv);
 
 };
