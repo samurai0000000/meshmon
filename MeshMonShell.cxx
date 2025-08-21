@@ -26,9 +26,12 @@ int MeshMonShell::system(int argc, char **argv)
         meshmon->meshtasticMqtt();
 
     MeshShell::system(argc, argv);
-    this->printf("MQTT published: %u/%u\n",
-                 meshtasticMqtt->publishConfirmed(),
-                 meshtasticMqtt->published());
+    this->printf("CPU temp: %.1fC\n", meshmon->getCpuTempC());
+    if (meshtasticMqtt) {
+        this->printf("MQTT published: %u/%u\n",
+                     meshtasticMqtt->publishConfirmed(),
+                     meshtasticMqtt->published());
+    }
 
     return 0;
 }

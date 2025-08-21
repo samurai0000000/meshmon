@@ -25,6 +25,8 @@ public:
 
     void join(void);
 
+    float getCpuTempC(void);
+
 protected:
 
     // Extend MeshClient
@@ -73,6 +75,7 @@ protected:
 
     // Extend HomeChat
 
+    virtual string handleEnv(uint32_t node_num, string &message);
     virtual int vprintf(const char *format, va_list ap) const;
 
 

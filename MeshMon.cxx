@@ -4,6 +4,9 @@
  * Copyright (C) 2025, Charles Chiou
  */
 
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/ioctl.h>
 #include <sstream>
 #include <iostream>
 #include <iomanip>
@@ -47,6 +50,68 @@ void MeshMon::join(void)
         _myownMqtt->join();
         _myownMqtt = NULL;
     }
+}
+
+float MeshMon::getCpuTempC(void)
+{
+#define MAX_STRING        1024
+#define GET_GENCMD_RESULT 0x00030080
+    float tempC = 0.0;
+    int fd = -1;
+    int ret;
+    static const char *command = "measure_temp";
+    unsigned p[(MAX_STRING >> 2) + 7];
+    unsigned int i = 0;
+    const char *s;
+    string str;
+
+    fd = open("/dev/vcio", 0);
+    if (fd == -1) {
+        fprintf(stderr, "open: %s!\n", strerror(errno));
+        goto done;
+    }
+
+    i = 0;
+    p[i++] = 0; // size
+    p[i++] = 0x00000000; // process request
+    p[i++] = GET_GENCMD_RESULT; // (the tag id)
+    p[i++] = MAX_STRING;// buffer_len
+    p[i++] = 0; // request_len (set to response length)
+    p[i++] = 0; // error repsonse
+    memcpy(p + i, command, strlen(command) + 1);
+    i += MAX_STRING >> 2;
+    p[i++] = 0x00000000; // end tag
+    p[0] = i * sizeof(*p); // actual size
+
+    ret = ioctl(fd, _IOWR(100, 0, char *), p);
+    if (ret == -1) {
+        fprintf(stderr, "ioctl: %s!\n", strerror(errno));
+        goto done;
+    }
+
+    s = (const char *) (p + 6);
+    for (unsigned int i = 0; i < (sizeof(p) - 6); i++) {
+        if (s[i] == '\'') {
+            break;
+        }
+        if (isdigit(s[i]) || (s[i] == '.')) {
+            str += s[i];
+        }
+    }
+
+    try {
+        tempC = stof(str);
+    } catch (const invalid_argument& e) {
+    } catch (const out_of_range &e) {
+    }
+
+done:
+
+    if (fd != -1) {
+        close(fd);
+    }
+
+    return tempC;
 }
 
 void MeshMon::gotModuleConfigMQTT(const meshtastic_ModuleConfig_MQTTConfig &c)
@@ -419,6 +484,21 @@ bool MeshMon::saveNvm(void)
     result = MeshNvm::saveNvm();
 
     return result;
+}
+
+string MeshMon::handleEnv(uint32_t node_num, string &message)
+{
+    stringstream ss;
+
+    ss << HomeChat::handleEnv(node_num, message);
+    if (!ss.str().empty()) {
+        ss << endl;
+    }
+
+    ss << "cpu temperature: ";
+    ss <<  setprecision(3) << getCpuTempC();
+
+    return ss.str();
 }
 
 static inline int stdio_vprintf(const char *format, va_list ap)
