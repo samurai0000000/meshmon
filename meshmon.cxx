@@ -249,6 +249,10 @@ int main(int argc, char **argv)
     for (vector<string>::const_iterator it = devices.cbegin();
          it != devices.cend(); it++) {
         shared_ptr<MeshMon> mon = make_shared<MeshMon>();
+        mon->setBanner(banner);
+        mon->setVersion(version);
+        mon->setBuilt(built);
+        mon->setCopyright(copyright);
 
         if (mon->attachSerial(*it) == false) {
             cerr << "Unable to attch to " << *it << endl;
@@ -264,10 +268,6 @@ int main(int argc, char **argv)
 
             if (useStdioShell && (stdioShell == NULL)) {
                 stdioShell = make_shared<MeshMonShell>();
-                stdioShell->setBanner(banner);
-                stdioShell->setVersion(version);
-                stdioShell->setBuilt(built);
-                stdioShell->setCopyright(copyright);
                 stdioShell->setClient(mon);
                 stdioShell->setNvm(mon);
             }
@@ -275,10 +275,6 @@ int main(int argc, char **argv)
             if (port != 0) {
                 shell = make_shared<MeshMonShell>();
                 shell->setClient(mon);
-                shell->setBanner(banner);
-                shell->setVersion(version);
-                shell->setBuilt(built);
-                shell->setCopyright(copyright);
                 shell->bindPort(port);
                 shell->setNvm(mon);
                 netShells.push_back(shell);
