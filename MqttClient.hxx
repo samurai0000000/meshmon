@@ -22,7 +22,7 @@ public:
     MqttClient();
     MqttClient(const string &server, uint16_t port,
                const string &user, const string &password,
-               const string &topic);
+               const string &topic, bool tls = false);
     ~MqttClient();
 
     unsigned int published(void) const;
@@ -59,6 +59,7 @@ private:
     string _user;
     string _password;
     string _topic;
+    bool _tls;
     string _clientId;
 
     mutex _mutex;

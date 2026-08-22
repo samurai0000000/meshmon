@@ -11,9 +11,15 @@ if (NOT Mosquitto_FOUND)
   find_path(MOSQUITTO_INCLUDE_DIR NAMES mosquitto.h)
   find_library(MOSQUITTO_LIBRARY NAMES mosquitto libmosquitto)
 endif ()
+if (NOT MOSQUITTO_INCLUDE_DIR OR NOT MOSQUITTO_LIBRARY)
+  message(FATAL_ERROR "libmosquitto not found")
+endif ()
 
 find_path(CONFIG++_INCLUDE_DIR NAMES libconfig.h++)
 find_library(CONFIG++_LIBRARY NAMES config++ libconfig++)
+if (NOT CONFIG++_INCLUDE_DIR OR NOT CONFIG++_LIBRARY)
+  message(FATAL_ERROR "libconfig++ not found")
+endif ()
 
 add_subdirectory(libmeshtastic)
 

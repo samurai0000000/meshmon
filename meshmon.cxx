@@ -8,9 +8,15 @@
 #include <getopt.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <errno.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
 #include <mosquitto.h>
 #include <libconfig.h++>
 #include <iostream>
+#include <memory>
+#include <string>
 #include <vector>
 #include <algorithm>
 #include <thread>
@@ -26,11 +32,17 @@ static vector<shared_ptr<MeshMon>> mons;
 static shared_ptr<MeshMonShell> stdioShell;
 static vector<shared_ptr<MeshMonShell>> netShells;
 static volatile sig_atomic_t g_stop = 0;
+static int g_stop_pipe[2] = { -1, -1 };
 
 void sighandler(int signum)
 {
+    char c = 1;
+
     (void)(signum);
     g_stop = 1;
+    if (g_stop_pipe[1] != -1) {
+        (void) write(g_stop_pipe[1], &c, 1);
+    }
 }
 
 static void requestStop(void)
@@ -50,10 +62,45 @@ static void requestStop(void)
 
 static void stopWatcher(void)
 {
+    char c;
+
     while (!g_stop) {
-        sleep(1);
+        ssize_t n = read(g_stop_pipe[0], &c, 1);
+        if (n > 0) {
+            break;
+        }
+        if ((n < 0) && (errno == EINTR)) {
+            continue;
+        }
+        break;
     }
     requestStop();
+}
+
+static bool parsePort(const char *s, uint16_t &port)
+{
+    char *end = NULL;
+    unsigned long v;
+
+    if ((s == NULL) || (s[0] == '\0')) {
+        return false;
+    }
+
+    errno = 0;
+    v = strtoul(s, &end, 10);
+    if ((errno != 0) || (end == s) || (*end != '\0') || (v > 65535)) {
+        return false;
+    }
+
+    port = (uint16_t) v;
+    return true;
+}
+
+static void addDevice(vector<string> &devices, const string &device)
+{
+    if (find(devices.begin(), devices.end(), device) == devices.end()) {
+        devices.push_back(device);
+    }
 }
 
 static void releaseMeshMons(void)
@@ -93,21 +140,29 @@ static void loadLibConfig(Config &cfg, string &path)
               O_WRONLY | O_CREAT | O_NOCTTY | O_NONBLOCK,
               0666);
     if (fd == -1) {
-        goto done;
-    } else {
-        close(fd);
-        fd = -1;
+        cerr << path << ": " << strerror(errno) << endl;
+        return;
+    }
+    close(fd);
+
+    {
+        struct stat st;
+
+        if ((stat(path.c_str(), &st) == 0) && (st.st_size == 0)) {
+            return;
+        }
     }
 
     try {
         cfg.readFile(path.c_str());
-    } catch (FileIOException &e) {
+    } catch (const FileIOException &) {
+        cerr << "Unable to read config " << path << endl;
+        exit(EXIT_FAILURE);
     } catch (ParseException &e) {
+        cerr << "Parse error in " << e.getFile()
+             << " line " << e.getLine() << ": " << e.getError() << endl;
+        exit(EXIT_FAILURE);
     }
-
-done:
-
-    return;
 }
 
 static const struct option long_options[] = {
@@ -148,11 +203,7 @@ int main(int argc, char **argv)
         Setting &root = cfg.getRoot();
         Setting &cfgDevices = root["devices"];
         for (int i = 0; i < cfgDevices.getLength(); i++) {
-            string cfgDevice = cfgDevices[i];
-            if (find(devices.begin(), devices.end(), cfgDevice) ==
-                devices.end()) {
-                devices.push_back(cfgDevice);
-            }
+            addDevice(devices, cfgDevices[i]);
         }
     } catch (SettingNotFoundException &e) {
     } catch (SettingTypeException &e) {
@@ -179,8 +230,13 @@ int main(int argc, char **argv)
     try {
         int cfgPort = 0;
         Setting &root = cfg.getRoot();
-        root.lookupValue("port", cfgPort);
-        port = cfgPort;
+        if (root.lookupValue("port", cfgPort)) {
+            if ((cfgPort < 0) || (cfgPort > 65535)) {
+                cerr << "Invalid config port: " << cfgPort << endl;
+                exit(EXIT_FAILURE);
+            }
+            port = (uint16_t) cfgPort;
+        }
     } catch (SettingNotFoundException &e) {
     } catch (SettingTypeException &e) {
     }
@@ -204,13 +260,16 @@ int main(int argc, char **argv)
 
         switch (c) {
         case 'd':
-            devices.push_back(string(optarg));
+            addDevice(devices, string(optarg));
             break;
         case 's':
             useStdioShell = true;
             break;
         case 'p':
-            port = atoi(optarg);
+            if (!parsePort(optarg, port)) {
+                cerr << "Invalid port: " << optarg << endl;
+                exit(EXIT_FAILURE);
+            }
             break;
         case 'b':
             daemon = true;
@@ -285,7 +344,7 @@ int main(int argc, char **argv)
         mon->setCopyright(copyright);
 
         if (mon->attachSerial(*it) == false) {
-            cerr << "Unable to attch to " << *it << endl;
+            cerr << "Unable to attach to " << *it << endl;
             continue;
         } else {
             shared_ptr<MeshMonShell> shell;
@@ -321,6 +380,19 @@ int main(int argc, char **argv)
 
     /* ------- */
 
+    if (pipe(g_stop_pipe) == -1) {
+        cerr << "pipe failed: " << strerror(errno) << endl;
+        exit(EXIT_FAILURE);
+    }
+    fcntl(g_stop_pipe[0], F_SETFD, FD_CLOEXEC);
+    fcntl(g_stop_pipe[1], F_SETFD, FD_CLOEXEC);
+    {
+        int flags = fcntl(g_stop_pipe[1], F_GETFL, 0);
+        if (flags != -1) {
+            fcntl(g_stop_pipe[1], F_SETFL, flags | O_NONBLOCK);
+        }
+    }
+
     thread stopThread(stopWatcher);
 
     for (vector< shared_ptr<MeshMon>>::iterator it = mons.begin();
@@ -336,8 +408,20 @@ int main(int argc, char **argv)
     }
 
     g_stop = 1;
+    if (g_stop_pipe[1] != -1) {
+        char c = 1;
+        (void) write(g_stop_pipe[1], &c, 1);
+    }
     if (stopThread.joinable()) {
         stopThread.join();
+    }
+    if (g_stop_pipe[0] != -1) {
+        close(g_stop_pipe[0]);
+        g_stop_pipe[0] = -1;
+    }
+    if (g_stop_pipe[1] != -1) {
+        close(g_stop_pipe[1]);
+        g_stop_pipe[1] = -1;
     }
 
     releaseMeshMons();

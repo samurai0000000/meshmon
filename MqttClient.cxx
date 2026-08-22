@@ -23,12 +23,13 @@ MqttClient::MqttClient()
 
 MqttClient::MqttClient(const string &server, uint16_t port,
                        const string &user, const string &password,
-                       const string &topic)
+                       const string &topic, bool tls)
     : _server(server),
       _port(port),
       _user(user),
       _password(password),
       _topic(topic),
+      _tls(tls),
       _clientId(makeClientId()),
       _thread(NULL),
       _isRunning(false),
@@ -253,6 +254,23 @@ void MqttClient::run(void)
     mosquitto_disconnect_callback_set(_mosq, onDisconnect);
     mosquitto_publish_callback_set(_mosq, onPublish);
     mosquitto_subscribe_callback_set(_mosq, onSubscribe);
+
+    if (_tls) {
+        ret = mosquitto_int_option(_mosq, MOSQ_OPT_TLS_USE_OS_CERTS, 1);
+        if (ret != MOSQ_ERR_SUCCESS) {
+            ret = mosquitto_tls_set(_mosq,
+                                    "/etc/ssl/certs/ca-certificates.crt",
+                                    NULL, NULL, NULL, NULL);
+        }
+        if (ret != MOSQ_ERR_SUCCESS) {
+            ret = mosquitto_tls_set(_mosq, NULL, "/etc/ssl/certs",
+                                    NULL, NULL, NULL);
+        }
+        if (ret != MOSQ_ERR_SUCCESS) {
+            cerr << "mosquitto TLS: " << mosquitto_strerror(ret) << endl;
+            goto done;
+        }
+    }
 
     ret = mosquitto_loop_start(_mosq);
     if (ret != MOSQ_ERR_SUCCESS) {

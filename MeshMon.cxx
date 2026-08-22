@@ -6,6 +6,8 @@
 
 #include <unistd.h>
 #include <fcntl.h>
+#include <errno.h>
+#include <stdlib.h>
 #include <sys/ioctl.h>
 #include <cstring>
 #include <cctype>
@@ -148,7 +150,7 @@ done:
 void MeshMon::gotModuleConfigMQTT(const meshtastic_ModuleConfig_MQTTConfig &c)
 {
     string host;
-    uint16_t port = 1883;
+    uint16_t port = c.tls_enabled ? 8883 : 1883;
     string user;
     string password;
     string topic;
@@ -166,8 +168,14 @@ void MeshMon::gotModuleConfigMQTT(const meshtastic_ModuleConfig_MQTTConfig &c)
         host = c.address;
         colon = host.rfind(':');
         if ((colon != string::npos) && (host.find(':') == colon)) {
-            int parsed = atoi(host.substr(colon + 1).c_str());
-            if ((parsed > 0) && (parsed <= 65535)) {
+            const string portstr = host.substr(colon + 1);
+            char *end = NULL;
+            unsigned long parsed;
+
+            errno = 0;
+            parsed = strtoul(portstr.c_str(), &end, 10);
+            if ((errno == 0) && (end != portstr.c_str()) &&
+                (*end == '\0') && (parsed > 0) && (parsed <= 65535)) {
                 port = (uint16_t) parsed;
                 host = host.substr(0, colon);
             }
@@ -180,7 +188,7 @@ void MeshMon::gotModuleConfigMQTT(const meshtastic_ModuleConfig_MQTTConfig &c)
         }
         topic = (c.root[0] != '\0') ? string(c.root) : string("msh");
         _myownMqtt = make_shared<MqttClient>(host, port, user, password,
-                                             topic);
+                                             topic, c.tls_enabled);
         _myownMqtt->start();
     }
 }
