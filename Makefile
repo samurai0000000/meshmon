@@ -7,7 +7,7 @@ MAKEFLAGS =	--no-print-dir
 
 TARGETS +=	build/$(ARCH)/meshmon
 
-.PHONY: default clean distclean $(TARGETS)
+.PHONY: default clean distclean
 
 default: $(TARGETS)
 
@@ -25,12 +25,13 @@ MESHMON_TREE :=	\
 	CMakeLists.txt version.h.in \
 	$(wildcard *.cxx) $(wildcard *.hxx) \
 	libmeshtastic
-
-build/$(ARCH)/meshmon: build/$(ARCH)/Makefile
-	@if [ -f $@ ] && [ -n "`find -H $(MESHMON_TREE) -type f \
+MESHMON_SRCS :=	$(shell find -H $(MESHMON_TREE) -type f \
 	    \( -name '*.c' -o -name '*.cxx' -o -name '*.h' -o -name '*.hxx' \
 	       -o -name 'CMakeLists.txt' -o -name 'version.h.in' \) \
-	    -newer $@ -print -quit`" ]; then \
+	    2>/dev/null)
+
+build/$(ARCH)/meshmon: build/$(ARCH)/Makefile $(MESHMON_SRCS)
+	@if [ -f $@ ]; then \
 		rm -f build/$(ARCH)/version.h; \
 	fi
 	@$(MAKE) -C build/$(ARCH)

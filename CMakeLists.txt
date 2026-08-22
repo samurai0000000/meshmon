@@ -12,6 +12,9 @@ if (NOT Mosquitto_FOUND)
   find_library(MOSQUITTO_LIBRARY NAMES mosquitto libmosquitto)
 endif ()
 
+find_path(CONFIG++_INCLUDE_DIR NAMES libconfig.h++)
+find_library(CONFIG++_LIBRARY NAMES config++ libconfig++)
+
 add_subdirectory(libmeshtastic)
 
 set(CMAKE_CXX_STANDARD 11)
@@ -55,7 +58,9 @@ configure_file(
 
 add_executable(meshmon meshmon.cxx MeshMon.cxx MeshMonShell.cxx MqttClient.cxx)
 target_include_directories(meshmon PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
-target_include_directories(meshmon PRIVATE ${MOSQUITTO_INCLUDE_DIR})
+target_include_directories(meshmon PRIVATE
+  ${MOSQUITTO_INCLUDE_DIR}
+  ${CONFIG++_INCLUDE_DIR})
 target_link_libraries(meshmon PRIVATE
   libmeshtastic
   ${MOSQUITTO_LIBRARY}
