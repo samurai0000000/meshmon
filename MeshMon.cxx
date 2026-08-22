@@ -275,11 +275,13 @@ void MeshMon::gotAdminMessage(const meshtastic_MeshPacket &packet,
                               const meshtastic_AdminMessage &adminMessage)
 {
     MeshClient::gotAdminMessage(packet, adminMessage);
+#if 0
     if (!verbose()) {
         cout << adminMessage;
         cout << "---" << endl;
         cout << packet;
     }
+#endif
 }
 
 void MeshMon::gotDeviceMetrics(const meshtastic_MeshPacket &packet,

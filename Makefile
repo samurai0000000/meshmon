@@ -21,7 +21,18 @@ distclean:
 
 meshmon: build/$(ARCH)/meshmon
 
+MESHMON_TREE :=	\
+	CMakeLists.txt version.h.in \
+	$(wildcard *.cxx) $(wildcard *.hxx) \
+	libmeshtastic
+
 build/$(ARCH)/meshmon: build/$(ARCH)/Makefile
+	@if [ -f $@ ] && [ -n "`find -H $(MESHMON_TREE) -type f \
+	    \( -name '*.c' -o -name '*.cxx' -o -name '*.h' -o -name '*.hxx' \
+	       -o -name 'CMakeLists.txt' -o -name 'version.h.in' \) \
+	    -newer $@ -print -quit`" ]; then \
+		rm -f build/$(ARCH)/version.h; \
+	fi
 	@$(MAKE) -C build/$(ARCH)
 
 build/$(ARCH)/Makefile: CMakeLists.txt
