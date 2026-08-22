@@ -35,6 +35,29 @@ MeshMon::~MeshMon()
     }
 }
 
+void MeshMon::setClient(shared_ptr<SimpleClient> client)
+{
+    if (client && (client.get() == static_cast<SimpleClient *>(this))) {
+        // Non-owning: HomeChat must not keep a shared_ptr to *this
+        HomeChat::setClient(shared_ptr<SimpleClient>(
+                                shared_ptr<SimpleClient>(), this));
+        return;
+    }
+
+    HomeChat::setClient(client);
+}
+
+void MeshMon::setNvm(shared_ptr<BaseNvm> nvm)
+{
+    if (nvm && (nvm.get() == static_cast<BaseNvm *>(this))) {
+        // Non-owning: HomeChat must not keep a shared_ptr to *this
+        HomeChat::setNvm(shared_ptr<BaseNvm>(shared_ptr<BaseNvm>(), this));
+        return;
+    }
+
+    HomeChat::setNvm(nvm);
+}
+
 void MeshMon::join(void)
 {
     MeshClient::join();

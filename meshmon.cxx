@@ -13,6 +13,7 @@
 #include <iostream>
 #include <vector>
 #include <algorithm>
+#include <thread>
 #include <MeshMonShell.hxx>
 #include "MeshMon.hxx"
 #include "version.h"
@@ -24,11 +25,16 @@ using namespace libconfig;
 static vector<shared_ptr<MeshMon>> mons;
 static shared_ptr<MeshMonShell> stdioShell;
 static vector<shared_ptr<MeshMonShell>> netShells;
+static volatile sig_atomic_t g_stop = 0;
 
 void sighandler(int signum)
 {
     (void)(signum);
+    g_stop = 1;
+}
 
+static void requestStop(void)
+{
     for (vector< shared_ptr<MeshMon>>::iterator it = mons.begin();
          it != mons.end(); it++) {
         (*it)->detach();
@@ -40,6 +46,26 @@ void sighandler(int signum)
          it != netShells.end(); it++) {
         (*it)->detach();
     }
+}
+
+static void stopWatcher(void)
+{
+    while (!g_stop) {
+        sleep(1);
+    }
+    requestStop();
+}
+
+static void releaseMeshMons(void)
+{
+    stdioShell.reset();
+    netShells.clear();
+    for (vector< shared_ptr<MeshMon>>::iterator it = mons.begin();
+         it != mons.end(); it++) {
+        (*it)->setClient(NULL);
+        (*it)->setNvm(NULL);
+    }
+    mons.clear();
 }
 
 void cleanup(void)
@@ -225,17 +251,20 @@ int main(int argc, char **argv)
         if (pid == -1) {
             cerr << "fork failed!" << endl;
             exit(EXIT_FAILURE);
-        } else if (pid  != 0) {
+        } else if (pid != 0) {
             exit(EXIT_SUCCESS);
-        } else {
-            close(STDIN_FILENO);
-            close(STDOUT_FILENO);
-            close(STDERR_FILENO);
+        }
 
-            fdevnull = open("/dev/null", O_WRONLY);
-            if (fdevnull != -1) {
-                dup2(fdevnull, STDOUT_FILENO);
-                dup2(fdevnull, STDERR_FILENO);
+        if (setsid() == -1) {
+            exit(EXIT_FAILURE);
+        }
+
+        fdevnull = open("/dev/null", O_RDWR);
+        if (fdevnull != -1) {
+            dup2(fdevnull, STDIN_FILENO);
+            dup2(fdevnull, STDOUT_FILENO);
+            dup2(fdevnull, STDERR_FILENO);
+            if (fdevnull > STDERR_FILENO) {
                 close(fdevnull);
             }
         }
@@ -291,6 +320,8 @@ int main(int argc, char **argv)
 
     /* ------- */
 
+    thread stopThread(stopWatcher);
+
     for (vector< shared_ptr<MeshMon>>::iterator it = mons.begin();
          it != mons.end(); it++) {
         (*it)->join();
@@ -302,6 +333,13 @@ int main(int argc, char **argv)
          it != netShells.end(); it++) {
         (*it)->join();
     }
+
+    g_stop = 1;
+    if (stopThread.joinable()) {
+        stopThread.join();
+    }
+
+    releaseMeshMons();
 
     cout << "Good-bye!" << endl;
 

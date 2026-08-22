@@ -15,8 +15,7 @@ using namespace std;
 
 class MqttClient;
 
-class MeshMon : public MeshClient, public MeshNvm, public HomeChat,
-                public enable_shared_from_this<MeshMon> {
+class MeshMon : public MeshClient, public MeshNvm, public HomeChat {
 
 public:
 
@@ -24,6 +23,9 @@ public:
     ~MeshMon();
 
     void join(void);
+
+    virtual void setClient(shared_ptr<SimpleClient> client);
+    virtual void setNvm(shared_ptr<BaseNvm> nvm);
 
     float getCpuTempC(void);
 
