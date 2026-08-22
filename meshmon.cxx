@@ -138,9 +138,14 @@ static void loadLibConfig(Config &cfg, string &path)
     // 'touch' to test the path validity
     fd = open(path.c_str(),
               O_WRONLY | O_CREAT | O_NOCTTY | O_NONBLOCK,
-              0666);
+              S_IRUSR | S_IWUSR);
     if (fd == -1) {
         cerr << path << ": " << strerror(errno) << endl;
+        return;
+    }
+    if (fchmod(fd, S_IRUSR | S_IWUSR) == -1) {
+        cerr << path << ": " << strerror(errno) << endl;
+        close(fd);
         return;
     }
     close(fd);
@@ -331,54 +336,6 @@ int main(int argc, char **argv)
     }
 
     atexit(cleanup);
-    signal(SIGINT, sighandler);
-    signal(SIGTERM, sighandler);
-    signal(SIGPIPE, SIG_IGN);
-
-    for (vector<string>::const_iterator it = devices.cbegin();
-         it != devices.cend(); it++) {
-        shared_ptr<MeshMon> mon = make_shared<MeshMon>();
-        mon->setBanner(banner);
-        mon->setVersion(version);
-        mon->setBuilt(built);
-        mon->setCopyright(copyright);
-
-        if (mon->attachSerial(*it) == false) {
-            cerr << "Unable to attach to " << *it << endl;
-            continue;
-        } else {
-            shared_ptr<MeshMonShell> shell;
-
-            mon->setClient(mon);
-            mon->setNvm(mon);
-            mon->setVerbose(verbose);
-            mon->enableLogStderr(log);
-            mons.push_back(mon);
-
-            if (useStdioShell && (stdioShell == NULL)) {
-                stdioShell = make_shared<MeshMonShell>();
-                stdioShell->setClient(mon);
-                stdioShell->setNvm(mon);
-            }
-
-            if (port != 0) {
-                shell = make_shared<MeshMonShell>();
-                shell->setClient(mon);
-                shell->bindPort(port);
-                shell->setNvm(mon);
-                netShells.push_back(shell);
-                port++;
-            }
-        }
-    }
-
-    if (stdioShell) {
-        // Attach last to let net shells print to stdout before we output
-        // the prompt on stdio
-        stdioShell->attachStdio();
-    }
-
-    /* ------- */
 
     if (pipe(g_stop_pipe) == -1) {
         cerr << "pipe failed: " << strerror(errno) << endl;
@@ -393,18 +350,91 @@ int main(int argc, char **argv)
         }
     }
 
+    signal(SIGINT, sighandler);
+    signal(SIGTERM, sighandler);
+    signal(SIGPIPE, SIG_IGN);
+
     thread stopThread(stopWatcher);
 
-    for (vector< shared_ptr<MeshMon>>::iterator it = mons.begin();
-         it != mons.end(); it++) {
-        (*it)->join();
+    for (vector<string>::const_iterator it = devices.cbegin();
+         it != devices.cend(); it++) {
+        shared_ptr<MeshMon> mon;
+
+        if (g_stop) {
+            break;
+        }
+
+        mon = make_shared<MeshMon>();
+        mon->setBanner(banner);
+        mon->setVersion(version);
+        mon->setBuilt(built);
+        mon->setCopyright(copyright);
+
+        if (mon->attachSerial(*it) == false) {
+            cerr << "Unable to attach to " << *it << endl;
+            continue;
+        }
+
+        if (g_stop) {
+            mon->detach();
+            mon->join();
+            break;
+        }
+
+        mon->setClient(mon);
+        mon->setNvm(mon);
+        mon->setVerbose(verbose);
+        mon->enableLogStderr(log);
+        mons.push_back(mon);
+
+        if (useStdioShell && (stdioShell == NULL)) {
+            stdioShell = make_shared<MeshMonShell>();
+            stdioShell->setClient(mon);
+            stdioShell->setNvm(mon);
+        }
+
+        if (port != 0) {
+            shared_ptr<MeshMonShell> shell = make_shared<MeshMonShell>();
+
+            shell->setClient(mon);
+            shell->setNvm(mon);
+            if (shell->bindPort(port)) {
+                netShells.push_back(shell);
+            }
+            if (port < 65535) {
+                port++;
+            } else {
+                port = 0;
+            }
+        }
     }
-    if (stdioShell) {
-        stdioShell->join();
+
+    if (g_stop) {
+        requestStop();
     }
-    for (vector< shared_ptr<MeshMonShell>>::iterator it = netShells.begin();
-         it != netShells.end(); it++) {
-        (*it)->join();
+
+    if (stdioShell && !g_stop) {
+        // Attach last to let net shells print to stdout before we output
+        // the prompt on stdio
+        stdioShell->attachStdio();
+    }
+
+    if (mons.empty()) {
+        cerr << "No devices attached" << endl;
+        ret = EXIT_FAILURE;
+    } else {
+        for (vector< shared_ptr<MeshMon>>::iterator it = mons.begin();
+             it != mons.end(); it++) {
+            (*it)->join();
+        }
+        if (stdioShell) {
+            stdioShell->join();
+        }
+        for (vector< shared_ptr<MeshMonShell>>::iterator it = netShells.begin();
+             it != netShells.end(); it++) {
+            (*it)->join();
+        }
+        cout << "Good-bye!" << endl;
     }
 
     g_stop = 1;
@@ -426,9 +456,7 @@ int main(int argc, char **argv)
 
     releaseMeshMons();
 
-    cout << "Good-bye!" << endl;
-
-    return 0;
+    return ret;
 }
 
 /*

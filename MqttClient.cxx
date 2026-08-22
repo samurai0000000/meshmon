@@ -286,12 +286,30 @@ void MqttClient::run(void)
     }
 
     while (_isRunning.load()) {
-        if (!_proxyQueue.empty()) {
-            _mutex.lock();
-            meshtastic_MqttClientProxyMessage m = _proxyQueue.front();
-            _proxyQueue.pop();
-            _mutex.unlock();
+        meshtastic_MqttClientProxyMessage m;
+        meshtastic_MeshPacket p;
+        bool haveProxy = false;
+        bool havePacket = false;
 
+        {
+            unique_lock<mutex> lock(_mutex);
+            while (_isRunning.load() &&
+                   _proxyQueue.empty() && _packetQueue.empty()) {
+                _cv.wait_for(lock, std::chrono::seconds(1));
+            }
+            if (!_proxyQueue.empty()) {
+                m = _proxyQueue.front();
+                _proxyQueue.pop();
+                haveProxy = true;
+            }
+            if (!_packetQueue.empty()) {
+                p = _packetQueue.front();
+                _packetQueue.pop();
+                havePacket = true;
+            }
+        }
+
+        if (haveProxy) {
             qos = (int) _grantedQos.load();
             ret = mosquitto_publish(_mosq,
                                     NULL,
@@ -308,12 +326,7 @@ void MqttClient::run(void)
             }
         }
 
-        if (!_packetQueue.empty()) {
-            _mutex.lock();
-            meshtastic_MeshPacket p = _packetQueue.front();
-            _packetQueue.pop();
-            _mutex.unlock();
-
+        if (havePacket) {
             uint8_t buf[MQTT_PACKET_BUF];
             pb_ostream_t stream = pb_ostream_from_buffer(buf, sizeof(buf));
 
@@ -336,9 +349,6 @@ void MqttClient::run(void)
                 }
             }
         }
-
-        unique_lock<mutex> lock(_mutex);
-        _cv.wait_for(lock, std::chrono::seconds(1));
     }
 
 done:
