@@ -78,14 +78,14 @@ static void loadLibConfig(Config &cfg, string &path)
     int fd;
 
     if (path.empty()) {
-        string home;
+        const char *homedir;
 
-        home = getenv("HOME");
-        if (home.empty()) {
+        homedir = getenv("HOME");
+        if ((homedir == NULL) || (homedir[0] == '\0')) {
             return;
         }
 
-        path = home + "/.meshmon";
+        path = string(homedir) + "/.meshmon";
     }
 
     // 'touch' to test the path validity
@@ -117,6 +117,7 @@ static const struct option long_options[] = {
     { "daemon", no_argument, NULL, 'b', },
     { "verbose", no_argument, NULL, 'v', },
     { "log", no_argument, NULL, 'l', },
+    { 0, 0, 0, 0 },
 };
 
 int main(int argc, char **argv)

@@ -7,6 +7,8 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
+#include <cstring>
+#include <cctype>
 #include <sstream>
 #include <iostream>
 #include <iomanip>
@@ -113,12 +115,18 @@ float MeshMon::getCpuTempC(void)
     }
 
     s = (const char *) (p + 6);
-    for (unsigned int i = 0; i < (sizeof(p) - 6); i++) {
-        if (s[i] == '\'') {
-            break;
-        }
-        if (isdigit(s[i]) || (s[i] == '.')) {
-            str += s[i];
+    {
+        size_t slen = sizeof(p) - ((const char *) s - (const char *) p);
+
+        for (size_t j = 0; j < slen; j++) {
+            unsigned char c = (unsigned char) s[j];
+
+            if (s[j] == '\'') {
+                break;
+            }
+            if (isdigit(c) || (s[j] == '.')) {
+                str += s[j];
+            }
         }
     }
 
