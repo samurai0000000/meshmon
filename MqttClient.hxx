@@ -7,6 +7,7 @@
 #ifndef MQTTCLIENT_HXX
 #define MQTTCLIENT_HXX
 
+#include <atomic>
 #include <queue>
 #include <LibMeshtastic.hxx>
 
@@ -19,7 +20,7 @@ class MqttClient {
 public:
 
     MqttClient();
- 	MqttClient(const string &server, uint16_t port,
+    MqttClient(const string &server, uint16_t port,
                const string &user, const string &password,
                const string &topic);
     ~MqttClient();
@@ -47,6 +48,9 @@ private:
 
     static void thread_function(MqttClient *mqtt);
     void run(void);
+    bool enqueueLimited(void);
+
+    static string makeClientId(void);
 
 private:
 
@@ -55,19 +59,20 @@ private:
     string _user;
     string _password;
     string _topic;
+    string _clientId;
 
     mutex _mutex;
     condition_variable _cv;
     shared_ptr<thread> _thread;
-    bool _isRunning;
+    atomic<bool> _isRunning;
+    atomic<bool> _connected;
 
     struct mosquitto *_mosq;
-    unsigned int _grantedQos;
+    atomic<unsigned int> _grantedQos;
     queue<meshtastic_MqttClientProxyMessage> _proxyQueue;
     queue<meshtastic_MeshPacket> _packetQueue;
-    unsigned int _published;
-    unsigned int _publishConfirmed;
-    unsigned int _messaged;
+    atomic<unsigned int> _published;
+    atomic<unsigned int> _publishConfirmed;
 
 };
 

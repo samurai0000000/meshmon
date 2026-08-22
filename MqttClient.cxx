@@ -4,9 +4,15 @@
  * Copyright (C) 2025, Charles Chiou
  */
 
+#include <unistd.h>
 #include <mosquitto.h>
 #include <iostream>
+#include <sstream>
+#include <chrono>
 #include <MqttClient.hxx>
+
+#define MQTT_QUEUE_MAX 64
+#define MQTT_PACKET_BUF 1024
 
 MqttClient::MqttClient()
     : MqttClient("mqtt.meshtastic.org", 1883, "meshdev", "large4cats",
@@ -18,47 +24,69 @@ MqttClient::MqttClient()
 MqttClient::MqttClient(const string &server, uint16_t port,
                        const string &user, const string &password,
                        const string &topic)
+    : _server(server),
+      _port(port),
+      _user(user),
+      _password(password),
+      _topic(topic),
+      _clientId(makeClientId()),
+      _thread(NULL),
+      _isRunning(false),
+      _connected(false),
+      _mosq(NULL),
+      _grantedQos(0),
+      _published(0),
+      _publishConfirmed(0)
 {
-    _server = server;
-    _port = port;
-    _user = user;
-    _password = password;
-    _topic = topic;
+
 }
 
 MqttClient::~MqttClient()
 {
+    stop();
+    join();
+
     if (_mosq) {
         mosquitto_destroy(_mosq);
         _mosq = NULL;
     }
 }
 
+string MqttClient::makeClientId(void)
+{
+    static atomic<unsigned int> seq(0);
+    stringstream ss;
+
+    ss << "meshmon-" << getpid() << "-" << seq.fetch_add(1);
+
+    return ss.str();
+}
+
 unsigned int MqttClient::published(void) const
 {
-    return _published;
+    return _published.load();
 }
 
 unsigned int MqttClient::publishConfirmed(void) const
 {
-    return _publishConfirmed;
+    return _publishConfirmed.load();
 }
 
 bool MqttClient::isConnected(void) const
 {
-    return (_mosq != NULL) && (_grantedQos != 0);
+    return _connected.load();
 }
 
 bool MqttClient::isRunning(void) const
 {
-    return _isRunning;
+    return _isRunning.load();
 }
 
 void MqttClient::start(void)
 {
-    if (!_isRunning) {
+    if (!_isRunning.load()) {
         if (_thread == NULL) {
-            _isRunning = true;
+            _isRunning.store(true);
             _thread = make_shared<thread>(thread_function, this);
         }
     }
@@ -66,8 +94,8 @@ void MqttClient::start(void)
 
 void MqttClient::stop(void)
 {
-    if (_isRunning) {
-        _isRunning = false;
+    if (_isRunning.load()) {
+        _isRunning.store(false);
         _cv.notify_one();
     }
 }
@@ -93,18 +121,31 @@ void MqttClient::reset(void)
     _mutex.unlock();
 }
 
-bool MqttClient::publish(const meshtastic_MqttClientProxyMessage &m)
+bool MqttClient::enqueueLimited(void)
 {
-    if (!isRunning() && _proxyQueue.size() > 64) {
+    if (!isRunning()) {
         return false;
     }
 
+    if ((_proxyQueue.size() + _packetQueue.size()) >= MQTT_QUEUE_MAX) {
+        return false;
+    }
+
+    return true;
+}
+
+bool MqttClient::publish(const meshtastic_MqttClientProxyMessage &m)
+{
     if (m.which_payload_variant !=
         meshtastic_MqttClientProxyMessage_data_tag) {
         return false;
     }
 
     _mutex.lock();
+    if (!enqueueLimited()) {
+        _mutex.unlock();
+        return false;
+    }
     _proxyQueue.push(m);
     _mutex.unlock();
     _cv.notify_one();
@@ -114,11 +155,11 @@ bool MqttClient::publish(const meshtastic_MqttClientProxyMessage &m)
 
 bool MqttClient::publish(const meshtastic_MeshPacket &p)
 {
-    if (!isRunning() && _packetQueue.size() > 64) {
+    _mutex.lock();
+    if (!enqueueLimited()) {
+        _mutex.unlock();
         return false;
     }
-
-    _mutex.lock();
     _packetQueue.push(p);
     _mutex.unlock();
     _cv.notify_one();
@@ -136,9 +177,11 @@ void MqttClient::onConnect(struct mosquitto *mosq, void *obj, int rc)
         return;
     }
 
+    mqtt->_connected.store(true);
+
     rc = mosquitto_subscribe(mosq, NULL, mqtt->_topic.c_str(), 1);
     if (rc != MOSQ_ERR_SUCCESS) {
-        cerr << "mosquitto: " << mosquitto_connack_string(rc) << endl;
+        cerr << "mosquitto: " << mosquitto_strerror(rc) << endl;
         mosquitto_disconnect(mosq);
         return;
     }
@@ -152,7 +195,8 @@ void MqttClient::onDisconnect(struct mosquitto *mosq, void *obj, int rc)
     (void)(obj);
     (void)(rc);
 
-    mqtt->_grantedQos = 0;
+    mqtt->_connected.store(false);
+    mqtt->_grantedQos.store(0);
 }
 
 void MqttClient::onPublish(struct mosquitto *mosq, void *obj, int mid)
@@ -163,7 +207,7 @@ void MqttClient::onPublish(struct mosquitto *mosq, void *obj, int mid)
     (void)(obj);
     (void)(mid);
 
-    mqtt->_publishConfirmed++;
+    mqtt->_publishConfirmed.fetch_add(1);
 }
 
 void MqttClient::onSubscribe(struct mosquitto *mosq, void *obj,
@@ -175,8 +219,8 @@ void MqttClient::onSubscribe(struct mosquitto *mosq, void *obj,
     (void)(obj);
     (void)(mid);
 
-    if (qos_count == 1) {
-        mqtt->_grantedQos = granted_qos[0];
+    if (qos_count >= 1) {
+        mqtt->_grantedQos.store((unsigned int) granted_qos[0]);
     }
 }
 
@@ -188,16 +232,23 @@ void MqttClient::thread_function(MqttClient *mqtt)
 void MqttClient::run(void)
 {
     int ret;
+    bool loopStarted = false;
+    int qos;
 
     if (_mosq == NULL) {
-        _mosq = mosquitto_new("MqttClient", true, this);
+        _mosq = mosquitto_new(_clientId.c_str(), true, this);
         if (_mosq == NULL) {
             cerr << "mosquitto_new() failed!" << endl;
             goto done;
         }
     }
 
-    mosquitto_username_pw_set(_mosq, _user.c_str(), _password.c_str());
+    if (_user.empty()) {
+        mosquitto_username_pw_set(_mosq, NULL, NULL);
+    } else {
+        mosquitto_username_pw_set(_mosq, _user.c_str(),
+                                  _password.empty() ? NULL : _password.c_str());
+    }
     mosquitto_connect_callback_set(_mosq, onConnect);
     mosquitto_disconnect_callback_set(_mosq, onDisconnect);
     mosquitto_publish_callback_set(_mosq, onPublish);
@@ -208,6 +259,7 @@ void MqttClient::run(void)
         cerr << "mosquitto_loop_start: " << mosquitto_strerror(ret) << endl;
         goto done;
     }
+    loopStarted = true;
 
     ret = mosquitto_connect(_mosq, _server.c_str(), _port, 60);
     if (ret != MOSQ_ERR_SUCCESS) {
@@ -215,25 +267,26 @@ void MqttClient::run(void)
         goto done;
     }
 
-    while (_isRunning) {
+    while (_isRunning.load()) {
         if (!_proxyQueue.empty()) {
             _mutex.lock();
             meshtastic_MqttClientProxyMessage m = _proxyQueue.front();
             _proxyQueue.pop();
             _mutex.unlock();
 
+            qos = (int) _grantedQos.load();
             ret = mosquitto_publish(_mosq,
                                     NULL,
                                     m.topic,
                                     m.payload_variant.data.size,
                                     m.payload_variant.data.bytes,
-                                    _grantedQos,
+                                    qos,
                                     m.retained);
             if (ret != MOSQ_ERR_SUCCESS){
                 fprintf(stderr, "mosquitto_publish failed: %s\n",
                         mosquitto_strerror(ret));
             } else {
-                _published++;
+                _published.fetch_add(1);
             }
         }
 
@@ -243,7 +296,27 @@ void MqttClient::run(void)
             _packetQueue.pop();
             _mutex.unlock();
 
-            (void)(p);
+            uint8_t buf[MQTT_PACKET_BUF];
+            pb_ostream_t stream = pb_ostream_from_buffer(buf, sizeof(buf));
+
+            if (pb_encode(&stream, meshtastic_MeshPacket_fields, &p) != true) {
+                fprintf(stderr, "mqtt MeshPacket encode failed\n");
+            } else {
+                qos = (int) _grantedQos.load();
+                ret = mosquitto_publish(_mosq,
+                                        NULL,
+                                        _topic.c_str(),
+                                        (int) stream.bytes_written,
+                                        buf,
+                                        qos,
+                                        false);
+                if (ret != MOSQ_ERR_SUCCESS) {
+                    fprintf(stderr, "mosquitto_publish failed: %s\n",
+                            mosquitto_strerror(ret));
+                } else {
+                    _published.fetch_add(1);
+                }
+            }
         }
 
         unique_lock<mutex> lock(_mutex);
@@ -252,8 +325,14 @@ void MqttClient::run(void)
 
 done:
 
-    mosquitto_disconnect(_mosq);
-    _isRunning = false;
+    _connected.store(false);
+    if (_mosq != NULL) {
+        mosquitto_disconnect(_mosq);
+        if (loopStarted) {
+            mosquitto_loop_stop(_mosq, true);
+        }
+    }
+    _isRunning.store(false);
 
     return;
 }

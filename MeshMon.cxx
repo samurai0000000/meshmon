@@ -139,10 +139,41 @@ done:
 
 void MeshMon::gotModuleConfigMQTT(const meshtastic_ModuleConfig_MQTTConfig &c)
 {
+    string host;
+    uint16_t port = 1883;
+    string user;
+    string password;
+    string topic;
+    size_t colon;
+
+    MeshClient::gotModuleConfigMQTT(c);
+
     if (c.proxy_to_client_enabled && (_meshtasticMqtt == NULL)) {
-        // Turn on MQTT client proxy
+        // Public Meshtastic MQTT, used to feed meshmap.net
         _meshtasticMqtt = make_shared<MqttClient>();
         _meshtasticMqtt->start();
+    }
+
+    if (c.enabled && (c.address[0] != '\0') && (_myownMqtt == NULL)) {
+        host = c.address;
+        colon = host.rfind(':');
+        if ((colon != string::npos) && (host.find(':') == colon)) {
+            int parsed = atoi(host.substr(colon + 1).c_str());
+            if ((parsed > 0) && (parsed <= 65535)) {
+                port = (uint16_t) parsed;
+                host = host.substr(0, colon);
+            }
+        }
+        if (c.username[0] != '\0') {
+            user = c.username;
+        }
+        if (c.password[0] != '\0') {
+            password = c.password;
+        }
+        topic = (c.root[0] != '\0') ? string(c.root) : string("msh");
+        _myownMqtt = make_shared<MqttClient>(host, port, user, password,
+                                             topic);
+        _myownMqtt->start();
     }
 }
 
@@ -173,7 +204,8 @@ void MeshMon::gotMqttClientProxyMessage(const meshtastic_MqttClientProxyMessage 
     size_t size = m.payload_variant.data.size;
     pb_istream_t stream;
 
-    while (isprint(bytes[size - 1])) {
+    memset(&packet, 0, sizeof(packet));
+    while ((size > 0) && isprint((unsigned char) bytes[size - 1])) {
         size--;
     }
 
