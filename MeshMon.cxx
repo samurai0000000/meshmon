@@ -21,7 +21,7 @@
 MeshMon::MeshMon()
     : MeshClient()
 {
-
+    _announcedUp = false;
 }
 
 MeshMon::~MeshMon()
@@ -60,6 +60,53 @@ void MeshMon::setNvm(shared_ptr<BaseNvm> nvm)
     }
 
     HomeChat::setNvm(nvm);
+}
+
+void MeshMon::gotConfigCompleteId(uint32_t id)
+{
+    MeshClient::gotConfigCompleteId(id);
+
+    if (setupFor(whoami()) == true) {
+        if (loadNvm() == false) {
+            saveNvm();
+        }
+        syncFromNvm();
+    }
+}
+
+void MeshMon::gotRebooted(bool rebooted)
+{
+    MeshClient::gotRebooted(rebooted);
+    _announcedUp = false;
+}
+
+void MeshMon::loop(void)
+{
+    if (isConnected() && !_announcedUp) {
+        if (nvmAuthchans().empty()) {
+            _announcedUp = true;
+        } else {
+            const struct nvm_authchan_entry &ac = nvmAuthchans()[0];
+            string chanName(ac.name, strnlen(ac.name, sizeof(ac.name)));
+            uint8_t channel = getChannel(chanName);
+            string announcement;
+
+            if (channel == 0xffU) {
+                _announcedUp = true;
+            } else {
+                announcement = SimpleClient::lookupLongName(whoami(), true);
+                if (announcement.empty()) {
+                    announcement = whoamiString();
+                }
+                announcement += " is up";
+                if (textMessage(0xffffffffU, channel, announcement)) {
+                    _announcedUp = true;
+                } else {
+                    cerr << "boot announce failed!" << endl;
+                }
+            }
+        }
+    }
 }
 
 void MeshMon::join(void)

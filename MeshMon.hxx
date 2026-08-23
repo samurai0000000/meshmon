@@ -33,6 +33,9 @@ protected:
 
     // Extend MeshClient
 
+    virtual void gotConfigCompleteId(uint32_t id);
+    virtual void gotRebooted(bool rebooted);
+    virtual void loop(void);
     virtual void gotModuleConfigMQTT(const meshtastic_ModuleConfig_MQTTConfig &c);
     virtual void gotMqttClientProxyMessage(const meshtastic_MqttClientProxyMessage &m);
     virtual void gotTextMessage(const meshtastic_MeshPacket &packet,
@@ -95,6 +98,7 @@ private:
 
     shared_ptr<MqttClient> _meshtasticMqtt;
     shared_ptr<MqttClient> _myownMqtt;
+    bool _announcedUp;
 
 };
 
