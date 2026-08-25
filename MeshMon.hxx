@@ -10,6 +10,7 @@
 #include <LibMeshtastic.hxx>
 #include <HomeChat.hxx>
 #include <MeshNvm.hxx>
+#include <ChatBot.hxx>
 #include <map>
 
 using namespace std;
@@ -82,6 +83,8 @@ protected:
     // Extend HomeChat
 
     virtual string handleEnv(uint32_t node_num, string &message);
+    virtual string handleUnknown(uint32_t node_num, uint32_t dest,
+                                 uint8_t channel, string &message);
     virtual int vprintf(const char *format, va_list ap) const;
 
 
@@ -99,10 +102,13 @@ public:
                     const string &user, const string &password,
                     const string &topic, bool tls);
 
+    void setChatBot(shared_ptr<ChatBot> bot);
+
 private:
 
     shared_ptr<MqttClient> _meshtasticMqtt;
     shared_ptr<MqttClient> _myownMqtt;
+    shared_ptr<ChatBot> _chatbot;
     bool _announcedUp;
     map<uint32_t, string> _haEnvNames;
     map<uint32_t, unsigned int> _haEnvMetrics;

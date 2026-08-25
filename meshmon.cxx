@@ -13,6 +13,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <mosquitto.h>
+#include <curl/curl.h>
 #include <libconfig.h++>
 #include <iostream>
 #include <memory>
@@ -20,8 +21,10 @@
 #include <vector>
 #include <algorithm>
 #include <thread>
+#include <cctype>
 #include <MeshMonShell.hxx>
 #include "MeshMon.hxx"
+#include "GeminiChat.hxx"
 #include "version.h"
 
 using namespace libconfig;
@@ -118,6 +121,7 @@ static void releaseMeshMons(void)
 void cleanup(void)
 {
     mosquitto_lib_cleanup();
+    curl_global_cleanup();
 }
 
 static void loadLibConfig(Config &cfg, string &path)
@@ -226,6 +230,67 @@ static bool readOwnMqttConfig(Config &cfg, const string &cfgfile,
     return true;
 }
 
+static void geminiCfgFail(const string &path, const string &msg)
+{
+    cerr << (path.empty() ? string("~/.meshmon") : path) << ": " << msg << endl;
+    exit(EXIT_FAILURE);
+}
+
+static bool validGeminiModel(const string &model)
+{
+    size_t i;
+
+    if (model.empty()) {
+        return false;
+    }
+
+    for (i = 0; i < model.size(); i++) {
+        unsigned char c = static_cast<unsigned char>(model[i]);
+
+        if (!isalnum(c) && (c != '-') && (c != '_') && (c != '.')) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static bool readGeminiConfig(Config &cfg, const string &cfgfile,
+                             string &apiKey, string &model)
+{
+    Setting &root = cfg.getRoot();
+
+    if (!root.exists("gemini")) {
+        return false;
+    }
+
+    try {
+        Setting &gemini = root["gemini"];
+
+        if (!gemini.exists("api_key") ||
+            !gemini.lookupValue("api_key", apiKey)) {
+            geminiCfgFail(cfgfile, "gemini.api_key missing or not a string");
+        }
+        if (apiKey.empty()) {
+            geminiCfgFail(cfgfile, "gemini.api_key is empty");
+        }
+
+        model = "gemini-flash-latest";
+        if (gemini.exists("model")) {
+            if (!gemini.lookupValue("model", model)) {
+                geminiCfgFail(cfgfile, "gemini.model is not a string");
+            }
+            if (!validGeminiModel(model)) {
+                geminiCfgFail(cfgfile, "gemini.model is empty or invalid");
+            }
+        }
+    } catch (const SettingTypeException &) {
+        geminiCfgFail(cfgfile, "gemini is not a group");
+    }
+
+    return true;
+}
+
 static const struct option long_options[] = {
     { "device", required_argument, NULL, 'd', },
     { "stdio", no_argument, NULL, 's', },
@@ -323,6 +388,12 @@ int main(int argc, char **argv)
                                     mqttUser, mqttPassword, mqttTopic,
                                     mqttTls);
 
+    bool haveGemini = false;
+    string geminiApiKey;
+    string geminiModel;
+
+    haveGemini = readGeminiConfig(cfg, cfgfile, geminiApiKey, geminiModel);
+
     for (;;) {
         int option_index = 0;
         int c = getopt_long(argc, argv, "d:sp:bvl",
@@ -367,6 +438,12 @@ int main(int argc, char **argv)
     ret = mosquitto_lib_init();
     if (ret != MOSQ_ERR_SUCCESS) {
         fprintf(stderr, "mosquitto_lib_init failed (%d)!\n", ret);
+        exit(EXIT_FAILURE);
+    }
+
+    ret = curl_global_init(CURL_GLOBAL_DEFAULT);
+    if (ret != CURLE_OK) {
+        fprintf(stderr, "curl_global_init failed (%d)!\n", ret);
         exit(EXIT_FAILURE);
     }
 
@@ -456,6 +533,10 @@ int main(int argc, char **argv)
         if (haveOwnMqtt) {
             mon->setOwnMqtt(mqttServer, mqttPort, mqttUser, mqttPassword,
                             mqttTopic, mqttTls);
+        }
+        if (haveGemini) {
+            mon->setChatBot(make_shared<GeminiChat>(geminiApiKey,
+                                                    geminiModel));
         }
         mons.push_back(mon);
 

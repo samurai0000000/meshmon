@@ -19,6 +19,10 @@
 #include <MqttClient.hxx>
 #include <MeshMon.hxx>
 
+#ifndef DEBUG_CHATBOT
+#define DEBUG_CHATBOT 0
+#endif
+
 MeshMon::MeshMon()
     : MeshClient()
 {
@@ -27,6 +31,12 @@ MeshMon::MeshMon()
 
 MeshMon::~MeshMon()
 {
+    if (_chatbot != NULL) {
+        _chatbot->stop();
+        _chatbot->join();
+        _chatbot = NULL;
+    }
+
     if (_meshtasticMqtt != NULL) {
         _meshtasticMqtt->stop();
         _meshtasticMqtt->join();
@@ -108,11 +118,36 @@ void MeshMon::loop(void)
             }
         }
     }
+
+    if (_chatbot != NULL) {
+        ChatReply reply;
+
+        while (_chatbot->pollReply(reply)) {
+            if (textMessage(reply.dest, reply.channel, reply.text) == false) {
+                cerr << "chatbot textMessage failed!" << endl;
+#if DEBUG_CHATBOT
+                cout << "chatbot: textMessage failed dest=" << reply.dest
+                     << " channel=" << (unsigned int) reply.channel
+                     << " bytes=" << reply.text.size() << endl;
+#endif
+            } else {
+                cout << "chatbot_reply to "
+                     << getDisplayName(reply.from) << ": "
+                     << reply.text << endl;
+            }
+        }
+    }
 }
 
 void MeshMon::join(void)
 {
     MeshClient::join();
+
+    if (_chatbot != NULL) {
+        _chatbot->stop();
+        _chatbot->join();
+        _chatbot = NULL;
+    }
 
     if (_meshtasticMqtt != NULL) {
         _meshtasticMqtt->stop();
@@ -206,6 +241,30 @@ void MeshMon::setOwnMqtt(const string &server, uint16_t port,
     _myownMqtt = make_shared<MqttClient>(server, port, user, password,
                                          topic, tls);
     _myownMqtt->start();
+}
+
+void MeshMon::setChatBot(shared_ptr<ChatBot> bot)
+{
+    if (_chatbot != NULL) {
+        _chatbot->stop();
+        _chatbot->join();
+        _chatbot = NULL;
+    }
+
+    _chatbot = bot;
+    if (_chatbot != NULL) {
+        _chatbot->setClient(shared_ptr<MeshClient>(
+                                shared_ptr<MeshClient>(), this));
+        _chatbot->start();
+#if DEBUG_CHATBOT
+        cout << "chatbot: started enabled="
+             << (_chatbot->enabled() ? 1 : 0) << endl;
+#endif
+    } else {
+#if DEBUG_CHATBOT
+        cout << "chatbot: setChatBot null" << endl;
+#endif
+    }
 }
 
 void MeshMon::gotModuleConfigMQTT(const meshtastic_ModuleConfig_MQTTConfig &c)
@@ -755,6 +814,30 @@ string MeshMon::handleEnv(uint32_t node_num, string &message)
     ss <<  setprecision(3) << getCpuTempC();
 
     return ss.str();
+}
+
+string MeshMon::handleUnknown(uint32_t node_num, uint32_t dest,
+                              uint8_t channel, string &message)
+{
+    if ((_chatbot != NULL) && _chatbot->enabled()) {
+#if DEBUG_CHATBOT
+        cout << "chatbot: ask from=" << node_num
+             << " dest=" << dest
+             << " channel=" << (unsigned int) channel
+             << " msg='" << message << "'" << endl;
+#endif
+        _chatbot->ask(node_num, dest, channel, message);
+    } else {
+#if DEBUG_CHATBOT
+        cout << "chatbot: skip handleUnknown null="
+             << ((_chatbot == NULL) ? 1 : 0)
+             << " enabled="
+             << ((_chatbot != NULL) && _chatbot->enabled() ? 1 : 0)
+             << endl;
+#endif
+    }
+
+    return string();
 }
 
 static inline int stdio_vprintf(const char *format, va_list ap)

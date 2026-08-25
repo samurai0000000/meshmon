@@ -21,6 +21,30 @@ if (NOT CONFIG++_INCLUDE_DIR OR NOT CONFIG++_LIBRARY)
   message(FATAL_ERROR "libconfig++ not found")
 endif ()
 
+find_package(CURL QUIET)
+if (NOT CURL_FOUND)
+  find_path(CURL_INCLUDE_DIR NAMES curl/curl.h
+    PATHS
+      /usr/include
+      /usr/include/${CMAKE_LIBRARY_ARCHITECTURE}
+      /usr/local/include
+      /usr/local/include/${CMAKE_LIBRARY_ARCHITECTURE})
+  find_library(CURL_LIBRARY NAMES curl libcurl)
+endif ()
+if (CURL_FOUND)
+  if (NOT CURL_INCLUDE_DIR AND CURL_INCLUDE_DIRS)
+    set(CURL_INCLUDE_DIR ${CURL_INCLUDE_DIRS})
+  endif ()
+  if (NOT CURL_LIBRARY AND CURL_LIBRARIES)
+    set(CURL_LIBRARY ${CURL_LIBRARIES})
+  endif ()
+endif ()
+if (NOT CURL_INCLUDE_DIR OR NOT CURL_LIBRARY)
+  if (NOT TARGET CURL::libcurl)
+    message(FATAL_ERROR "libcurl not found")
+  endif ()
+endif ()
+
 add_subdirectory(libmeshtastic)
 
 set(CMAKE_CXX_STANDARD 11)
@@ -62,12 +86,19 @@ configure_file(
   @ONLY
   )
 
-add_executable(meshmon meshmon.cxx MeshMon.cxx MeshMonShell.cxx MqttClient.cxx)
+add_executable(meshmon meshmon.cxx MeshMon.cxx MeshMonShell.cxx MqttClient.cxx
+  ChatBot.cxx GeminiChat.cxx)
 target_include_directories(meshmon PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
 target_include_directories(meshmon PRIVATE
   ${MOSQUITTO_INCLUDE_DIR}
-  ${CONFIG++_INCLUDE_DIR})
+  ${CONFIG++_INCLUDE_DIR}
+  ${CURL_INCLUDE_DIR})
 target_link_libraries(meshmon PRIVATE
   libmeshtastic
   ${MOSQUITTO_LIBRARY}
   ${CONFIG++_LIBRARY})
+if (TARGET CURL::libcurl)
+  target_link_libraries(meshmon PRIVATE CURL::libcurl)
+else ()
+  target_link_libraries(meshmon PRIVATE ${CURL_LIBRARY})
+endif ()
