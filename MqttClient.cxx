@@ -119,6 +119,9 @@ void MqttClient::reset(void)
     while (_packetQueue.empty() == false) {
         _packetQueue.pop();
     }
+    while (_textQueue.empty() == false) {
+        _textQueue.pop();
+    }
     _mutex.unlock();
 }
 
@@ -128,7 +131,8 @@ bool MqttClient::enqueueLimited(void)
         return false;
     }
 
-    if ((_proxyQueue.size() + _packetQueue.size()) >= MQTT_QUEUE_MAX) {
+    if ((_proxyQueue.size() + _packetQueue.size() +
+         _textQueue.size()) >= MQTT_QUEUE_MAX) {
         return false;
     }
 
@@ -162,6 +166,31 @@ bool MqttClient::publish(const meshtastic_MeshPacket &p)
         return false;
     }
     _packetQueue.push(p);
+    _mutex.unlock();
+    _cv.notify_one();
+
+    return true;
+}
+
+bool MqttClient::publish(const string &topic, const string &payload,
+                         bool retain)
+{
+    TextPublish t;
+
+    if (topic.empty()) {
+        return false;
+    }
+
+    t.topic = topic;
+    t.payload = payload;
+    t.retain = retain;
+
+    _mutex.lock();
+    if (!enqueueLimited()) {
+        _mutex.unlock();
+        return false;
+    }
+    _textQueue.push(t);
     _mutex.unlock();
     _cv.notify_one();
 
@@ -288,13 +317,16 @@ void MqttClient::run(void)
     while (_isRunning.load()) {
         meshtastic_MqttClientProxyMessage m;
         meshtastic_MeshPacket p;
+        TextPublish t;
         bool haveProxy = false;
         bool havePacket = false;
+        bool haveText = false;
 
         {
             unique_lock<mutex> lock(_mutex);
             while (_isRunning.load() &&
-                   _proxyQueue.empty() && _packetQueue.empty()) {
+                   _proxyQueue.empty() && _packetQueue.empty() &&
+                   _textQueue.empty()) {
                 _cv.wait_for(lock, std::chrono::seconds(1));
             }
             if (!_proxyQueue.empty()) {
@@ -306,6 +338,11 @@ void MqttClient::run(void)
                 p = _packetQueue.front();
                 _packetQueue.pop();
                 havePacket = true;
+            }
+            if (!_textQueue.empty()) {
+                t = _textQueue.front();
+                _textQueue.pop();
+                haveText = true;
             }
         }
 
@@ -347,6 +384,23 @@ void MqttClient::run(void)
                 } else {
                     _published.fetch_add(1);
                 }
+            }
+        }
+
+        if (haveText) {
+            qos = (int) _grantedQos.load();
+            ret = mosquitto_publish(_mosq,
+                                    NULL,
+                                    t.topic.c_str(),
+                                    (int) t.payload.size(),
+                                    t.payload.c_str(),
+                                    qos,
+                                    t.retain);
+            if (ret != MOSQ_ERR_SUCCESS) {
+                fprintf(stderr, "mosquitto_publish failed: %s\n",
+                        mosquitto_strerror(ret));
+            } else {
+                _published.fetch_add(1);
             }
         }
     }

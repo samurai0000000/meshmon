@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <sys/ioctl.h>
 #include <cstring>
+#include <cstdio>
 #include <cctype>
 #include <sstream>
 #include <iostream>
@@ -420,6 +421,71 @@ void MeshMon::gotDeviceMetrics(const meshtastic_MeshPacket &packet,
 
 }
 
+static string jsonEscape(const string &s)
+{
+    string o;
+
+    for (size_t i = 0; i < s.size(); i++) {
+        unsigned char c = (unsigned char) s[i];
+
+        if ((c == '"') || (c == '\\')) {
+            o += '\\';
+            o += (char) c;
+        } else if (c == '\n') {
+            o += "\\n";
+        } else if (c == '\r') {
+            o += "\\r";
+        } else if (c < 0x20) {
+            char u[8];
+            snprintf(u, sizeof(u), "\\u%04x", (unsigned int) c);
+            o += u;
+        } else {
+            o += (char) c;
+        }
+    }
+
+    return o;
+}
+
+static string nodeHexId(uint32_t id)
+{
+    char buf[9];
+
+    snprintf(buf, sizeof(buf), "%.8x", id);
+    return string(buf);
+}
+
+#define HA_ENV_TEMP  1u
+#define HA_ENV_HUM   2u
+#define HA_ENV_PRES  4u
+
+static string haDiscoveryJson(const string &name,
+                              const string &uniqueId,
+                              const string &stateTopic,
+                              const string &deviceClass,
+                              const string &unit,
+                              const string &identifier,
+                              const string &deviceName)
+{
+    ostringstream os;
+
+    os << "{"
+       << "\"name\":\"" << jsonEscape(name) << "\","
+       << "\"unique_id\":\"" << jsonEscape(uniqueId) << "\","
+       << "\"state_topic\":\"" << jsonEscape(stateTopic) << "\","
+       << "\"device_class\":\"" << jsonEscape(deviceClass) << "\","
+       << "\"unit_of_measurement\":\"" << jsonEscape(unit) << "\","
+       << "\"state_class\":\"measurement\","
+       << "\"device\":{"
+       << "\"identifiers\":[\"" << jsonEscape(identifier) << "\"],"
+       << "\"name\":\"" << jsonEscape(deviceName) << "\","
+       << "\"manufacturer\":\"Meshtastic\""
+       << "}"
+       << "}";
+
+    return os.str();
+}
+
 void MeshMon::gotEnvironmentMetrics(const meshtastic_MeshPacket &packet,
                                     const meshtastic_EnvironmentMetrics &metrics)
 {
@@ -437,6 +503,98 @@ void MeshMon::gotEnvironmentMetrics(const meshtastic_MeshPacket &packet,
     }
 #endif
 
+    if (_myownMqtt == NULL) {
+        return;
+    }
+
+    const string id = nodeHexId(packet.from);
+    string shortName = SimpleClient::lookupShortName(packet.from, true);
+    string longName = SimpleClient::lookupLongName(packet.from, true);
+    string identifier = shortName.empty() ? id : shortName;
+    string deviceName = longName.empty() ? (string("!") + id) : longName;
+    string namesKey = identifier + "\n" + deviceName;
+    unsigned int present = 0;
+    unsigned int already = 0;
+    unsigned int discover = 0;
+    map<uint32_t, string>::iterator nameIt;
+    map<uint32_t, unsigned int>::iterator metIt;
+    bool namesChanged;
+
+    if (metrics.has_temperature) {
+        present |= HA_ENV_TEMP;
+    }
+    if (metrics.has_relative_humidity) {
+        present |= HA_ENV_HUM;
+    }
+    if (metrics.has_barometric_pressure) {
+        present |= HA_ENV_PRES;
+    }
+    if (present == 0) {
+        return;
+    }
+
+    nameIt = _haEnvNames.find(packet.from);
+    metIt = _haEnvMetrics.find(packet.from);
+    already = (metIt == _haEnvMetrics.end()) ? 0 : metIt->second;
+    namesChanged = (nameIt == _haEnvNames.end()) ||
+                   (nameIt->second != namesKey);
+    discover = namesChanged ? present : (present & ~already);
+
+    if (discover & HA_ENV_TEMP) {
+        _myownMqtt->publish(
+            string("homeassistant/sensor/meshmon_") + id +
+            "_temperature/config",
+            haDiscoveryJson("Temperature",
+                            string("meshmon_") + id + "_temperature",
+                            string("meshmon/") + id + "/temperature",
+                            "temperature", "\u00b0C",
+                            identifier, deviceName),
+            true);
+    }
+    if (discover & HA_ENV_HUM) {
+        _myownMqtt->publish(
+            string("homeassistant/sensor/meshmon_") + id +
+            "_humidity/config",
+            haDiscoveryJson("Humidity",
+                            string("meshmon_") + id + "_humidity",
+                            string("meshmon/") + id + "/humidity",
+                            "humidity", "%",
+                            identifier, deviceName),
+            true);
+    }
+    if (discover & HA_ENV_PRES) {
+        _myownMqtt->publish(
+            string("homeassistant/sensor/meshmon_") + id +
+            "_pressure/config",
+            haDiscoveryJson("Pressure",
+                            string("meshmon_") + id + "_pressure",
+                            string("meshmon/") + id + "/pressure",
+                            "pressure", "hPa",
+                            identifier, deviceName),
+            true);
+    }
+
+    if (metrics.has_temperature) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%.1f", metrics.temperature);
+        _myownMqtt->publish(string("meshmon/") + id + "/temperature",
+                            string(buf), true);
+    }
+    if (metrics.has_relative_humidity) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%.1f", metrics.relative_humidity);
+        _myownMqtt->publish(string("meshmon/") + id + "/humidity",
+                            string(buf), true);
+    }
+    if (metrics.has_barometric_pressure) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%.2f", metrics.barometric_pressure);
+        _myownMqtt->publish(string("meshmon/") + id + "/pressure",
+                            string(buf), true);
+    }
+
+    _haEnvNames[packet.from] = namesKey;
+    _haEnvMetrics[packet.from] = already | present;
 }
 
 void MeshMon::gotAirQualityMetrics(const meshtastic_MeshPacket &packet,

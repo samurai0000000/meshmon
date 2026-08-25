@@ -10,6 +10,7 @@
 #include <LibMeshtastic.hxx>
 #include <HomeChat.hxx>
 #include <MeshNvm.hxx>
+#include <map>
 
 using namespace std;
 
@@ -103,6 +104,8 @@ private:
     shared_ptr<MqttClient> _meshtasticMqtt;
     shared_ptr<MqttClient> _myownMqtt;
     bool _announcedUp;
+    map<uint32_t, string> _haEnvNames;
+    map<uint32_t, unsigned int> _haEnvMetrics;
 
 };
 

@@ -37,8 +37,15 @@ public:
     void reset(void);
     bool publish(const meshtastic_MqttClientProxyMessage &m);
     bool publish(const meshtastic_MeshPacket &p);
+    bool publish(const string &topic, const string &payload, bool retain);
 
 private:
+
+    struct TextPublish {
+        string topic;
+        string payload;
+        bool retain;
+    };
 
     static void onConnect(struct mosquitto *mosq, void *obj, int rc);
     static void onDisconnect(struct mosquitto *mosq, void *obj, int rc);
@@ -72,6 +79,7 @@ private:
     atomic<unsigned int> _grantedQos;
     queue<meshtastic_MqttClientProxyMessage> _proxyQueue;
     queue<meshtastic_MeshPacket> _packetQueue;
+    queue<TextPublish> _textQueue;
     atomic<unsigned int> _published;
     atomic<unsigned int> _publishConfirmed;
 
