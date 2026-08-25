@@ -218,6 +218,65 @@ void MeshMon::gotModuleConfigMQTT(const meshtastic_ModuleConfig_MQTTConfig &c)
     }
 }
 
+static bool decodeEnvelopePacket(const meshtastic_MqttClientProxyMessage &m,
+                                 meshtastic_MeshPacket &packet)
+{
+    pb_istream_t stream;
+    bool found = false;
+
+    if (m.which_payload_variant != meshtastic_MqttClientProxyMessage_data_tag) {
+        return false;
+    }
+
+    memset(&packet, 0, sizeof(packet));
+    stream = pb_istream_from_buffer(m.payload_variant.data.bytes,
+                                    m.payload_variant.data.size);
+
+    while (stream.bytes_left > 0) {
+        pb_wire_type_t wire_type;
+        uint32_t tag = 0;
+        bool eof = false;
+
+        if (!pb_decode_tag(&stream, &wire_type, &tag, &eof)) {
+            if (eof) {
+                break;
+            }
+            cerr << "pb_decode ServiceEnvelope tag failed: "
+                 << PB_GET_ERROR(&stream) << endl;
+            return false;
+        }
+        if (eof) {
+            break;
+        }
+
+        if ((tag == meshtastic_ServiceEnvelope_packet_tag) &&
+            (wire_type == PB_WT_STRING)) {
+            pb_istream_t substream;
+
+            if (!pb_make_string_substream(&stream, &substream)) {
+                cerr << "pb_decode ServiceEnvelope.packet failed: "
+                     << PB_GET_ERROR(&stream) << endl;
+                return false;
+            }
+            found = pb_decode(&substream, meshtastic_MeshPacket_fields,
+                              &packet);
+            if (!found) {
+                cerr << "pb_decode MeshPacket failed: "
+                     << PB_GET_ERROR(&substream) << endl;
+            }
+            if (!pb_close_string_substream(&stream, &substream) || !found) {
+                return false;
+            }
+        } else if (!pb_skip_field(&stream, wire_type)) {
+            cerr << "pb_decode ServiceEnvelope skip failed: "
+                 << PB_GET_ERROR(&stream) << endl;
+            return false;
+        }
+    }
+
+    return found;
+}
+
 void MeshMon::gotMqttClientProxyMessage(const meshtastic_MqttClientProxyMessage &m)
 {
     MeshClient::gotMqttClientProxyMessage(m);
@@ -227,47 +286,8 @@ void MeshMon::gotMqttClientProxyMessage(const meshtastic_MqttClientProxyMessage 
     }
 
     meshtastic_MeshPacket packet;
-    bool found = false;
 
-#if 0
-    // Can't get this to work!
-    char channel_id[32];
-    char gateway_id[32];
-    meshtastic_ServiceEnvelope q = {
-        .packet = &packet,
-        .channel_id = channel_id,
-        .gateway_id = gateway_id,
-    };
-    pb_istream_t stream;
-
-    stream = pb_istream_from_buffer(m.payload_variant.data.bytes,
-                                    m.payload_variant.data.size);
-    found = pb_decode(&stream, meshtastic_ServiceEnvelope_fields, &q);
-#else
-    // This is a hack... until we can directly decode ServiceEnvelope above
-    const uint8_t *bytes = m.payload_variant.data.bytes;
-    size_t size = m.payload_variant.data.size;
-    pb_istream_t stream;
-
-    memset(&packet, 0, sizeof(packet));
-    while ((size > 0) && isprint((unsigned char) bytes[size - 1])) {
-        size--;
-    }
-
-    for (size_t i = 7; i < 10 && !found; i++) {
-        for (size_t l = size; l > i; l--) {
-            stream = pb_istream_from_buffer(bytes + i, l);
-            found = pb_decode(&stream, meshtastic_MeshPacket_fields,
-                              &packet);
-            if (found) {
-                break;
-            }
-        }
-    }
-#endif
-
-    if (!found) {
-        cerr << "pb_decode failed!" << endl;
+    if (!decodeEnvelopePacket(m, packet)) {
         goto done;
     }
 
