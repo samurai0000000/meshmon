@@ -29,6 +29,8 @@ int MeshMonShell::system(int argc, char **argv)
     shared_ptr<MeshMon> meshmon = dynamic_pointer_cast<MeshMon>(_client);
     const shared_ptr<MqttClient> meshtasticMqtt =
         meshmon ? meshmon->meshtasticMqtt() : NULL;
+    const shared_ptr<MqttClient> myownMqtt =
+        meshmon ? meshmon->myownMqtt() : NULL;
 
     MeshShell::system(argc, argv);
     if (meshmon == NULL) {
@@ -37,9 +39,14 @@ int MeshMonShell::system(int argc, char **argv)
 
     this->printf("CPU temp: %.1fC\n", meshmon->getCpuTempC());
     if (meshtasticMqtt) {
-        this->printf("MQTT published: %u/%u\n",
+        this->printf("MQTT public published: %u/%u\n",
                      meshtasticMqtt->publishConfirmed(),
                      meshtasticMqtt->published());
+    }
+    if (myownMqtt) {
+        this->printf("MQTT own published: %u/%u\n",
+                     myownMqtt->publishConfirmed(),
+                     myownMqtt->published());
     }
 
     return 0;

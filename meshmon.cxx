@@ -170,6 +170,62 @@ static void loadLibConfig(Config &cfg, string &path)
     }
 }
 
+static void mqttCfgFail(const string &path, const string &msg)
+{
+    cerr << (path.empty() ? string("~/.meshmon") : path) << ": " << msg << endl;
+    exit(EXIT_FAILURE);
+}
+
+static bool readOwnMqttConfig(Config &cfg, const string &cfgfile,
+                              string &server, uint16_t &port,
+                              string &user, string &password,
+                              string &topic, bool &tls)
+{
+    Setting &root = cfg.getRoot();
+    int cfgPort = 0;
+
+    if (!root.exists("mqtt")) {
+        return false;
+    }
+
+    try {
+        Setting &mqtt = root["mqtt"];
+
+        if (!mqtt.exists("server") || !mqtt.lookupValue("server", server)) {
+            mqttCfgFail(cfgfile, "mqtt.server missing or not a string");
+        }
+        if (server.empty()) {
+            mqttCfgFail(cfgfile, "mqtt.server is empty");
+        }
+        if (!mqtt.exists("port") || !mqtt.lookupValue("port", cfgPort)) {
+            mqttCfgFail(cfgfile, "mqtt.port missing or not an integer");
+        }
+        if ((cfgPort < 1) || (cfgPort > 65535)) {
+            mqttCfgFail(cfgfile, "mqtt.port out of range");
+        }
+        if (!mqtt.exists("user") || !mqtt.lookupValue("user", user)) {
+            mqttCfgFail(cfgfile, "mqtt.user missing or not a string");
+        }
+        if (!mqtt.exists("password") || !mqtt.lookupValue("password", password)) {
+            mqttCfgFail(cfgfile, "mqtt.password missing or not a string");
+        }
+        if (!mqtt.exists("topic") || !mqtt.lookupValue("topic", topic)) {
+            mqttCfgFail(cfgfile, "mqtt.topic missing or not a string");
+        }
+        if (topic.empty()) {
+            mqttCfgFail(cfgfile, "mqtt.topic is empty");
+        }
+        if (!mqtt.exists("tls") || !mqtt.lookupValue("tls", tls)) {
+            mqttCfgFail(cfgfile, "mqtt.tls missing or not a boolean");
+        }
+    } catch (const SettingTypeException &) {
+        mqttCfgFail(cfgfile, "mqtt is not a group");
+    }
+
+    port = (uint16_t) cfgPort;
+    return true;
+}
+
 static const struct option long_options[] = {
     { "device", required_argument, NULL, 'd', },
     { "stdio", no_argument, NULL, 's', },
@@ -254,6 +310,18 @@ int main(int argc, char **argv)
     } catch (SettingNotFoundException &e) {
     } catch (SettingTypeException &e) {
     }
+
+    bool haveOwnMqtt = false;
+    string mqttServer;
+    string mqttUser;
+    string mqttPassword;
+    string mqttTopic;
+    uint16_t mqttPort = 0;
+    bool mqttTls = false;
+
+    haveOwnMqtt = readOwnMqttConfig(cfg, cfgfile, mqttServer, mqttPort,
+                                    mqttUser, mqttPassword, mqttTopic,
+                                    mqttTls);
 
     for (;;) {
         int option_index = 0;
@@ -385,6 +453,10 @@ int main(int argc, char **argv)
         mon->setNvm(mon);
         mon->setVerbose(verbose);
         mon->enableLogStderr(log);
+        if (haveOwnMqtt) {
+            mon->setOwnMqtt(mqttServer, mqttPort, mqttUser, mqttPassword,
+                            mqttTopic, mqttTls);
+        }
         mons.push_back(mon);
 
         if (useStdioShell && (stdioShell == NULL)) {

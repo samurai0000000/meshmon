@@ -194,15 +194,21 @@ done:
     return tempC;
 }
 
+void MeshMon::setOwnMqtt(const string &server, uint16_t port,
+                         const string &user, const string &password,
+                         const string &topic, bool tls)
+{
+    if (_myownMqtt != NULL) {
+        return;
+    }
+
+    _myownMqtt = make_shared<MqttClient>(server, port, user, password,
+                                         topic, tls);
+    _myownMqtt->start();
+}
+
 void MeshMon::gotModuleConfigMQTT(const meshtastic_ModuleConfig_MQTTConfig &c)
 {
-    string host;
-    uint16_t port = c.tls_enabled ? 8883 : 1883;
-    string user;
-    string password;
-    string topic;
-    size_t colon;
-
     MeshClient::gotModuleConfigMQTT(c);
 
     if (c.proxy_to_client_enabled && (_meshtasticMqtt == NULL)) {
@@ -210,39 +216,15 @@ void MeshMon::gotModuleConfigMQTT(const meshtastic_ModuleConfig_MQTTConfig &c)
         _meshtasticMqtt = make_shared<MqttClient>();
         _meshtasticMqtt->start();
     }
-
-    if (c.enabled && (c.address[0] != '\0') && (_myownMqtt == NULL)) {
-        host = c.address;
-        colon = host.rfind(':');
-        if ((colon != string::npos) && (host.find(':') == colon)) {
-            const string portstr = host.substr(colon + 1);
-            char *end = NULL;
-            unsigned long parsed;
-
-            errno = 0;
-            parsed = strtoul(portstr.c_str(), &end, 10);
-            if ((errno == 0) && (end != portstr.c_str()) &&
-                (*end == '\0') && (parsed > 0) && (parsed <= 65535)) {
-                port = (uint16_t) parsed;
-                host = host.substr(0, colon);
-            }
-        }
-        if (c.username[0] != '\0') {
-            user = c.username;
-        }
-        if (c.password[0] != '\0') {
-            password = c.password;
-        }
-        topic = (c.root[0] != '\0') ? string(c.root) : string("msh");
-        _myownMqtt = make_shared<MqttClient>(host, port, user, password,
-                                             topic, c.tls_enabled);
-        _myownMqtt->start();
-    }
 }
 
 void MeshMon::gotMqttClientProxyMessage(const meshtastic_MqttClientProxyMessage &m)
 {
     MeshClient::gotMqttClientProxyMessage(m);
+
+    if (_myownMqtt != NULL) {
+        _myownMqtt->publish(m);
+    }
 
     meshtastic_MeshPacket packet;
     bool found = false;
@@ -350,9 +332,6 @@ void MeshMon::gotPosition(const meshtastic_MeshPacket &packet,
     }
 #endif
 
-    if (_myownMqtt != NULL) {
-        _myownMqtt->publish(packet);
-    }
 }
 
 void MeshMon::gotUser(const meshtastic_MeshPacket &packet,
@@ -419,9 +398,6 @@ void MeshMon::gotDeviceMetrics(const meshtastic_MeshPacket &packet,
     }
 #endif
 
-    if (_myownMqtt != NULL) {
-        _myownMqtt->publish(packet);
-    }
 }
 
 void MeshMon::gotEnvironmentMetrics(const meshtastic_MeshPacket &packet,
@@ -441,9 +417,6 @@ void MeshMon::gotEnvironmentMetrics(const meshtastic_MeshPacket &packet,
     }
 #endif
 
-    if (_myownMqtt != NULL) {
-        _myownMqtt->publish(packet);
-    }
 }
 
 void MeshMon::gotAirQualityMetrics(const meshtastic_MeshPacket &packet,
@@ -463,9 +436,6 @@ void MeshMon::gotAirQualityMetrics(const meshtastic_MeshPacket &packet,
     }
 #endif
 
-    if (_myownMqtt != NULL) {
-        _myownMqtt->publish(packet);
-    }
 }
 
 void MeshMon::gotPowerMetrics(const meshtastic_MeshPacket &packet,
@@ -485,9 +455,6 @@ void MeshMon::gotPowerMetrics(const meshtastic_MeshPacket &packet,
     }
 #endif
 
-    if (_myownMqtt != NULL) {
-        _myownMqtt->publish(packet);
-    }
 }
 
 void MeshMon::gotLocalStats(const meshtastic_MeshPacket &packet,
@@ -525,9 +492,6 @@ void MeshMon::gotHealthMetrics(const meshtastic_MeshPacket &packet,
     }
 #endif
 
-    if (_myownMqtt != NULL) {
-        _myownMqtt->publish(packet);
-    }
 }
 
 void MeshMon::gotHostMetrics(const meshtastic_MeshPacket &packet,
@@ -547,9 +511,6 @@ void MeshMon::gotHostMetrics(const meshtastic_MeshPacket &packet,
     }
 #endif
 
-    if (_myownMqtt != NULL) {
-        _myownMqtt->publish(packet);
-    }
 }
 
 void MeshMon::gotTraceRoute(const meshtastic_MeshPacket &packet,
@@ -583,9 +544,6 @@ void MeshMon::gotTraceRoute(const meshtastic_MeshPacket &packet,
     }
 #endif
 
-    if (_myownMqtt != NULL) {
-        _myownMqtt->publish(packet);
-    }
 }
 
 bool MeshMon::loadNvm(void)

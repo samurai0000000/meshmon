@@ -94,6 +94,10 @@ public:
         return _myownMqtt;
     }
 
+    void setOwnMqtt(const string &server, uint16_t port,
+                    const string &user, const string &password,
+                    const string &topic, bool tls);
+
 private:
 
     shared_ptr<MqttClient> _meshtasticMqtt;
