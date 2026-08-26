@@ -24,6 +24,7 @@ protected:
     virtual shared_ptr<MeshShell> newInstance(void);
     virtual int help(int argc, char **argv);
     virtual int system(int argc, char **argv);
+    virtual int status(int argc, char **argv);
     virtual int unknown_command(int argc, char **argv);
     virtual int calib(int argc, char **argv);
 
@@ -34,6 +35,13 @@ private:
     void printNode(const string &nodeKey, const NodeCalibration &nodeCal);
     bool resolveNodeKey(const string &nodeArg, string &outKey,
                         string &outName);
+
+    uint32_t resolveNode(const string &nodeArg) const;
+    void printStatusHelp(void);
+    void printNodeStatus(uint32_t nodeId);
+    static string formatRelativeTime(time_t timestamp);
+    static const char *hardwareModelString(meshtastic_HardwareModel model);
+    static const char *roleString(meshtastic_Config_DeviceConfig_Role role);
 
 };
 
