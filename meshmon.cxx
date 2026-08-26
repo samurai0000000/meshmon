@@ -12,6 +12,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/file.h>
+#include <sys/types.h>
+#include <pwd.h>
 #include <mosquitto.h>
 #include <curl/curl.h>
 #include <libconfig.h++>
@@ -118,8 +121,112 @@ static void releaseMeshMons(void)
     mons.clear();
 }
 
+static int g_lockFd = -1;
+static string g_lockPath;
+
+static string getLockFilePath(void)
+{
+    const char *homedir = getenv("HOME");
+    if ((homedir != NULL) && (homedir[0] != '\0')) {
+        return string(homedir) + "/.meshmon.lock";
+    }
+
+    struct passwd *pw = getpwuid(getuid());
+    if ((pw != NULL) && (pw->pw_dir != NULL) && (pw->pw_dir[0] != '\0')) {
+        return string(pw->pw_dir) + "/.meshmon.lock";
+    }
+
+    return "/tmp/.meshmon.lock";
+}
+
+static bool acquirePidLock(void)
+{
+    g_lockPath = getLockFilePath();
+
+    g_lockFd = open(g_lockPath.c_str(), O_RDWR | O_CREAT, 0644);
+    if (g_lockFd == -1) {
+        cerr << g_lockPath << ": " << strerror(errno) << endl;
+        return false;
+    }
+
+    fcntl(g_lockFd, F_SETFD, FD_CLOEXEC);
+
+    if (flock(g_lockFd, LOCK_EX | LOCK_NB) == -1) {
+        if ((errno == EWOULDBLOCK) || (errno == EAGAIN)) {
+            char buf[64];
+            memset(buf, 0, sizeof(buf));
+            ssize_t n = read(g_lockFd, buf, sizeof(buf) - 1);
+            if (n > 0) {
+                while ((n > 0) &&
+                       ((buf[n - 1] == '\n') || (buf[n - 1] == '\r') ||
+                        (buf[n - 1] == ' '))) {
+                    buf[--n] = '\0';
+                }
+                cerr << "Another instance of meshmon is already running (PID "
+                     << buf << ")" << endl;
+            } else {
+                cerr << "Another instance of meshmon is already running"
+                     << endl;
+            }
+        } else {
+            cerr << "Failed to lock " << g_lockPath << ": "
+                 << strerror(errno) << endl;
+        }
+        close(g_lockFd);
+        g_lockFd = -1;
+        return false;
+    }
+
+    if ((ftruncate(g_lockFd, 0) == -1) ||
+        (lseek(g_lockFd, 0, SEEK_SET) == -1)) {
+        cerr << "Failed to truncate " << g_lockPath << ": "
+             << strerror(errno) << endl;
+        close(g_lockFd);
+        g_lockFd = -1;
+        return false;
+    }
+
+    string pidStr = to_string((long) getpid()) + "\n";
+    if (write(g_lockFd, pidStr.c_str(), pidStr.size()) == -1) {
+        cerr << "Failed to write PID to " << g_lockPath << ": "
+             << strerror(errno) << endl;
+        close(g_lockFd);
+        g_lockFd = -1;
+        return false;
+    }
+    fsync(g_lockFd);
+
+    return true;
+}
+
+static void updatePidLock(void)
+{
+    if (g_lockFd != -1) {
+        if ((ftruncate(g_lockFd, 0) != -1) &&
+            (lseek(g_lockFd, 0, SEEK_SET) != -1)) {
+            string pidStr = to_string((long) getpid()) + "\n";
+            ssize_t n = write(g_lockFd, pidStr.c_str(), pidStr.size());
+            (void) n;
+            fsync(g_lockFd);
+        }
+    }
+}
+
+static void releasePidLock(void)
+{
+    if (g_lockFd != -1) {
+        if (!g_lockPath.empty()) {
+            unlink(g_lockPath.c_str());
+        }
+        flock(g_lockFd, LOCK_UN);
+        close(g_lockFd);
+        g_lockFd = -1;
+    }
+}
+
 void cleanup(void)
 {
+    releasePidLock();
     mosquitto_lib_cleanup();
     curl_global_cleanup();
 }
@@ -435,15 +542,21 @@ int main(int argc, char **argv)
         devices.push_back(string(DEFAULT_DEVICE));
     }
 
+    if (!acquirePidLock()) {
+        exit(EXIT_FAILURE);
+    }
+
     ret = mosquitto_lib_init();
     if (ret != MOSQ_ERR_SUCCESS) {
         fprintf(stderr, "mosquitto_lib_init failed (%d)!\n", ret);
+        releasePidLock();
         exit(EXIT_FAILURE);
     }
 
     ret = curl_global_init(CURL_GLOBAL_DEFAULT);
     if (ret != CURLE_OK) {
         fprintf(stderr, "curl_global_init failed (%d)!\n", ret);
+        releasePidLock();
         exit(EXIT_FAILURE);
     }
 
@@ -460,12 +573,16 @@ int main(int argc, char **argv)
         pid = fork();
         if (pid == -1) {
             cerr << "fork failed!" << endl;
+            releasePidLock();
             exit(EXIT_FAILURE);
         } else if (pid != 0) {
             exit(EXIT_SUCCESS);
         }
 
+        updatePidLock();
+
         if (setsid() == -1) {
+            releasePidLock();
             exit(EXIT_FAILURE);
         }
 
