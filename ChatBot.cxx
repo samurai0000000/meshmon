@@ -19,6 +19,51 @@
 #define CHAT_IDLE_SECONDS   3600
 #define CHAT_MAX_BYTES      200
 
+static string jsonEscape(const string &s)
+{
+    string out;
+    char buf[8];
+
+    out.reserve(s.size() + 8);
+    for (size_t i = 0; i < s.size(); i++) {
+        unsigned char c = static_cast<unsigned char>(s[i]);
+
+        switch (c) {
+        case '"':
+            out += "\\\"";
+            break;
+        case '\\':
+            out += "\\\\";
+            break;
+        case '\b':
+            out += "\\b";
+            break;
+        case '\f':
+            out += "\\f";
+            break;
+        case '\n':
+            out += "\\n";
+            break;
+        case '\r':
+            out += "\\r";
+            break;
+        case '\t':
+            out += "\\t";
+            break;
+        default:
+            if (c < 0x20) {
+                snprintf(buf, sizeof(buf), "\\u%04x", (unsigned int) c);
+                out += buf;
+            } else {
+                out += static_cast<char>(c);
+            }
+            break;
+        }
+    }
+
+    return out;
+}
+
 ChatBot::ChatBot(shared_ptr<MeshClient> client)
     : _client(client),
       _thread(NULL),
@@ -341,10 +386,10 @@ string ChatBot::toolGetMeshNodes(void) const
             ss << ",\"is_self\":true";
         }
         if (!sName.empty()) {
-            ss << ",\"short_name\":\"" << sName << "\"";
+            ss << ",\"short_name\":\"" << jsonEscape(sName) << "\"";
         }
         if (!lName.empty()) {
-            ss << ",\"long_name\":\"" << lName << "\"";
+            ss << ",\"long_name\":\"" << jsonEscape(lName) << "\"";
         }
         if (it->second.has_hops_away) {
             ss << ",\"hops\":" << (unsigned int) it->second.hops_away;
@@ -375,7 +420,7 @@ string ChatBot::toolGetNodeTelemetry(const string &nodeQuery) const
     if (!nodeQuery.empty()) {
         targetId = resolveNodeId(nodeQuery);
         if (targetId == 0xffffffffU) {
-            return "{\"error\": \"node not found for query: " + nodeQuery + "\"}";
+            return "{\"error\": \"node not found for query: " + jsonEscape(nodeQuery) + "\"}";
         }
     }
 
@@ -412,7 +457,7 @@ string ChatBot::toolGetNodeTelemetry(const string &nodeQuery) const
         ss << "{\"id\":\"" << idBuf << "\"";
         string sName = _client->lookupShortName(id);
         if (!sName.empty()) {
-            ss << ",\"name\":\"" << sName << "\"";
+            ss << ",\"name\":\"" << jsonEscape(sName) << "\"";
         }
 
         if (dIt != _client->deviceMetrics().end()) {
@@ -474,10 +519,10 @@ string ChatBot::toolGetNetworkStats(void) const
 
     ss << "\"lora_config\":{";
     const meshtastic_Config_LoRaConfig &lora = _client->loraConfig();
-    ss << "\"hop_limit\":" << lora.hop_limit << ",";
-    ss << "\"tx_power\":" << lora.tx_power << ",";
-    ss << "\"region\":" << lora.region << ",";
-    ss << "\"modem_preset\":" << lora.modem_preset;
+    ss << "\"hop_limit\":" << (unsigned int) lora.hop_limit << ",";
+    ss << "\"tx_power\":" << (int) lora.tx_power << ",";
+    ss << "\"region\":" << (int) lora.region << ",";
+    ss << "\"modem_preset\":" << (int) lora.modem_preset;
     ss << "},";
 
     ss << "\"channels\":[";
@@ -493,9 +538,9 @@ string ChatBot::toolGetNetworkStats(void) const
         first = false;
         ss << "{\"index\":" << (unsigned int) it->first;
         if (it->second.settings.name[0] != '\0') {
-            ss << ",\"name\":\"" << it->second.settings.name << "\"";
+            ss << ",\"name\":\"" << jsonEscape(it->second.settings.name) << "\"";
         }
-        ss << ",\"role\":" << it->second.role << "}";
+        ss << ",\"role\":" << (int) it->second.role << "}";
     }
     ss << "]}";
 
@@ -512,7 +557,7 @@ string ChatBot::toolGetNodePositions(const string &nodeQuery) const
     if (!nodeQuery.empty()) {
         targetId = resolveNodeId(nodeQuery);
         if (targetId == 0xffffffffU) {
-            return "{\"error\": \"node not found for query: " + nodeQuery + "\"}";
+            return "{\"error\": \"node not found for query: " + jsonEscape(nodeQuery) + "\"}";
         }
     }
 
@@ -543,7 +588,7 @@ string ChatBot::toolGetNodePositions(const string &nodeQuery) const
         ss << "{\"id\":\"" << idBuf << "\"";
         string sName = _client->lookupShortName(id);
         if (!sName.empty()) {
-            ss << ",\"name\":\"" << sName << "\"";
+            ss << ",\"name\":\"" << jsonEscape(sName) << "\"";
         }
         ss << ",\"latitude\":" << lat;
         ss << ",\"longitude\":" << lon;
