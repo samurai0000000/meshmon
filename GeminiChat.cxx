@@ -20,11 +20,6 @@
 #define GEMINI_CONNECT_TIMEOUT_S 10
 #define GEMINI_MAX_OUTPUT_TOKENS 512
 
-static const char *kSystemInstruction =
-    "You are a Meshtastic mesh chatbot. Reply in one short plain-text "
-    "sentence. Maximum 180 characters. No markdown, no lists, no emoji, "
-    "and no quotes around the whole reply.";
-
 GeminiChat::GeminiChat(const string &apiKey, const string &model)
     : ChatBot(),
       _apiKey(apiKey),
@@ -174,6 +169,36 @@ bool GeminiChat::parseJsonString(const string &s, size_t &i, string &out)
     return false;
 }
 
+string GeminiChat::getSystemInstruction(uint32_t from) const
+{
+    time_t now = time(NULL);
+    struct tm tm;
+    char timeBuf[64];
+    gmtime_r(&now, &tm);
+    strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S UTC", &tm);
+
+    stringstream ss;
+    ss << "You are a Meshtastic mesh chatbot. Current time is " << timeBuf << ".";
+
+    if (from != 0) {
+        shared_ptr<MeshClient> client = getClient();
+        if (client != NULL) {
+            string name = client->getDisplayName(from);
+            if (!name.empty()) {
+                ss << " You are talking to user \"" << name << "\"";
+            }
+        }
+        char nodeBuf[16];
+        snprintf(nodeBuf, sizeof(nodeBuf), " (!%08x)", from);
+        ss << nodeBuf << ".";
+    }
+
+    ss << " Reply in one short plain-text sentence. Maximum 180 characters. "
+       << "No markdown, no lists, no emoji, and no quotes around the whole reply.";
+
+    return ss.str();
+}
+
 string GeminiChat::extractCandidateText(const string &body)
 {
     size_t cand;
@@ -246,14 +271,18 @@ string GeminiChat::extractCandidateText(const string &body)
             continue;
         }
 
-        found = value;
-        break;
+        if (found.empty()) {
+            found = value;
+        } else {
+            found += " " + value;
+        }
     }
 
     return found;
 }
 
-string GeminiChat::buildRequest(const vector<ChatTurn> &history,
+string GeminiChat::buildRequest(uint32_t from,
+                                const vector<ChatTurn> &history,
                                 const string &message) const
 {
     stringstream ss;
@@ -262,7 +291,7 @@ string GeminiChat::buildRequest(const vector<ChatTurn> &history,
 
     ss << "{";
     ss << "\"systemInstruction\":{\"parts\":[{\"text\":\""
-       << jsonEscape(kSystemInstruction) << "\"}]},";
+       << jsonEscape(getSystemInstruction(from)) << "\"}]},";
     ss << "\"contents\":[";
 
     for (it = history.begin(); it != history.end(); it++) {
@@ -281,6 +310,7 @@ string GeminiChat::buildRequest(const vector<ChatTurn> &history,
        << jsonEscape(message) << "\"}]}";
 
     ss << "],";
+    ss << "\"tools\":[{\"google_search\":{}}],";
     ss << "\"generationConfig\":{"
        << "\"maxOutputTokens\":" << GEMINI_MAX_OUTPUT_TOKENS << ","
        << "\"thinkingConfig\":{"
@@ -383,8 +413,6 @@ string GeminiChat::generate(uint32_t from,
     string body;
     string response;
 
-    (void)(from);
-
     if (!enabled() || message.empty()) {
 #if DEBUG_CHATBOT
         cout << "chatbot: generate skip enabled="
@@ -400,7 +428,7 @@ string GeminiChat::generate(uint32_t from,
     cout << "chatbot: POST " << url
          << " history=" << history.size() << endl;
 #endif
-    body = buildRequest(history, message);
+    body = buildRequest(from, history, message);
     response = httpPost(url, body);
     if (response.empty()) {
 #if DEBUG_CHATBOT

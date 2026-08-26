@@ -60,6 +60,10 @@ protected:
 
     string truncateToMesh(const string &text) const;
 
+    inline shared_ptr<MeshClient> getClient(void) const {
+        return _client;
+    }
+
 private:
 
     struct ChatJob {

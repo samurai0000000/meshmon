@@ -12,8 +12,8 @@
 #define DEBUG_CHATBOT 0
 #endif
 
-#define CHAT_HISTORY_MAX    8
-#define CHAT_IDLE_SECONDS   1800
+#define CHAT_HISTORY_MAX    20
+#define CHAT_IDLE_SECONDS   3600
 #define CHAT_MAX_BYTES      200
 
 ChatBot::ChatBot(shared_ptr<MeshClient> client)
@@ -239,6 +239,9 @@ void ChatBot::processJob(const ChatJob &job)
     conv.turns.push_back(userTurn);
     conv.turns.push_back(modelTurn);
     while (conv.turns.size() > CHAT_HISTORY_MAX) {
+        conv.turns.erase(conv.turns.begin());
+    }
+    while (!conv.turns.empty() && !conv.turns.front().user) {
         conv.turns.erase(conv.turns.begin());
     }
     conv.lastUsed = now;

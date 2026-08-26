@@ -32,7 +32,9 @@ private:
     static string jsonEscape(const string &s);
     static bool parseJsonString(const string &s, size_t &i, string &out);
     static string extractCandidateText(const string &body);
-    string buildRequest(const vector<ChatTurn> &history,
+    string getSystemInstruction(uint32_t from) const;
+    string buildRequest(uint32_t from,
+                        const vector<ChatTurn> &history,
                         const string &message) const;
     string httpPost(const string &url, const string &body) const;
 
