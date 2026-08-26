@@ -8,6 +8,10 @@
 #include <iostream>
 #include <sstream>
 #include <cstdlib>
+#include <cstring>
+#include <cctype>
+#include <algorithm>
+#include <chrono>
 #include <iomanip>
 #include <ChatBot.hxx>
 
@@ -18,6 +22,8 @@
 #define CHAT_HISTORY_MAX    20
 #define CHAT_IDLE_SECONDS   3600
 #define CHAT_MAX_BYTES      200
+
+using namespace libconfig;
 
 static string jsonEscape(const string &s)
 {
@@ -64,10 +70,448 @@ static string jsonEscape(const string &s)
     return out;
 }
 
+static bool parseJsonStringRaw(const string &s, size_t &i, string &out)
+{
+    if ((i >= s.size()) || (s[i] != '"')) {
+        return false;
+    }
+
+    i++;
+    out.clear();
+    while (i < s.size()) {
+        char c = s[i++];
+
+        if (c == '"') {
+            return true;
+        }
+        if (c != '\\') {
+            out += c;
+            continue;
+        }
+        if (i >= s.size()) {
+            return false;
+        }
+        c = s[i++];
+        switch (c) {
+        case '"':
+        case '\\':
+        case '/':
+            out += c;
+            break;
+        case 'b':
+            out += '\b';
+            break;
+        case 'f':
+            out += '\f';
+            break;
+        case 'n':
+            out += '\n';
+            break;
+        case 'r':
+            out += '\r';
+            break;
+        case 't':
+            out += '\t';
+            break;
+        case 'u': {
+            unsigned int cp = 0;
+            size_t n;
+
+            if ((i + 4) > s.size()) {
+                return false;
+            }
+            for (n = 0; n < 4; n++) {
+                char h = s[i++];
+                unsigned int v;
+
+                if ((h >= '0') && (h <= '9')) {
+                    v = (unsigned int) (h - '0');
+                } else if ((h >= 'a') && (h <= 'f')) {
+                    v = (unsigned int) (h - 'a' + 10);
+                } else if ((h >= 'A') && (h <= 'F')) {
+                    v = (unsigned int) (h - 'A' + 10);
+                } else {
+                    return false;
+                }
+                cp = (cp << 4) | v;
+            }
+            if (cp < 0x80) {
+                out += static_cast<char>(cp);
+            } else if (cp < 0x800) {
+                out += static_cast<char>(0xc0 | (cp >> 6));
+                out += static_cast<char>(0x80 | (cp & 0x3f));
+            } else {
+                out += static_cast<char>(0xe0 | (cp >> 12));
+                out += static_cast<char>(0x80 | ((cp >> 6) & 0x3f));
+                out += static_cast<char>(0x80 | (cp & 0x3f));
+            }
+            break;
+        }
+        default:
+            return false;
+        }
+    }
+
+    return false;
+}
+
+bool ChatBot::parseJsonStringField(const string &json, const string &field, string &val)
+{
+    string target = "\"" + field + "\"";
+    size_t pos = json.find(target);
+    if (pos == string::npos) {
+        return false;
+    }
+
+    size_t colon = json.find(':', pos + target.size());
+    if (colon == string::npos) {
+        return false;
+    }
+
+    size_t i = colon + 1;
+    while ((i < json.size()) && isspace(static_cast<unsigned char>(json[i]))) {
+        i++;
+    }
+
+    if ((i >= json.size()) || (json[i] != '"')) {
+        return false;
+    }
+
+    return parseJsonStringRaw(json, i, val);
+}
+
+bool ChatBot::parseJsonIntField(const string &json, const string &field, int64_t &val)
+{
+    string target = "\"" + field + "\"";
+    size_t pos = json.find(target);
+    if (pos == string::npos) {
+        return false;
+    }
+
+    size_t colon = json.find(':', pos + target.size());
+    if (colon == string::npos) {
+        return false;
+    }
+
+    size_t i = colon + 1;
+    while ((i < json.size()) && isspace(static_cast<unsigned char>(json[i]))) {
+        i++;
+    }
+
+    if (i >= json.size()) {
+        return false;
+    }
+
+    if (json[i] == '"') {
+        string s;
+        if (!parseJsonStringRaw(json, i, s)) {
+            return false;
+        }
+        char *endptr = NULL;
+        val = strtoll(s.c_str(), &endptr, 10);
+        return (endptr != NULL) && (endptr != s.c_str());
+    }
+
+    char *endptr = NULL;
+    val = strtoll(json.c_str() + i, &endptr, 10);
+    return (endptr != NULL) && (endptr != json.c_str() + i);
+}
+
+bool ChatBot::parseJsonBoolField(const string &json, const string &field, bool &val)
+{
+    string target = "\"" + field + "\"";
+    size_t pos = json.find(target);
+    if (pos == string::npos) {
+        return false;
+    }
+
+    size_t colon = json.find(':', pos + target.size());
+    if (colon == string::npos) {
+        return false;
+    }
+
+    size_t i = colon + 1;
+    while ((i < json.size()) && isspace(static_cast<unsigned char>(json[i]))) {
+        i++;
+    }
+
+    if (i >= json.size()) {
+        return false;
+    }
+
+    if (json[i] == '"') {
+        string s;
+        if (!parseJsonStringRaw(json, i, s)) {
+            return false;
+        }
+        if ((s == "true") || (s == "1") || (s == "yes")) {
+            val = true;
+            return true;
+        } else if ((s == "false") || (s == "0") || (s == "no")) {
+            val = false;
+            return true;
+        }
+        return false;
+    }
+
+    if (json.compare(i, 4, "true") == 0) {
+        val = true;
+        return true;
+    } else if (json.compare(i, 5, "false") == 0) {
+        val = false;
+        return true;
+    }
+
+    return false;
+}
+
+bool ChatBot::parseTimeString(const string &str, time_t &outTime)
+{
+    if (str.empty()) {
+        return false;
+    }
+
+    // Check if numeric timestamp
+    bool allDigits = true;
+    for (size_t k = 0; k < str.size(); k++) {
+        if (!isdigit(static_cast<unsigned char>(str[k])) && (str[k] != '-')) {
+            allDigits = false;
+            break;
+        }
+    }
+    if (allDigits && (str.size() >= 8)) {
+        char *endptr = NULL;
+        long long v = strtoll(str.c_str(), &endptr, 10);
+        if (endptr && (*endptr == '\0') && (v > 1000000000LL)) {
+            outTime = static_cast<time_t>(v);
+            return true;
+        }
+    }
+
+    struct tm tm;
+    memset(&tm, 0, sizeof(tm));
+
+    int year = 0, mon = 0, day = 0, hour = 0, min = 0, sec = 0;
+    int tzSign = 0, tzHour = 0, tzMin = 0;
+
+    int matched = sscanf(str.c_str(), "%d-%d-%d%*1[T ]%d:%d:%d",
+                         &year, &mon, &day, &hour, &min, &sec);
+    if (matched < 3) {
+        return false;
+    }
+
+    if (matched == 3) {
+        hour = 0;
+        min = 0;
+        sec = 0;
+    }
+
+    tm.tm_year = year - 1900;
+    tm.tm_mon = mon - 1;
+    tm.tm_mday = day;
+    tm.tm_hour = hour;
+    tm.tm_min = min;
+    tm.tm_sec = sec;
+
+    // Check for explicit timezone suffix
+    bool hasTz = false;
+    if ((str.find("UTC") != string::npos) || (str.find("GMT") != string::npos) || (str.find("Z") != string::npos)) {
+        hasTz = true;
+        tzSign = 0;
+    } else {
+        size_t tzPos = str.find_last_of("+-");
+        if ((tzPos != string::npos) && (tzPos > 8)) {
+            char sign = str[tzPos];
+            if (sscanf(str.c_str() + tzPos + 1, "%d:%d", &tzHour, &tzMin) >= 1) {
+                hasTz = true;
+                tzSign = (sign == '-') ? -1 : 1;
+            } else if (sscanf(str.c_str() + tzPos + 1, "%2d%2d", &tzHour, &tzMin) >= 1) {
+                hasTz = true;
+                tzSign = (sign == '-') ? -1 : 1;
+            }
+        }
+    }
+
+    if (hasTz) {
+        tm.tm_isdst = 0;
+        time_t epoch = timegm(&tm);
+        if (epoch == -1) {
+            return false;
+        }
+        if (tzSign != 0) {
+            epoch -= tzSign * (tzHour * 3600 + tzMin * 60);
+        }
+        outTime = epoch;
+        return true;
+    }
+
+    // Default to local timezone
+    tm.tm_isdst = -1;
+    time_t localEpoch = mktime(&tm);
+    if (localEpoch == -1) {
+        return false;
+    }
+
+    outTime = localEpoch;
+    return true;
+}
+
+static bool parseCronField(const string &field, int minVal, int maxVal, vector<bool> &allowed)
+{
+    allowed.assign(maxVal + 1, false);
+
+    stringstream ss(field);
+    string token;
+
+    while (getline(ss, token, ',')) {
+        if (token.empty()) {
+            continue;
+        }
+
+        int step = 1;
+        size_t slash = token.find('/');
+        if (slash != string::npos) {
+            string stepStr = token.substr(slash + 1);
+            token = token.substr(0, slash);
+            step = atoi(stepStr.c_str());
+            if (step <= 0) {
+                return false;
+            }
+        }
+
+        int start = minVal;
+        int end = maxVal;
+
+        if (token == "*") {
+            start = minVal;
+            end = maxVal;
+        } else {
+            size_t dash = token.find('-');
+            if (dash != string::npos) {
+                start = atoi(token.substr(0, dash).c_str());
+                end = atoi(token.substr(dash + 1).c_str());
+            } else {
+                start = atoi(token.c_str());
+                end = (slash != string::npos) ? maxVal : start;
+            }
+        }
+
+        if ((start < minVal) || (end > maxVal) || (start > end)) {
+            return false;
+        }
+
+        for (int v = start; v <= end; v += step) {
+            allowed[v] = true;
+        }
+    }
+
+    return true;
+}
+
+bool ChatBot::computeNextCronOccurrence(const string &cronExpr, time_t fromTime, time_t &nextTime)
+{
+    stringstream ss(cronExpr);
+    vector<string> fields;
+    string f;
+
+    while (ss >> f) {
+        fields.push_back(f);
+    }
+
+    if (fields.size() != 5) {
+        return false;
+    }
+
+    vector<bool> allowMin, allowHour, allowDom, allowMon, allowDow;
+    if (!parseCronField(fields[0], 0, 59, allowMin) ||
+        !parseCronField(fields[1], 0, 23, allowHour) ||
+        !parseCronField(fields[2], 1, 31, allowDom) ||
+        !parseCronField(fields[3], 1, 12, allowMon) ||
+        !parseCronField(fields[4], 0, 7, allowDow)) {
+        return false;
+    }
+
+    // Map 7 (Sunday) to 0
+    if (allowDow[7]) {
+        allowDow[0] = true;
+    }
+
+    bool domRestricted = (fields[2] != "*");
+    bool dowRestricted = (fields[4] != "*");
+
+    // Start looking from the next minute in local time
+    time_t curr = (fromTime / 60) * 60 + 60;
+    time_t maxSearch = fromTime + (5 * 365 * 86400); // Search up to 5 years
+
+    while (curr < maxSearch) {
+        struct tm tm;
+        localtime_r(&curr, &tm);
+
+        int mon = tm.tm_mon + 1;
+        if (!allowMon[mon]) {
+            // Advance to next month in local time
+            tm.tm_mday = 1;
+            tm.tm_hour = 0;
+            tm.tm_min = 0;
+            tm.tm_sec = 0;
+            tm.tm_mon++;
+            tm.tm_isdst = -1;
+            curr = mktime(&tm);
+            continue;
+        }
+
+        int dom = tm.tm_mday;
+        int dow = tm.tm_wday;
+        bool dayMatch = false;
+
+        if (domRestricted && dowRestricted) {
+            dayMatch = allowDom[dom] || allowDow[dow];
+        } else if (domRestricted) {
+            dayMatch = allowDom[dom];
+        } else if (dowRestricted) {
+            dayMatch = allowDow[dow];
+        } else {
+            dayMatch = true;
+        }
+
+        if (!dayMatch) {
+            // Advance to next day in local time
+            tm.tm_hour = 0;
+            tm.tm_min = 0;
+            tm.tm_sec = 0;
+            tm.tm_mday++;
+            tm.tm_isdst = -1;
+            curr = mktime(&tm);
+            continue;
+        }
+
+        if (!allowHour[tm.tm_hour]) {
+            // Advance to next hour in local time
+            tm.tm_min = 0;
+            tm.tm_sec = 0;
+            tm.tm_hour++;
+            tm.tm_isdst = -1;
+            curr = mktime(&tm);
+            continue;
+        }
+
+        if (!allowMin[tm.tm_min]) {
+            curr += 60;
+            continue;
+        }
+
+        nextTime = curr;
+        return true;
+    }
+
+    return false;
+}
+
 ChatBot::ChatBot(shared_ptr<MeshClient> client)
     : _client(client),
       _thread(NULL),
-      _isRunning(false)
+      _isRunning(false),
+      _nextTaskId(1)
 {
 
 }
@@ -86,6 +530,254 @@ void ChatBot::setClient(shared_ptr<MeshClient> client)
 bool ChatBot::enabled(void) const
 {
     return true;
+}
+
+void ChatBot::setConfigPath(const string &path)
+{
+    lock_guard<mutex> lock(_mutex);
+    _configPath = path;
+}
+
+const string &ChatBot::getConfigPath(void) const
+{
+    lock_guard<mutex> lock(_mutex);
+    return _configPath;
+}
+
+bool ChatBot::loadTasksFromConfig(Config &cfg)
+{
+    lock_guard<mutex> lock(_mutex);
+    Setting &root = cfg.getRoot();
+
+    if (!root.exists("scheduled_tasks")) {
+        return false;
+    }
+
+    _tasks.clear();
+    uint32_t maxId = 0;
+
+    try {
+        Setting &taskList = root["scheduled_tasks"];
+        for (int i = 0; i < taskList.getLength(); i++) {
+            Setting &elem = taskList[i];
+            if (elem.getType() != Setting::TypeGroup) {
+                continue;
+            }
+
+            ScheduledTask task;
+            int cfgId = 0;
+            int cfgChannel = 0;
+            string cfgType;
+            string cfgFrom;
+            string cfgDest;
+            long long cfgDue = 0;
+            long long cfgInterval = 0;
+            int cfgMaxRepeats = 1;
+            int cfgExecCount = 0;
+            long long cfgCreatedAt = 0;
+
+            if (elem.lookupValue("id", cfgId)) {
+                task.id = static_cast<uint32_t>(cfgId);
+            }
+            if (elem.lookupValue("from", cfgFrom)) {
+                task.from = resolveNodeId(cfgFrom);
+            }
+            if (elem.lookupValue("dest", cfgDest)) {
+                task.dest = resolveNodeId(cfgDest);
+            }
+            if (elem.lookupValue("channel", cfgChannel)) {
+                task.channel = static_cast<uint8_t>(cfgChannel);
+            }
+            elem.lookupValue("channel_name", task.channelName);
+            if (elem.lookupValue("type", cfgType)) {
+                if (cfgType == "prompt") {
+                    task.type = TASK_PROMPT;
+                } else {
+                    task.type = TASK_MESSAGE;
+                }
+            }
+            elem.lookupValue("content", task.content);
+            if (elem.lookupValue("due_time", cfgDue)) {
+                task.dueTime = static_cast<time_t>(cfgDue);
+            }
+            elem.lookupValue("cron", task.cronExpr);
+            if (elem.lookupValue("interval", cfgInterval)) {
+                task.repeatIntervalSec = static_cast<int64_t>(cfgInterval);
+            }
+            if (elem.lookupValue("max_repeats", cfgMaxRepeats)) {
+                task.maxRepeats = cfgMaxRepeats;
+            }
+            if (elem.lookupValue("execution_count", cfgExecCount)) {
+                task.executionCount = cfgExecCount;
+            }
+            if (elem.lookupValue("created_at", cfgCreatedAt)) {
+                task.createdAt = static_cast<time_t>(cfgCreatedAt);
+            }
+
+            if ((task.id != 0) && !task.content.empty() && (task.dueTime != 0)) {
+                _tasks.push_back(task);
+                if (task.id > maxId) {
+                    maxId = task.id;
+                }
+            }
+        }
+    } catch (...) {
+        return false;
+    }
+
+    _nextTaskId = maxId + 1;
+    return true;
+}
+
+bool ChatBot::writeTasksToConfig(Config &cfg) const
+{
+    Setting &root = cfg.getRoot();
+
+    if (root.exists("scheduled_tasks")) {
+        root.remove("scheduled_tasks");
+    }
+
+    if (_tasks.empty()) {
+        return true;
+    }
+
+    Setting &taskList = root.add("scheduled_tasks", Setting::TypeList);
+    for (size_t i = 0; i < _tasks.size(); i++) {
+        const ScheduledTask &task = _tasks[i];
+        Setting &group = taskList.add(Setting::TypeGroup);
+
+        group.add("id", Setting::TypeInt) = static_cast<int>(task.id);
+
+        char fromBuf[16], destBuf[16];
+        snprintf(fromBuf, sizeof(fromBuf), "!%08x", task.from);
+        snprintf(destBuf, sizeof(destBuf), "!%08x", task.dest);
+        group.add("from", Setting::TypeString) = string(fromBuf);
+        group.add("dest", Setting::TypeString) = string(destBuf);
+        group.add("channel", Setting::TypeInt) = static_cast<int>(task.channel);
+        if (!task.channelName.empty()) {
+            group.add("channel_name", Setting::TypeString) = task.channelName;
+        }
+
+        group.add("type", Setting::TypeString) = (task.type == TASK_PROMPT) ? string("prompt") : string("message");
+        group.add("content", Setting::TypeString) = task.content;
+        group.add("due_time", Setting::TypeInt64) = static_cast<long long>(task.dueTime);
+
+        if (!task.cronExpr.empty()) {
+            group.add("cron", Setting::TypeString) = task.cronExpr;
+        }
+        if (task.repeatIntervalSec > 0) {
+            group.add("interval", Setting::TypeInt64) = static_cast<long long>(task.repeatIntervalSec);
+        }
+        group.add("max_repeats", Setting::TypeInt) = task.maxRepeats;
+        group.add("execution_count", Setting::TypeInt) = task.executionCount;
+        group.add("created_at", Setting::TypeInt64) = static_cast<long long>(task.createdAt);
+    }
+
+    return true;
+}
+
+bool ChatBot::saveTasksToConfig(void) const
+{
+    string targetPath;
+    {
+        lock_guard<mutex> lock(_mutex);
+        if (!_configPath.empty()) {
+            targetPath = _configPath;
+        } else {
+            const char *homedir = getenv("HOME");
+            if ((homedir != NULL) && (homedir[0] != '\0')) {
+                targetPath = string(homedir) + "/.meshmon";
+            } else {
+                targetPath = ".meshmon";
+            }
+        }
+    }
+
+    Config cfg;
+    try {
+        cfg.readFile(targetPath.c_str());
+    } catch (...) {
+    }
+
+    {
+        lock_guard<mutex> lock(_mutex);
+        if (!writeTasksToConfig(cfg)) {
+            return false;
+        }
+    }
+
+    try {
+        cfg.writeFile(targetPath.c_str());
+    } catch (const FileIOException &e) {
+        cerr << targetPath << ": " << strerror(errno) << endl;
+        return false;
+    }
+
+    return true;
+}
+
+uint32_t ChatBot::scheduleTask(const ScheduledTask &task)
+{
+    ScheduledTask t = task;
+    uint32_t assignedId = 0;
+
+    {
+        unique_lock<mutex> lock(_mutex);
+        if (t.id == 0) {
+            t.id = _nextTaskId++;
+        } else if (t.id >= _nextTaskId) {
+            _nextTaskId = t.id + 1;
+        }
+        if (t.createdAt == 0) {
+            t.createdAt = time(NULL);
+        }
+        _tasks.push_back(t);
+        assignedId = t.id;
+    }
+
+    saveTasksToConfig();
+    _cv.notify_one();
+    return assignedId;
+}
+
+bool ChatBot::cancelTask(uint32_t id, uint32_t from)
+{
+    bool found = false;
+    {
+        unique_lock<mutex> lock(_mutex);
+        vector<ScheduledTask>::iterator it = _tasks.begin();
+        while (it != _tasks.end()) {
+            if ((it->id == id) && ((from == 0) || (it->from == from))) {
+                it = _tasks.erase(it);
+                found = true;
+                break;
+            } else {
+                it++;
+            }
+        }
+    }
+
+    if (found) {
+        saveTasksToConfig();
+        _cv.notify_one();
+    }
+    return found;
+}
+
+vector<ScheduledTask> ChatBot::getTasks(uint32_t from) const
+{
+    lock_guard<mutex> lock(_mutex);
+    if (from == 0) {
+        return _tasks;
+    }
+
+    vector<ScheduledTask> res;
+    for (size_t i = 0; i < _tasks.size(); i++) {
+        if (_tasks[i].from == from) {
+            res.push_back(_tasks[i]);
+        }
+    }
+    return res;
 }
 
 void ChatBot::ask(uint32_t from, uint32_t dest, uint8_t channel,
@@ -185,6 +877,106 @@ void ChatBot::thread_function(ChatBot *bot)
     bot->run();
 }
 
+void ChatBot::processDueTasks(time_t now)
+{
+    vector<ScheduledTask> dueTasks;
+    bool modified = false;
+
+    {
+        unique_lock<mutex> lock(_mutex);
+        vector<ScheduledTask>::iterator it = _tasks.begin();
+        while (it != _tasks.end()) {
+            if (now >= it->dueTime) {
+                dueTasks.push_back(*it);
+                it->executionCount++;
+
+                bool keep = false;
+                time_t nextDue = 0;
+
+                if ((it->maxRepeats <= 0) || (it->executionCount < it->maxRepeats)) {
+                    if (!it->cronExpr.empty()) {
+                        if (computeNextCronOccurrence(it->cronExpr, now, nextDue)) {
+                            it->dueTime = nextDue;
+                            keep = true;
+                        }
+                    } else if (it->repeatIntervalSec > 0) {
+                        it->dueTime = now + it->repeatIntervalSec;
+                        keep = true;
+                    }
+                }
+
+                if (keep) {
+                    it++;
+                } else {
+                    it = _tasks.erase(it);
+                }
+                modified = true;
+            } else {
+                it++;
+            }
+        }
+    }
+
+    if (modified) {
+        saveTasksToConfig();
+    }
+
+    for (size_t i = 0; i < dueTasks.size(); i++) {
+        const ScheduledTask &task = dueTasks[i];
+        string outputText;
+
+        if (task.type == TASK_PROMPT) {
+            vector<ChatTurn> history;
+            {
+                unique_lock<mutex> lock(_mutex);
+                map<uint32_t, Conversation>::iterator cIt = _conversations.find(task.from);
+                if (cIt != _conversations.end()) {
+                    history = cIt->second.turns;
+                }
+            }
+            outputText = generate(task.from, task.dest, task.channel, history, task.content);
+        } else {
+            outputText = task.content;
+        }
+
+        if (outputText.empty()) {
+            continue;
+        }
+
+        string replyText = truncateToMesh(outputText);
+        if (replyText.empty()) {
+            continue;
+        }
+
+        {
+            unique_lock<mutex> lock(_mutex);
+            ChatReply reply;
+            reply.from = task.from;
+            reply.dest = task.dest;
+            reply.channel = task.channel;
+            reply.text = replyText;
+            _replies.push_back(reply);
+
+            // Record into conversation history if active
+            map<uint32_t, Conversation>::iterator cIt = _conversations.find(task.from);
+            if (cIt != _conversations.end()) {
+                ChatTurn modelTurn;
+                modelTurn.user = false;
+                modelTurn.text = replyText;
+                cIt->second.turns.push_back(modelTurn);
+                while (cIt->second.turns.size() > CHAT_HISTORY_MAX) {
+                    cIt->second.turns.erase(cIt->second.turns.begin());
+                }
+                cIt->second.lastUsed = now;
+            }
+        }
+#if DEBUG_CHATBOT
+        cout << "chatbot: scheduled task " << task.id << " executed, reply queued to dest="
+             << task.dest << " ch=" << (unsigned int) task.channel << endl;
+#endif
+    }
+}
+
 void ChatBot::run(void)
 {
     while (_isRunning.load()) {
@@ -193,15 +985,49 @@ void ChatBot::run(void)
 
         {
             unique_lock<mutex> lock(_mutex);
+
             while (_isRunning.load() && _queue.empty()) {
-                _cv.wait(lock);
+                time_t now = time(NULL);
+                time_t earliestDue = 0;
+
+                for (size_t i = 0; i < _tasks.size(); i++) {
+                    if (_tasks[i].dueTime <= now) {
+                        earliestDue = now;
+                        break;
+                    }
+                    if ((earliestDue == 0) || (_tasks[i].dueTime < earliestDue)) {
+                        earliestDue = _tasks[i].dueTime;
+                    }
+                }
+
+                if (earliestDue != 0) {
+                    if (earliestDue <= now) {
+                        break;
+                    }
+                    _cv.wait_until(lock, chrono::system_clock::from_time_t(earliestDue));
+                } else {
+                    _cv.wait(lock);
+                }
+
+                if (!_tasks.empty()) {
+                    time_t checkNow = time(NULL);
+                    for (size_t i = 0; i < _tasks.size(); i++) {
+                        if (_tasks[i].dueTime <= checkNow) {
+                            break;
+                        }
+                    }
+                }
             }
+
             if (!_queue.empty()) {
                 job = _queue.front();
                 _queue.pop_front();
                 haveJob = true;
             }
         }
+
+        // Process any due tasks
+        processDueTasks(time(NULL));
 
         if (haveJob) {
             processJob(job);
@@ -263,7 +1089,7 @@ void ChatBot::processJob(const ChatJob &job)
 
     Conversation &conv = _conversations[job.from];
 
-    generated = generate(job.from, conv.turns, job.message);
+    generated = generate(job.from, job.dest, job.channel, conv.turns, job.message);
     success = !generated.empty();
 #if DEBUG_CHATBOT
     cout << "chatbot: generate from=" << job.from
@@ -312,14 +1138,57 @@ void ChatBot::processJob(const ChatJob &job)
 #endif
 }
 
+uint8_t ChatBot::resolveChannel(const string &channelQuery, uint8_t defaultChannel) const
+{
+    if (channelQuery.empty()) {
+        return defaultChannel;
+    }
+
+    bool allDigits = true;
+    for (size_t i = 0; i < channelQuery.size(); i++) {
+        if (!isdigit(static_cast<unsigned char>(channelQuery[i]))) {
+            allDigits = false;
+            break;
+        }
+    }
+    if (allDigits) {
+        int v = atoi(channelQuery.c_str());
+        if ((v >= 0) && (v <= 7)) {
+            return static_cast<uint8_t>(v);
+        }
+    }
+
+    if (_client != NULL) {
+        uint8_t ch = _client->getChannel(channelQuery);
+        if (ch != 0xffU) {
+            return ch;
+        }
+        const map<uint8_t, meshtastic_Channel> &chans = _client->channels();
+        for (map<uint8_t, meshtastic_Channel>::const_iterator it = chans.begin();
+             it != chans.end(); it++) {
+            if (it->second.settings.name == channelQuery) {
+                return it->first;
+            }
+        }
+    }
+
+    return defaultChannel;
+}
+
 uint32_t ChatBot::resolveNodeId(const string &nodeQuery) const
 {
-    if (nodeQuery.empty() || (_client == NULL)) {
+    if (nodeQuery.empty()) {
         return 0xffffffffU;
     }
 
-    if ((nodeQuery == "self") || (nodeQuery == "me") || (nodeQuery == "local")) {
-        return _client->whoami();
+    if ((nodeQuery == "broadcast") || (nodeQuery == "all") || (nodeQuery == "everyone")) {
+        return 0xffffffffU;
+    }
+
+    if (_client != NULL) {
+        if ((nodeQuery == "self") || (nodeQuery == "me") || (nodeQuery == "local")) {
+            return _client->whoami();
+        }
     }
 
     if (nodeQuery[0] == '!') {
@@ -339,9 +1208,11 @@ uint32_t ChatBot::resolveNodeId(const string &nodeQuery) const
         }
     }
 
-    uint32_t idByName = _client->getId(nodeQuery);
-    if (idByName != 0xffffffffU) {
-        return idByName;
+    if (_client != NULL) {
+        uint32_t idByName = _client->getId(nodeQuery);
+        if (idByName != 0xffffffffU) {
+            return idByName;
+        }
     }
 
     if (nodeQuery.size() == 8) {
@@ -602,44 +1473,273 @@ string ChatBot::toolGetNodePositions(const string &nodeQuery) const
     return ss.str();
 }
 
-string ChatBot::executeTool(const string &name, const string &argsJson) const
+string ChatBot::toolScheduleTask(uint32_t from, uint32_t dest, uint8_t channel, const string &argsJson)
+{
+    ScheduledTask task;
+    task.from = from;
+    task.dest = dest;
+    task.channel = channel;
+    task.type = TASK_MESSAGE;
+    task.maxRepeats = 1;
+    task.executionCount = 0;
+    task.createdAt = time(NULL);
+
+    string actionType;
+    if (parseJsonStringField(argsJson, "action_type", actionType) ||
+        parseJsonStringField(argsJson, "type", actionType)) {
+        if (actionType == "prompt") {
+            task.type = TASK_PROMPT;
+        } else {
+            task.type = TASK_MESSAGE;
+        }
+    }
+
+    string content;
+    if (!parseJsonStringField(argsJson, "content", content)) {
+        if (!parseJsonStringField(argsJson, "message", content)) {
+            if (!parseJsonStringField(argsJson, "prompt", content)) {
+                parseJsonStringField(argsJson, "text", content);
+            }
+        }
+    }
+    if (content.empty()) {
+        return "{\"error\": \"Missing 'content' or 'message' parameter for scheduled task.\"}";
+    }
+    task.content = content;
+
+    // Channel override
+    string chStr;
+    if (parseJsonStringField(argsJson, "channel", chStr) ||
+        parseJsonStringField(argsJson, "target_channel", chStr)) {
+        task.channel = resolveChannel(chStr, channel);
+        task.channelName = chStr;
+        task.dest = 0xffffffffU; // Broadcast when explicit channel is specified
+    } else {
+        int64_t chInt = 0;
+        if (parseJsonIntField(argsJson, "channel", chInt) ||
+            parseJsonIntField(argsJson, "target_channel", chInt)) {
+            if ((chInt >= 0) && (chInt <= 7)) {
+                task.channel = static_cast<uint8_t>(chInt);
+                task.dest = 0xffffffffU;
+            }
+        }
+    }
+
+    // Target node override
+    string nodeStr;
+    if (parseJsonStringField(argsJson, "target_node", nodeStr) ||
+        parseJsonStringField(argsJson, "target", nodeStr) ||
+        parseJsonStringField(argsJson, "node", nodeStr)) {
+        task.dest = resolveNodeId(nodeStr);
+    }
+
+    time_t now = time(NULL);
+    time_t targetDue = 0;
+
+    string cronStr;
+    if (parseJsonStringField(argsJson, "cron", cronStr) ||
+        parseJsonStringField(argsJson, "cron_expr", cronStr) ||
+        parseJsonStringField(argsJson, "schedule", cronStr)) {
+        time_t nextCron = 0;
+        if (!computeNextCronOccurrence(cronStr, now, nextCron)) {
+            return "{\"error\": \"Invalid cron expression: " + jsonEscape(cronStr) + "\"}";
+        }
+        task.cronExpr = cronStr;
+        targetDue = nextCron;
+        task.maxRepeats = -1; // Default recurring for cron
+    } else {
+        int64_t delaySec = 0;
+        bool haveDelay = false;
+
+        if (parseJsonIntField(argsJson, "delay_seconds", delaySec) ||
+            parseJsonIntField(argsJson, "seconds", delaySec) ||
+            parseJsonIntField(argsJson, "delay", delaySec)) {
+            haveDelay = true;
+        } else {
+            int64_t delayMin = 0;
+            if (parseJsonIntField(argsJson, "delay_minutes", delayMin) ||
+                parseJsonIntField(argsJson, "minutes", delayMin)) {
+                delaySec = delayMin * 60;
+                haveDelay = true;
+            }
+        }
+
+        if (haveDelay) {
+            if (delaySec <= 0) {
+                return "{\"error\": \"delay_seconds must be positive.\"}";
+            }
+            targetDue = now + delaySec;
+        } else {
+            string atTimeStr;
+            if (parseJsonStringField(argsJson, "at_time", atTimeStr) ||
+                parseJsonStringField(argsJson, "time", atTimeStr) ||
+                parseJsonStringField(argsJson, "timestamp", atTimeStr)) {
+                if (!parseTimeString(atTimeStr, targetDue)) {
+                    return "{\"error\": \"Invalid at_time format: " + jsonEscape(atTimeStr) + "\"}";
+                }
+                if (targetDue <= now) {
+                    return "{\"error\": \"at_time is in the past.\"}";
+                }
+            }
+        }
+    }
+
+    if (targetDue == 0) {
+        return "{\"error\": \"Must specify one of delay_seconds, at_time, or cron.\"}";
+    }
+
+    int64_t maxRep = 1;
+    if (parseJsonIntField(argsJson, "max_repeats", maxRep) ||
+        parseJsonIntField(argsJson, "repeats", maxRep)) {
+        task.maxRepeats = static_cast<int>(maxRep);
+    }
+
+    int64_t intervalSec = 0;
+    if (parseJsonIntField(argsJson, "repeat_interval_seconds", intervalSec) ||
+        parseJsonIntField(argsJson, "interval", intervalSec)) {
+        task.repeatIntervalSec = intervalSec;
+        if (task.maxRepeats == 1) {
+            task.maxRepeats = -1;
+        }
+    }
+
+    task.dueTime = targetDue;
+
+    uint32_t taskId = scheduleTask(task);
+
+    struct tm tm;
+    char timeBuf[64];
+    localtime_r(&targetDue, &tm);
+    strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S %Z", &tm);
+
+    stringstream ss;
+    ss << "{\"status\":\"scheduled\","
+       << "\"task_id\":" << taskId << ","
+       << "\"type\":\"" << ((task.type == TASK_PROMPT) ? "prompt" : "message") << "\","
+       << "\"channel\":" << (unsigned int) task.channel << ",";
+    if (!task.channelName.empty()) {
+        ss << "\"channel_name\":\"" << jsonEscape(task.channelName) << "\",";
+    }
+    char destBuf[16];
+    snprintf(destBuf, sizeof(destBuf), "!%08x", task.dest);
+    ss << "\"dest\":\"" << destBuf << "\","
+       << "\"due_time\":\"" << timeBuf << "\","
+       << "\"remaining_seconds\":" << (targetDue - now) << ",";
+    if (!task.cronExpr.empty()) {
+        ss << "\"cron\":\"" << jsonEscape(task.cronExpr) << "\",";
+    }
+    ss << "\"content\":\"" << jsonEscape(task.content) << "\"}";
+
+    return ss.str();
+}
+
+string ChatBot::toolListTasks(uint32_t from) const
+{
+    vector<ScheduledTask> tasks = getTasks(from);
+    time_t now = time(NULL);
+
+    stringstream ss;
+    ss << "{\"total_tasks\":" << tasks.size() << ",\"tasks\":[";
+    for (size_t i = 0; i < tasks.size(); i++) {
+        if (i > 0) {
+            ss << ",";
+        }
+        const ScheduledTask &t = tasks[i];
+        struct tm tm;
+        char timeBuf[64];
+        localtime_r(&t.dueTime, &tm);
+        strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S %Z", &tm);
+
+        char fromBuf[16], destBuf[16];
+        snprintf(fromBuf, sizeof(fromBuf), "!%08x", t.from);
+        snprintf(destBuf, sizeof(destBuf), "!%08x", t.dest);
+
+        ss << "{\"id\":" << t.id
+           << ",\"type\":\"" << ((t.type == TASK_PROMPT) ? "prompt" : "message") << "\""
+           << ",\"from\":\"" << fromBuf << "\""
+           << ",\"dest\":\"" << destBuf << "\""
+           << ",\"channel\":" << (unsigned int) t.channel;
+        if (!t.channelName.empty()) {
+            ss << ",\"channel_name\":\"" << jsonEscape(t.channelName) << "\"";
+        }
+        ss << ",\"due_time\":\"" << timeBuf << "\""
+           << ",\"remaining_seconds\":" << ((t.dueTime > now) ? (t.dueTime - now) : 0);
+        if (!t.cronExpr.empty()) {
+            ss << ",\"cron\":\"" << jsonEscape(t.cronExpr) << "\"";
+        }
+        if (t.repeatIntervalSec > 0) {
+            ss << ",\"interval_seconds\":" << t.repeatIntervalSec;
+        }
+        ss << ",\"execution_count\":" << t.executionCount
+           << ",\"max_repeats\":" << t.maxRepeats
+           << ",\"content\":\"" << jsonEscape(t.content) << "\"}";
+    }
+    ss << "]}";
+
+    return ss.str();
+}
+
+string ChatBot::toolCancelTask(uint32_t from, const string &argsJson)
+{
+    bool cancelAll = false;
+    parseJsonBoolField(argsJson, "all", cancelAll);
+
+    if (cancelAll) {
+        int count = 0;
+        {
+            unique_lock<mutex> lock(_mutex);
+            vector<ScheduledTask>::iterator it = _tasks.begin();
+            while (it != _tasks.end()) {
+                if ((from == 0) || (it->from == from)) {
+                    it = _tasks.erase(it);
+                    count++;
+                } else {
+                    it++;
+                }
+            }
+        }
+        if (count > 0) {
+            saveTasksToConfig();
+            _cv.notify_one();
+        }
+        stringstream ss;
+        ss << "{\"status\":\"ok\",\"cancelled_count\":" << count << "}";
+        return ss.str();
+    }
+
+    int64_t id = 0;
+    if (parseJsonIntField(argsJson, "id", id) ||
+        parseJsonIntField(argsJson, "task_id", id)) {
+        bool ok = cancelTask(static_cast<uint32_t>(id), from);
+        stringstream ss;
+        ss << "{\"status\":\"" << (ok ? "ok" : "not_found") << "\",\"cancelled_count\":" << (ok ? 1 : 0) << "}";
+        return ss.str();
+    }
+
+    return "{\"error\": \"Must specify 'id' or 'all': true to cancel.\"}";
+}
+
+string ChatBot::executeTool(const string &name, const string &argsJson,
+                            uint32_t from, uint32_t dest, uint8_t channel)
 {
     if (name == "get_mesh_nodes") {
         return toolGetMeshNodes();
     } else if (name == "get_node_telemetry") {
         string node;
-        size_t p = argsJson.find("\"node\"");
-        if (p != string::npos) {
-            size_t c = argsJson.find(":", p);
-            if (c != string::npos) {
-                size_t q1 = argsJson.find("\"", c);
-                if (q1 != string::npos) {
-                    size_t q2 = argsJson.find("\"", q1 + 1);
-                    if (q2 != string::npos) {
-                        node = argsJson.substr(q1 + 1, q2 - q1 - 1);
-                    }
-                }
-            }
-        }
+        parseJsonStringField(argsJson, "node", node);
         return toolGetNodeTelemetry(node);
     } else if (name == "get_network_stats") {
         return toolGetNetworkStats();
     } else if (name == "get_node_positions") {
         string node;
-        size_t p = argsJson.find("\"node\"");
-        if (p != string::npos) {
-            size_t c = argsJson.find(":", p);
-            if (c != string::npos) {
-                size_t q1 = argsJson.find("\"", c);
-                if (q1 != string::npos) {
-                    size_t q2 = argsJson.find("\"", q1 + 1);
-                    if (q2 != string::npos) {
-                        node = argsJson.substr(q1 + 1, q2 - q1 - 1);
-                    }
-                }
-            }
-        }
+        parseJsonStringField(argsJson, "node", node);
         return toolGetNodePositions(node);
+    } else if (name == "schedule_task") {
+        return toolScheduleTask(from, dest, channel, argsJson);
+    } else if (name == "list_scheduled_tasks") {
+        return toolListTasks(from);
+    } else if (name == "cancel_scheduled_task") {
+        return toolCancelTask(from, argsJson);
     }
     return "{\"error\": \"unknown tool: " + name + "\"}";
 }

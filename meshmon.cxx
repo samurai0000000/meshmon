@@ -658,8 +658,11 @@ int main(int argc, char **argv)
                             mqttTopic, mqttTls);
         }
         if (haveGemini) {
-            mon->setChatBot(make_shared<GeminiChat>(geminiApiKey,
-                                                    geminiModel));
+            shared_ptr<GeminiChat> bot = make_shared<GeminiChat>(geminiApiKey,
+                                                                 geminiModel);
+            bot->setConfigPath(cfgfile);
+            bot->loadTasksFromConfig(cfg);
+            mon->setChatBot(bot);
         }
         mon->setCalibration(calibration);
         mons.push_back(mon);
