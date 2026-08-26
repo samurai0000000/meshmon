@@ -676,21 +676,50 @@ bool ChatBot::writeTasksToConfig(Config &cfg) const
     return true;
 }
 
-bool ChatBot::saveTasksToConfig(void) const
+static string resolveConfigPath(const string &path, const string &storedPath)
+{
+    if (!path.empty()) {
+        return path;
+    }
+    if (!storedPath.empty()) {
+        return storedPath;
+    }
+    const char *homedir = getenv("HOME");
+    if ((homedir != NULL) && (homedir[0] != '\0')) {
+        return string(homedir) + "/.meshmon.sched";
+    }
+    return ".meshmon.sched";
+}
+
+bool ChatBot::loadTasksFromFile(const string &path)
 {
     string targetPath;
     {
         lock_guard<mutex> lock(_mutex);
-        if (!_configPath.empty()) {
-            targetPath = _configPath;
-        } else {
-            const char *homedir = getenv("HOME");
-            if ((homedir != NULL) && (homedir[0] != '\0')) {
-                targetPath = string(homedir) + "/.meshmon";
-            } else {
-                targetPath = ".meshmon";
-            }
-        }
+        targetPath = resolveConfigPath(path, _configPath);
+        _configPath = targetPath;
+    }
+    Config cfg;
+
+    try {
+        cfg.readFile(targetPath.c_str());
+    } catch (const FileIOException &) {
+        return false;
+    } catch (const ParseException &e) {
+        cerr << "Parse error in " << e.getFile() << " line "
+             << e.getLine() << ": " << e.getError() << endl;
+        return false;
+    }
+
+    return loadTasksFromConfig(cfg);
+}
+
+bool ChatBot::saveTasksToConfig(const string &path) const
+{
+    string targetPath;
+    {
+        lock_guard<mutex> lock(_mutex);
+        targetPath = resolveConfigPath(path, _configPath);
     }
 
     Config cfg;
@@ -1681,6 +1710,7 @@ string ChatBot::toolListTasks(uint32_t from) const
 
 string ChatBot::toolCancelTask(uint32_t from, const string &argsJson)
 {
+    (void) from;
     bool cancelAll = false;
     parseJsonBoolField(argsJson, "all", cancelAll);
 
@@ -1688,15 +1718,8 @@ string ChatBot::toolCancelTask(uint32_t from, const string &argsJson)
         int count = 0;
         {
             unique_lock<mutex> lock(_mutex);
-            vector<ScheduledTask>::iterator it = _tasks.begin();
-            while (it != _tasks.end()) {
-                if ((from == 0) || (it->from == from)) {
-                    it = _tasks.erase(it);
-                    count++;
-                } else {
-                    it++;
-                }
-            }
+            count = static_cast<int>(_tasks.size());
+            _tasks.clear();
         }
         if (count > 0) {
             saveTasksToConfig();
@@ -1710,7 +1733,7 @@ string ChatBot::toolCancelTask(uint32_t from, const string &argsJson)
     int64_t id = 0;
     if (parseJsonIntField(argsJson, "id", id) ||
         parseJsonIntField(argsJson, "task_id", id)) {
-        bool ok = cancelTask(static_cast<uint32_t>(id), from);
+        bool ok = cancelTask(static_cast<uint32_t>(id), 0);
         stringstream ss;
         ss << "{\"status\":\"" << (ok ? "ok" : "not_found") << "\",\"cancelled_count\":" << (ok ? 1 : 0) << "}";
         return ss.str();
@@ -1737,7 +1760,7 @@ string ChatBot::executeTool(const string &name, const string &argsJson,
     } else if (name == "schedule_task") {
         return toolScheduleTask(from, dest, channel, argsJson);
     } else if (name == "list_scheduled_tasks") {
-        return toolListTasks(from);
+        return toolListTasks(0);
     } else if (name == "cancel_scheduled_task") {
         return toolCancelTask(from, argsJson);
     }

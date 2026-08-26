@@ -74,9 +74,10 @@ public:
 
     void setConfigPath(const string &path);
     const string &getConfigPath(void) const;
+    bool loadTasksFromFile(const string &path = "");
     bool loadTasksFromConfig(libconfig::Config &cfg);
     bool writeTasksToConfig(libconfig::Config &cfg) const;
-    bool saveTasksToConfig(void) const;
+    bool saveTasksToConfig(const string &path = "") const;
 
     void ask(uint32_t from, uint32_t dest, uint8_t channel,
              const string &message);

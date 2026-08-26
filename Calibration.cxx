@@ -507,14 +507,15 @@ static string resolveConfigPath(const string &path, const string &storedPath)
     }
     const char *homedir = getenv("HOME");
     if ((homedir != NULL) && (homedir[0] != '\0')) {
-        return string(homedir) + "/.meshmon";
+        return string(homedir) + "/.meshmon.calib";
     }
-    return ".meshmon";
+    return ".meshmon.calib";
 }
 
 bool Calibration::loadFile(const string &path)
 {
     string targetPath = resolveConfigPath(path, _configPath);
+    setConfigPath(targetPath);
     Config cfg;
 
     try {
@@ -527,7 +528,6 @@ bool Calibration::loadFile(const string &path)
         return false;
     }
 
-    setConfigPath(targetPath);
     return readConfig(cfg);
 }
 

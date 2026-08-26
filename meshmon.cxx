@@ -435,8 +435,7 @@ int main(int argc, char **argv)
     loadLibConfig(cfg, cfgfile);
 
     shared_ptr<Calibration> calibration = make_shared<Calibration>();
-    calibration->setConfigPath(cfgfile);
-    calibration->readConfig(cfg);
+    calibration->loadFile();
 
     try {
         Setting &root = cfg.getRoot();
@@ -660,8 +659,7 @@ int main(int argc, char **argv)
         if (haveGemini) {
             shared_ptr<GeminiChat> bot = make_shared<GeminiChat>(geminiApiKey,
                                                                  geminiModel);
-            bot->setConfigPath(cfgfile);
-            bot->loadTasksFromConfig(cfg);
+            bot->loadTasksFromFile();
             mon->setChatBot(bot);
         }
         mon->setCalibration(calibration);
