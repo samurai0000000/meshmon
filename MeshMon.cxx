@@ -267,6 +267,11 @@ void MeshMon::setChatBot(shared_ptr<ChatBot> bot)
     }
 }
 
+void MeshMon::setCalibration(shared_ptr<Calibration> calib)
+{
+    _calibration = calib;
+}
+
 void MeshMon::gotModuleConfigMQTT(const meshtastic_ModuleConfig_MQTTConfig &c)
 {
     MeshClient::gotModuleConfigMQTT(c);
@@ -633,21 +638,37 @@ void MeshMon::gotEnvironmentMetrics(const meshtastic_MeshPacket &packet,
             true);
     }
 
+    float temp = metrics.temperature;
+    float hum = metrics.relative_humidity;
+    float press = metrics.barometric_pressure;
+
+    if (_calibration != NULL) {
+        if (metrics.has_temperature) {
+            temp = _calibration->calibrateTemperature(packet.from, temp);
+        }
+        if (metrics.has_relative_humidity) {
+            hum = _calibration->calibrateHumidity(packet.from, hum);
+        }
+        if (metrics.has_barometric_pressure) {
+            press = _calibration->calibratePressure(packet.from, press);
+        }
+    }
+
     if (metrics.has_temperature) {
         char buf[32];
-        snprintf(buf, sizeof(buf), "%.1f", metrics.temperature);
+        snprintf(buf, sizeof(buf), "%.1f", temp);
         _myownMqtt->publish(string("meshmon/") + id + "/temperature",
                             string(buf), true);
     }
     if (metrics.has_relative_humidity) {
         char buf[32];
-        snprintf(buf, sizeof(buf), "%.1f", metrics.relative_humidity);
+        snprintf(buf, sizeof(buf), "%.1f", hum);
         _myownMqtt->publish(string("meshmon/") + id + "/humidity",
                             string(buf), true);
     }
     if (metrics.has_barometric_pressure) {
         char buf[32];
-        snprintf(buf, sizeof(buf), "%.2f", metrics.barometric_pressure);
+        snprintf(buf, sizeof(buf), "%.2f", press);
         _myownMqtt->publish(string("meshmon/") + id + "/pressure",
                             string(buf), true);
     }

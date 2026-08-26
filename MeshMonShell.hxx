@@ -8,6 +8,7 @@
 #define MESHMONSHELL_HXX
 
 #include <MeshShell.hxx>
+#include <Calibration.hxx>
 
 using namespace std;
 
@@ -21,7 +22,18 @@ public:
 protected:
 
     virtual shared_ptr<MeshShell> newInstance(void);
+    virtual int help(int argc, char **argv);
     virtual int system(int argc, char **argv);
+    virtual int unknown_command(int argc, char **argv);
+    virtual int calib(int argc, char **argv);
+
+private:
+
+    void printCurve(const char *name, const CalibrationCurve &curve,
+                    const char *unit);
+    void printNode(const string &nodeKey, const NodeCalibration &nodeCal);
+    bool resolveNodeKey(const string &nodeArg, string &outKey,
+                        string &outName);
 
 };
 

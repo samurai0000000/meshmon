@@ -87,7 +87,7 @@ configure_file(
   )
 
 add_executable(meshmon meshmon.cxx MeshMon.cxx MeshMonShell.cxx MqttClient.cxx
-  ChatBot.cxx GeminiChat.cxx)
+  ChatBot.cxx GeminiChat.cxx Calibration.cxx)
 target_include_directories(meshmon PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
 target_include_directories(meshmon PRIVATE
   ${MOSQUITTO_INCLUDE_DIR}

@@ -28,6 +28,7 @@
 #include <MeshMonShell.hxx>
 #include "MeshMon.hxx"
 #include "GeminiChat.hxx"
+#include "Calibration.hxx"
 #include "version.h"
 
 using namespace libconfig;
@@ -117,6 +118,7 @@ static void releaseMeshMons(void)
          it != mons.end(); it++) {
         (*it)->setClient(NULL);
         (*it)->setNvm(NULL);
+        (*it)->setCalibration(NULL);
     }
     mons.clear();
 }
@@ -432,6 +434,10 @@ int main(int argc, char **argv)
 
     loadLibConfig(cfg, cfgfile);
 
+    shared_ptr<Calibration> calibration = make_shared<Calibration>();
+    calibration->setConfigPath(cfgfile);
+    calibration->readConfig(cfg);
+
     try {
         Setting &root = cfg.getRoot();
         Setting &cfgDevices = root["devices"];
@@ -655,6 +661,7 @@ int main(int argc, char **argv)
             mon->setChatBot(make_shared<GeminiChat>(geminiApiKey,
                                                     geminiModel));
         }
+        mon->setCalibration(calibration);
         mons.push_back(mon);
 
         if (useStdioShell && (stdioShell == NULL)) {

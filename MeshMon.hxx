@@ -11,6 +11,7 @@
 #include <HomeChat.hxx>
 #include <MeshNvm.hxx>
 #include <ChatBot.hxx>
+#include <Calibration.hxx>
 #include <map>
 
 using namespace std;
@@ -98,17 +99,23 @@ public:
         return _myownMqtt;
     }
 
+    inline const shared_ptr<Calibration> calibration(void) const {
+        return _calibration;
+    }
+
     void setOwnMqtt(const string &server, uint16_t port,
                     const string &user, const string &password,
                     const string &topic, bool tls);
 
     void setChatBot(shared_ptr<ChatBot> bot);
+    void setCalibration(shared_ptr<Calibration> calib);
 
 private:
 
     shared_ptr<MqttClient> _meshtasticMqtt;
     shared_ptr<MqttClient> _myownMqtt;
     shared_ptr<ChatBot> _chatbot;
+    shared_ptr<Calibration> _calibration;
     bool _announcedUp;
     map<uint32_t, string> _haEnvNames;
     map<uint32_t, unsigned int> _haEnvMetrics;
