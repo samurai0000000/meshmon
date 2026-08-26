@@ -13,6 +13,7 @@
 #include <condition_variable>
 #include <deque>
 #include <map>
+#include <set>
 #include <memory>
 #include <mutex>
 #include <string>

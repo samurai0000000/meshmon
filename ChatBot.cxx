@@ -1238,6 +1238,25 @@ uint32_t ChatBot::resolveNodeId(const string &nodeQuery) const
     }
 
     if (_client != NULL) {
+        const map<uint32_t, meshtastic_NodeInfo> &nodes = _client->nodeInfos();
+        for (map<uint32_t, meshtastic_NodeInfo>::const_iterator it = nodes.begin();
+             it != nodes.end(); it++) {
+            if (it->second.has_user) {
+                const char *sn = it->second.user.short_name;
+                if ((sn != NULL) && (strcasecmp(sn, nodeQuery.c_str()) == 0)) {
+                    return it->first;
+                }
+            }
+        }
+        for (map<uint32_t, meshtastic_NodeInfo>::const_iterator it = nodes.begin();
+             it != nodes.end(); it++) {
+            if (it->second.has_user) {
+                const char *ln = it->second.user.long_name;
+                if ((ln != NULL) && (strcasecmp(ln, nodeQuery.c_str()) == 0)) {
+                    return it->first;
+                }
+            }
+        }
         uint32_t idByName = _client->getId(nodeQuery);
         if (idByName != 0xffffffffU) {
             return idByName;
@@ -1341,7 +1360,14 @@ string ChatBot::toolGetNodeTelemetry(const string &nodeQuery) const
         map<uint32_t, meshtastic_EnvironmentMetrics>::const_iterator eIt =
             _client->environmentMetrics().find(id);
 
-        if ((dIt == _client->deviceMetrics().end()) &&
+        const meshtastic_DeviceMetrics *dm = NULL;
+        if (dIt != _client->deviceMetrics().end()) {
+            dm = &dIt->second;
+        } else if (it->second.has_device_metrics) {
+            dm = &it->second.device_metrics;
+        }
+
+        if ((dm == NULL) &&
             (eIt == _client->environmentMetrics().end()) &&
             (targetId == 0xffffffffU)) {
             continue;
@@ -1360,21 +1386,21 @@ string ChatBot::toolGetNodeTelemetry(const string &nodeQuery) const
             ss << ",\"name\":\"" << jsonEscape(sName) << "\"";
         }
 
-        if (dIt != _client->deviceMetrics().end()) {
-            if (dIt->second.has_battery_level) {
-                ss << ",\"battery_level\":" << dIt->second.battery_level;
+        if (dm != NULL) {
+            if (dm->has_battery_level) {
+                ss << ",\"battery_level\":" << dm->battery_level;
             }
-            if (dIt->second.has_voltage) {
-                ss << ",\"voltage\":" << dIt->second.voltage;
+            if (dm->has_voltage) {
+                ss << ",\"voltage\":" << dm->voltage;
             }
-            if (dIt->second.has_channel_utilization) {
-                ss << ",\"channel_utilization\":" << dIt->second.channel_utilization;
+            if (dm->has_channel_utilization) {
+                ss << ",\"channel_utilization\":" << dm->channel_utilization;
             }
-            if (dIt->second.has_air_util_tx) {
-                ss << ",\"air_util_tx\":" << dIt->second.air_util_tx;
+            if (dm->has_air_util_tx) {
+                ss << ",\"air_util_tx\":" << dm->air_util_tx;
             }
-            if (dIt->second.has_uptime_seconds) {
-                ss << ",\"uptime_seconds\":" << dIt->second.uptime_seconds;
+            if (dm->has_uptime_seconds) {
+                ss << ",\"uptime_seconds\":" << dm->uptime_seconds;
             }
         }
 
@@ -1461,17 +1487,45 @@ string ChatBot::toolGetNodePositions(const string &nodeQuery) const
         }
     }
 
+    set<uint32_t> allIds;
+    if (targetId != 0xffffffffU) {
+        allIds.insert(targetId);
+    } else {
+        const map<uint32_t, meshtastic_NodeInfo> &nodes = _client->nodeInfos();
+        for (map<uint32_t, meshtastic_NodeInfo>::const_iterator it = nodes.begin();
+             it != nodes.end(); it++) {
+            allIds.insert(it->first);
+        }
+        const map<uint32_t, meshtastic_Position> &posMap = _client->positions();
+        for (map<uint32_t, meshtastic_Position>::const_iterator it = posMap.begin();
+             it != posMap.end(); it++) {
+            allIds.insert(it->first);
+        }
+    }
+
     stringstream ss;
     ss << "{\"positions\":[";
     bool first = true;
 
-    for (map<uint32_t, meshtastic_Position>::const_iterator it = _client->positions().begin();
-         it != _client->positions().end(); it++) {
-        uint32_t id = it->first;
-        if ((targetId != 0xffffffffU) && (id != targetId)) {
-            continue;
+    const map<uint32_t, meshtastic_Position> &pMap = _client->positions();
+    const map<uint32_t, meshtastic_NodeInfo> &nMap = _client->nodeInfos();
+
+    for (set<uint32_t>::const_iterator it = allIds.begin(); it != allIds.end(); it++) {
+        uint32_t id = *it;
+        const meshtastic_Position *pos = NULL;
+
+        map<uint32_t, meshtastic_Position>::const_iterator pIt = pMap.find(id);
+        if (pIt != pMap.end() && (pIt->second.latitude_i != 0 || pIt->second.longitude_i != 0)) {
+            pos = &pIt->second;
+        } else {
+            map<uint32_t, meshtastic_NodeInfo>::const_iterator nIt = nMap.find(id);
+            if (nIt != nMap.end() && nIt->second.has_position &&
+                (nIt->second.position.latitude_i != 0 || nIt->second.position.longitude_i != 0)) {
+                pos = &nIt->second.position;
+            }
         }
-        if ((it->second.latitude_i == 0) && (it->second.longitude_i == 0)) {
+
+        if (pos == NULL) {
             continue;
         }
 
@@ -1482,8 +1536,8 @@ string ChatBot::toolGetNodePositions(const string &nodeQuery) const
 
         char idBuf[16];
         snprintf(idBuf, sizeof(idBuf), "!%08x", id);
-        double lat = it->second.latitude_i * 1e-7;
-        double lon = it->second.longitude_i * 1e-7;
+        double lat = pos->latitude_i * 1e-7;
+        double lon = pos->longitude_i * 1e-7;
 
         ss << "{\"id\":\"" << idBuf << "\"";
         string sName = _client->lookupShortName(id);
@@ -1492,8 +1546,8 @@ string ChatBot::toolGetNodePositions(const string &nodeQuery) const
         }
         ss << ",\"latitude\":" << lat;
         ss << ",\"longitude\":" << lon;
-        if (it->second.altitude != 0) {
-            ss << ",\"altitude_m\":" << it->second.altitude;
+        if (pos->altitude != 0) {
+            ss << ",\"altitude_m\":" << pos->altitude;
         }
         ss << "}";
     }
