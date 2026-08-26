@@ -178,22 +178,50 @@ string GeminiChat::getSystemInstruction(uint32_t from) const
     strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S UTC", &tm);
 
     stringstream ss;
-    ss << "You are a Meshtastic mesh chatbot. Current time is " << timeBuf << ".";
+    ss << "You are an AI assistant gateway connected to the Meshtastic mesh network with Internet access. Current time is " << timeBuf << ".";
 
-    if (from != 0) {
-        shared_ptr<MeshClient> client = getClient();
-        if (client != NULL) {
-            string name = client->getDisplayName(from);
-            if (!name.empty()) {
-                ss << " You are talking to user \"" << name << "\"";
+    shared_ptr<MeshClient> client = getClient();
+    if (client != NULL) {
+        uint32_t myId = client->whoami();
+        if ((myId != 0) && (myId != 0xffffffffU)) {
+            string myShort = client->lookupShortName(myId);
+            string myLong = client->lookupLongName(myId);
+            char nodeBuf[32];
+            snprintf(nodeBuf, sizeof(nodeBuf), " (!%08x)", myId);
+            ss << " Your node ID is" << nodeBuf;
+            if (!myLong.empty()) {
+                ss << ", long name is \"" << myLong << "\"";
             }
+            if (!myShort.empty()) {
+                ss << ", short name is \"" << myShort << "\"";
+            }
+            ss << ".";
         }
-        char nodeBuf[16];
-        snprintf(nodeBuf, sizeof(nodeBuf), " (!%08x)", from);
-        ss << nodeBuf << ".";
     }
 
-    ss << " Reply in one short plain-text sentence. Maximum 180 characters. "
+    if (from != 0) {
+        if (client != NULL) {
+            string fromShort = client->lookupShortName(from);
+            string fromLong = client->lookupLongName(from);
+            char nodeBuf[32];
+            snprintf(nodeBuf, sizeof(nodeBuf), " (!%08x)", from);
+            ss << " You are talking to user" << nodeBuf;
+            if (!fromLong.empty()) {
+                ss << " with long name \"" << fromLong << "\"";
+            }
+            if (!fromShort.empty() && (fromShort != fromLong)) {
+                ss << " (short name \"" << fromShort << "\")";
+            }
+            ss << ".";
+        } else {
+            char nodeBuf[32];
+            snprintf(nodeBuf, sizeof(nodeBuf), " (!%08x)", from);
+            ss << " You are talking to user" << nodeBuf << ".";
+        }
+    }
+
+    ss << " You have access to tools to query mesh network nodes, telemetry, stats, and locations. "
+       << "Reply in one short plain-text sentence. Maximum 180 characters. "
        << "No markdown, no lists, no emoji, and no quotes around the whole reply.";
 
     return ss.str();
@@ -281,9 +309,109 @@ string GeminiChat::extractCandidateText(const string &body)
     return found;
 }
 
+bool GeminiChat::extractFunctionCall(const string &body, GeminiFunctionCall &fc)
+{
+    size_t cand = body.find("\"candidates\"");
+    if (cand == string::npos) {
+        return false;
+    }
+
+    size_t fcPos = body.find("\"functionCall\"", cand);
+    if (fcPos == string::npos) {
+        return false;
+    }
+
+    fc.name.clear();
+    fc.argsJson.clear();
+    fc.thoughtSignature.clear();
+
+    size_t tsPos = body.find("\"thoughtSignature\"", cand);
+    if (tsPos == string::npos) {
+        tsPos = body.find("\"thought_signature\"", cand);
+    }
+    if (tsPos != string::npos) {
+        size_t k = (body[tsPos + 8] == 'S' || body[tsPos + 8] == 's') ? (tsPos + 18) : (tsPos + 19);
+        while ((k < body.size()) && isspace(static_cast<unsigned char>(body[k]))) {
+            k++;
+        }
+        if ((k < body.size()) && (body[k] == ':')) {
+            k++;
+            while ((k < body.size()) && isspace(static_cast<unsigned char>(body[k]))) {
+                k++;
+            }
+            parseJsonString(body, k, fc.thoughtSignature);
+        }
+    }
+
+    size_t namePos = body.find("\"name\"", fcPos);
+    if (namePos == string::npos) {
+        return false;
+    }
+    size_t i = namePos + 6;
+    while ((i < body.size()) && isspace(static_cast<unsigned char>(body[i]))) {
+        i++;
+    }
+    if ((i >= body.size()) || (body[i] != ':')) {
+        return false;
+    }
+    i++;
+    while ((i < body.size()) && isspace(static_cast<unsigned char>(body[i]))) {
+        i++;
+    }
+    if (!parseJsonString(body, i, fc.name)) {
+        return false;
+    }
+
+    size_t argsPos = body.find("\"args\"", fcPos);
+    if (argsPos != string::npos) {
+        size_t j = argsPos + 6;
+        while ((j < body.size()) && isspace(static_cast<unsigned char>(body[j]))) {
+            j++;
+        }
+        if ((j < body.size()) && (body[j] == ':')) {
+            j++;
+            while ((j < body.size()) && isspace(static_cast<unsigned char>(body[j]))) {
+                j++;
+            }
+            if ((j < body.size()) && (body[j] == '{')) {
+                size_t startObj = j;
+                int depth = 0;
+                while (j < body.size()) {
+                    if (body[j] == '{') {
+                        depth++;
+                    } else if (body[j] == '}') {
+                        depth--;
+                        if (depth == 0) {
+                            j++;
+                            fc.argsJson = body.substr(startObj, j - startObj);
+                            break;
+                        }
+                    }
+                    j++;
+                }
+            }
+        }
+    }
+    if (fc.argsJson.empty()) {
+        fc.argsJson = "{}";
+    }
+
+    return !fc.name.empty();
+}
+
+static const char *kMeshToolDeclarations =
+    "{\"google_search\":{}},"
+    "{\"functionDeclarations\":["
+    "{\"name\":\"get_mesh_nodes\",\"description\":\"Get list of all discovered nodes in the Meshtastic mesh network including node IDs, names, signal quality (SNR), hops away, and last heard time.\",\"parameters\":{\"type\":\"OBJECT\",\"properties\":{}}},"
+    "{\"name\":\"get_node_telemetry\",\"description\":\"Get device metrics (battery percentage, voltage, channel utilization, uptime) and environmental sensor metrics (temperature, humidity, barometric pressure, air quality) for a specific node or all nodes.\",\"parameters\":{\"type\":\"OBJECT\",\"properties\":{\"node\":{\"type\":\"STRING\",\"description\":\"Optional node ID (e.g. !12345678 or 0x12345678) or node name. If omitted, returns telemetry for all nodes.\"}}}},"
+    "{\"name\":\"get_network_stats\",\"description\":\"Get mesh network traffic statistics (packets and bytes transmitted and received, direct message and channel message counts), LoRa radio settings (preset, region, hop limit, tx power), and active channels.\",\"parameters\":{\"type\":\"OBJECT\",\"properties\":{}}},"
+    "{\"name\":\"get_node_positions\",\"description\":\"Get GPS location coordinates (latitude, longitude, altitude) for nodes on the mesh network.\",\"parameters\":{\"type\":\"OBJECT\",\"properties\":{\"node\":{\"type\":\"STRING\",\"description\":\"Optional node ID or name. If omitted, returns positions for all nodes.\"}}}}"
+    "]}";
+
 string GeminiChat::buildRequest(uint32_t from,
                                 const vector<ChatTurn> &history,
-                                const string &message) const
+                                const string &message,
+                                const vector<GeminiToolTurn> &toolTurns) const
 {
     stringstream ss;
     vector<ChatTurn>::const_iterator it;
@@ -309,8 +437,25 @@ string GeminiChat::buildRequest(uint32_t from,
     ss << "{\"role\":\"user\",\"parts\":[{\"text\":\""
        << jsonEscape(message) << "\"}]}";
 
+    for (size_t t = 0; t < toolTurns.size(); t++) {
+        ss << ",{\"role\":\"model\",\"parts\":[{";
+        if (!toolTurns[t].thoughtSignature.empty()) {
+            ss << "\"thoughtSignature\":\""
+               << jsonEscape(toolTurns[t].thoughtSignature) << "\",";
+        }
+        ss << "\"functionCall\":{"
+           << "\"name\":\"" << jsonEscape(toolTurns[t].functionName) << "\","
+           << "\"args\":" << toolTurns[t].functionArgsJson
+           << "}}]}";
+        ss << ",{\"role\":\"user\",\"parts\":[{\"functionResponse\":{"
+           << "\"name\":\"" << jsonEscape(toolTurns[t].functionName) << "\","
+           << "\"response\":{\"result\":" << toolTurns[t].functionResponseJson << "}"
+           << "}}]}";
+    }
+
     ss << "],";
-    ss << "\"tools\":[{\"google_search\":{}}],";
+    ss << "\"tools\":[" << kMeshToolDeclarations << "],";
+    ss << "\"toolConfig\":{\"includeServerSideToolInvocations\":true},";
     ss << "\"generationConfig\":{"
        << "\"maxOutputTokens\":" << GEMINI_MAX_OUTPUT_TOKENS << ","
        << "\"thinkingConfig\":{"
@@ -375,22 +520,7 @@ string GeminiChat::httpPost(const string &url, const string &body) const
         if (httpCode == 200) {
             result = response;
         } else {
-            cerr << "gemini: HTTP " << httpCode << endl;
-#if DEBUG_CHATBOT
-            {
-                string err = response;
-                size_t i;
-                for (i = 0; i < err.size(); i++) {
-                    if ((err[i] == '\n') || (err[i] == '\r')) {
-                        err[i] = ' ';
-                    }
-                }
-                if (err.size() > 300) {
-                    err = err.substr(0, 300);
-                }
-                cout << "chatbot: HTTP body " << err << endl;
-            }
-#endif
+            cerr << "gemini: HTTP " << httpCode << ": " << response << endl;
         }
     } else {
 #if DEBUG_CHATBOT
@@ -405,6 +535,8 @@ string GeminiChat::httpPost(const string &url, const string &body) const
     return result;
 }
 
+#define GEMINI_MAX_TOOL_ITERATIONS 3
+
 string GeminiChat::generate(uint32_t from,
                             const vector<ChatTurn> &history,
                             const string &message)
@@ -412,6 +544,7 @@ string GeminiChat::generate(uint32_t from,
     string url;
     string body;
     string response;
+    vector<GeminiToolTurn> toolTurns;
 
     if (!enabled() || message.empty()) {
 #if DEBUG_CHATBOT
@@ -424,20 +557,42 @@ string GeminiChat::generate(uint32_t from,
 
     url = string("https://generativelanguage.googleapis.com/v1beta/models/") +
         _model + string(":generateContent");
-#if DEBUG_CHATBOT
-    cout << "chatbot: POST " << url
-         << " history=" << history.size() << endl;
-#endif
-    body = buildRequest(from, history, message);
-    response = httpPost(url, body);
-    if (response.empty()) {
-#if DEBUG_CHATBOT
-        cout << "chatbot: empty HTTP body" << endl;
-#endif
-        return string();
-    }
 
-    {
+    for (int iter = 0; iter < GEMINI_MAX_TOOL_ITERATIONS; iter++) {
+#if DEBUG_CHATBOT
+        cout << "chatbot: POST " << url
+             << " history=" << history.size()
+             << " toolTurns=" << toolTurns.size()
+             << " iter=" << iter << endl;
+#endif
+        body = buildRequest(from, history, message, toolTurns);
+        response = httpPost(url, body);
+        if (response.empty()) {
+#if DEBUG_CHATBOT
+            cout << "chatbot: empty HTTP body" << endl;
+#endif
+            return string();
+        }
+
+        GeminiFunctionCall fc;
+        if (extractFunctionCall(response, fc)) {
+#if DEBUG_CHATBOT
+            cout << "chatbot: functionCall name=" << fc.name
+                 << " args=" << fc.argsJson << endl;
+#endif
+            string toolResult = executeTool(fc.name, fc.argsJson);
+#if DEBUG_CHATBOT
+            cout << "chatbot: toolResult bytes=" << toolResult.size() << endl;
+#endif
+            GeminiToolTurn turn;
+            turn.functionName = fc.name;
+            turn.functionArgsJson = fc.argsJson;
+            turn.thoughtSignature = fc.thoughtSignature;
+            turn.functionResponseJson = toolResult;
+            toolTurns.push_back(turn);
+            continue;
+        }
+
         string text = extractCandidateText(response);
 #if DEBUG_CHATBOT
         cout << "chatbot: parsed text bytes=" << text.size() << endl;
@@ -457,6 +612,8 @@ string GeminiChat::generate(uint32_t from,
 #endif
         return text;
     }
+
+    return string();
 }
 
 /*

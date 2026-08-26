@@ -6,6 +6,9 @@
 
 #include <time.h>
 #include <iostream>
+#include <sstream>
+#include <cstdlib>
+#include <iomanip>
 #include <ChatBot.hxx>
 
 #ifndef DEBUG_CHATBOT
@@ -262,6 +265,338 @@ void ChatBot::processJob(const ChatJob &job)
          << " dest=" << job.dest
          << " bytes=" << reply.size() << endl;
 #endif
+}
+
+uint32_t ChatBot::resolveNodeId(const string &nodeQuery) const
+{
+    if (nodeQuery.empty() || (_client == NULL)) {
+        return 0xffffffffU;
+    }
+
+    if ((nodeQuery == "self") || (nodeQuery == "me") || (nodeQuery == "local")) {
+        return _client->whoami();
+    }
+
+    if (nodeQuery[0] == '!') {
+        char *endptr = NULL;
+        unsigned long v = strtoul(nodeQuery.c_str() + 1, &endptr, 16);
+        if (endptr && (*endptr == '\0')) {
+            return (uint32_t) v;
+        }
+    }
+
+    if ((nodeQuery.size() > 2) && (nodeQuery[0] == '0') &&
+        ((nodeQuery[1] == 'x') || (nodeQuery[1] == 'X'))) {
+        char *endptr = NULL;
+        unsigned long v = strtoul(nodeQuery.c_str() + 2, &endptr, 16);
+        if (endptr && (*endptr == '\0')) {
+            return (uint32_t) v;
+        }
+    }
+
+    uint32_t idByName = _client->getId(nodeQuery);
+    if (idByName != 0xffffffffU) {
+        return idByName;
+    }
+
+    if (nodeQuery.size() == 8) {
+        char *endptr = NULL;
+        unsigned long v = strtoul(nodeQuery.c_str(), &endptr, 16);
+        if (endptr && (*endptr == '\0')) {
+            return (uint32_t) v;
+        }
+    }
+
+    return 0xffffffffU;
+}
+
+string ChatBot::toolGetMeshNodes(void) const
+{
+    if (_client == NULL) {
+        return "{\"error\": \"client not connected\"}";
+    }
+
+    stringstream ss;
+    const map<uint32_t, meshtastic_NodeInfo> &nodes = _client->nodeInfos();
+    uint32_t myId = _client->whoami();
+
+    ss << "{\"total_nodes\":" << nodes.size() << ",\"nodes\":[";
+    bool first = true;
+    for (map<uint32_t, meshtastic_NodeInfo>::const_iterator it = nodes.begin();
+         it != nodes.end(); it++) {
+        if (!first) {
+            ss << ",";
+        }
+        first = false;
+
+        uint32_t id = it->first;
+        char idBuf[16];
+        snprintf(idBuf, sizeof(idBuf), "!%08x", id);
+
+        string sName = _client->lookupShortName(id);
+        string lName = _client->lookupLongName(id);
+
+        ss << "{\"id\":\"" << idBuf << "\"";
+        if (id == myId) {
+            ss << ",\"is_self\":true";
+        }
+        if (!sName.empty()) {
+            ss << ",\"short_name\":\"" << sName << "\"";
+        }
+        if (!lName.empty()) {
+            ss << ",\"long_name\":\"" << lName << "\"";
+        }
+        if (it->second.has_hops_away) {
+            ss << ",\"hops\":" << (unsigned int) it->second.hops_away;
+        }
+        if (it->second.snr != 0.0f) {
+            ss << ",\"snr\":" << it->second.snr;
+        }
+        if (it->second.last_heard != 0) {
+            time_t now = time(NULL);
+            int ago = (int)(now - it->second.last_heard);
+            if (ago >= 0) {
+                ss << ",\"last_heard_seconds_ago\":" << ago;
+            }
+        }
+        ss << "}";
+    }
+    ss << "]}";
+    return ss.str();
+}
+
+string ChatBot::toolGetNodeTelemetry(const string &nodeQuery) const
+{
+    if (_client == NULL) {
+        return "{\"error\": \"client not connected\"}";
+    }
+
+    uint32_t targetId = 0xffffffffU;
+    if (!nodeQuery.empty()) {
+        targetId = resolveNodeId(nodeQuery);
+        if (targetId == 0xffffffffU) {
+            return "{\"error\": \"node not found for query: " + nodeQuery + "\"}";
+        }
+    }
+
+    stringstream ss;
+    ss << "{\"telemetry\":[";
+    bool first = true;
+
+    const map<uint32_t, meshtastic_NodeInfo> &nodes = _client->nodeInfos();
+    for (map<uint32_t, meshtastic_NodeInfo>::const_iterator it = nodes.begin();
+         it != nodes.end(); it++) {
+        uint32_t id = it->first;
+        if ((targetId != 0xffffffffU) && (id != targetId)) {
+            continue;
+        }
+
+        map<uint32_t, meshtastic_DeviceMetrics>::const_iterator dIt =
+            _client->deviceMetrics().find(id);
+        map<uint32_t, meshtastic_EnvironmentMetrics>::const_iterator eIt =
+            _client->environmentMetrics().find(id);
+
+        if ((dIt == _client->deviceMetrics().end()) &&
+            (eIt == _client->environmentMetrics().end()) &&
+            (targetId == 0xffffffffU)) {
+            continue;
+        }
+
+        if (!first) {
+            ss << ",";
+        }
+        first = false;
+
+        char idBuf[16];
+        snprintf(idBuf, sizeof(idBuf), "!%08x", id);
+        ss << "{\"id\":\"" << idBuf << "\"";
+        string sName = _client->lookupShortName(id);
+        if (!sName.empty()) {
+            ss << ",\"name\":\"" << sName << "\"";
+        }
+
+        if (dIt != _client->deviceMetrics().end()) {
+            if (dIt->second.has_battery_level) {
+                ss << ",\"battery_level\":" << dIt->second.battery_level;
+            }
+            if (dIt->second.has_voltage) {
+                ss << ",\"voltage\":" << dIt->second.voltage;
+            }
+            if (dIt->second.has_channel_utilization) {
+                ss << ",\"channel_utilization\":" << dIt->second.channel_utilization;
+            }
+            if (dIt->second.has_air_util_tx) {
+                ss << ",\"air_util_tx\":" << dIt->second.air_util_tx;
+            }
+            if (dIt->second.has_uptime_seconds) {
+                ss << ",\"uptime_seconds\":" << dIt->second.uptime_seconds;
+            }
+        }
+
+        if (eIt != _client->environmentMetrics().end()) {
+            if (eIt->second.has_temperature) {
+                ss << ",\"temperature_c\":" << eIt->second.temperature;
+            }
+            if (eIt->second.has_relative_humidity) {
+                ss << ",\"humidity\":" << eIt->second.relative_humidity;
+            }
+            if (eIt->second.has_barometric_pressure) {
+                ss << ",\"pressure_hpa\":" << eIt->second.barometric_pressure;
+            }
+            if (eIt->second.has_iaq) {
+                ss << ",\"iaq\":" << eIt->second.iaq;
+            }
+        }
+        ss << "}";
+    }
+    ss << "]}";
+    return ss.str();
+}
+
+string ChatBot::toolGetNetworkStats(void) const
+{
+    if (_client == NULL) {
+        return "{\"error\": \"client not connected\"}";
+    }
+
+    stringstream ss;
+    ss << "{\"mesh_stats\":{";
+    ss << "\"packets_rx\":" << _client->meshDevicePacketsReceived() << ",";
+    ss << "\"packets_tx\":" << _client->meshDevicePacketsSent() << ",";
+    ss << "\"bytes_rx\":" << _client->meshDeviceBytesReceived() << ",";
+    ss << "\"bytes_tx\":" << _client->meshDeviceBytesSent() << ",";
+    ss << "\"direct_messages_rx\":" << _client->dmRx() << ",";
+    ss << "\"direct_messages_tx\":" << _client->dmTx() << ",";
+    ss << "\"channel_messages_rx\":" << _client->cmRx() << ",";
+    ss << "\"channel_messages_tx\":" << _client->cmTx() << ",";
+    ss << "\"total_nodes_known\":" << _client->nodeInfos().size();
+    ss << "},";
+
+    ss << "\"lora_config\":{";
+    const meshtastic_Config_LoRaConfig &lora = _client->loraConfig();
+    ss << "\"hop_limit\":" << lora.hop_limit << ",";
+    ss << "\"tx_power\":" << lora.tx_power << ",";
+    ss << "\"region\":" << lora.region << ",";
+    ss << "\"modem_preset\":" << lora.modem_preset;
+    ss << "},";
+
+    ss << "\"channels\":[";
+    bool first = true;
+    for (map<uint8_t, meshtastic_Channel>::const_iterator it = _client->channels().begin();
+         it != _client->channels().end(); it++) {
+        if (it->second.role == meshtastic_Channel_Role_DISABLED) {
+            continue;
+        }
+        if (!first) {
+            ss << ",";
+        }
+        first = false;
+        ss << "{\"index\":" << (unsigned int) it->first;
+        if (it->second.settings.name[0] != '\0') {
+            ss << ",\"name\":\"" << it->second.settings.name << "\"";
+        }
+        ss << ",\"role\":" << it->second.role << "}";
+    }
+    ss << "]}";
+
+    return ss.str();
+}
+
+string ChatBot::toolGetNodePositions(const string &nodeQuery) const
+{
+    if (_client == NULL) {
+        return "{\"error\": \"client not connected\"}";
+    }
+
+    uint32_t targetId = 0xffffffffU;
+    if (!nodeQuery.empty()) {
+        targetId = resolveNodeId(nodeQuery);
+        if (targetId == 0xffffffffU) {
+            return "{\"error\": \"node not found for query: " + nodeQuery + "\"}";
+        }
+    }
+
+    stringstream ss;
+    ss << "{\"positions\":[";
+    bool first = true;
+
+    for (map<uint32_t, meshtastic_Position>::const_iterator it = _client->positions().begin();
+         it != _client->positions().end(); it++) {
+        uint32_t id = it->first;
+        if ((targetId != 0xffffffffU) && (id != targetId)) {
+            continue;
+        }
+        if ((it->second.latitude_i == 0) && (it->second.longitude_i == 0)) {
+            continue;
+        }
+
+        if (!first) {
+            ss << ",";
+        }
+        first = false;
+
+        char idBuf[16];
+        snprintf(idBuf, sizeof(idBuf), "!%08x", id);
+        double lat = it->second.latitude_i * 1e-7;
+        double lon = it->second.longitude_i * 1e-7;
+
+        ss << "{\"id\":\"" << idBuf << "\"";
+        string sName = _client->lookupShortName(id);
+        if (!sName.empty()) {
+            ss << ",\"name\":\"" << sName << "\"";
+        }
+        ss << ",\"latitude\":" << lat;
+        ss << ",\"longitude\":" << lon;
+        if (it->second.altitude != 0) {
+            ss << ",\"altitude_m\":" << it->second.altitude;
+        }
+        ss << "}";
+    }
+    ss << "]}";
+
+    return ss.str();
+}
+
+string ChatBot::executeTool(const string &name, const string &argsJson) const
+{
+    if (name == "get_mesh_nodes") {
+        return toolGetMeshNodes();
+    } else if (name == "get_node_telemetry") {
+        string node;
+        size_t p = argsJson.find("\"node\"");
+        if (p != string::npos) {
+            size_t c = argsJson.find(":", p);
+            if (c != string::npos) {
+                size_t q1 = argsJson.find("\"", c);
+                if (q1 != string::npos) {
+                    size_t q2 = argsJson.find("\"", q1 + 1);
+                    if (q2 != string::npos) {
+                        node = argsJson.substr(q1 + 1, q2 - q1 - 1);
+                    }
+                }
+            }
+        }
+        return toolGetNodeTelemetry(node);
+    } else if (name == "get_network_stats") {
+        return toolGetNetworkStats();
+    } else if (name == "get_node_positions") {
+        string node;
+        size_t p = argsJson.find("\"node\"");
+        if (p != string::npos) {
+            size_t c = argsJson.find(":", p);
+            if (c != string::npos) {
+                size_t q1 = argsJson.find("\"", c);
+                if (q1 != string::npos) {
+                    size_t q2 = argsJson.find("\"", q1 + 1);
+                    if (q2 != string::npos) {
+                        node = argsJson.substr(q1 + 1, q2 - q1 - 1);
+                    }
+                }
+            }
+        }
+        return toolGetNodePositions(node);
+    }
+    return "{\"error\": \"unknown tool: " + name + "\"}";
 }
 
 /*

@@ -64,6 +64,13 @@ protected:
         return _client;
     }
 
+    virtual string toolGetMeshNodes(void) const;
+    virtual string toolGetNodeTelemetry(const string &nodeQuery = "") const;
+    virtual string toolGetNetworkStats(void) const;
+    virtual string toolGetNodePositions(const string &nodeQuery = "") const;
+    virtual string executeTool(const string &name, const string &argsJson) const;
+    uint32_t resolveNodeId(const string &nodeQuery) const;
+
 private:
 
     struct ChatJob {

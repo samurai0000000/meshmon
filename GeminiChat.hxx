@@ -11,6 +11,19 @@
 
 using namespace std;
 
+struct GeminiFunctionCall {
+    string name;
+    string argsJson;
+    string thoughtSignature;
+};
+
+struct GeminiToolTurn {
+    string functionName;
+    string functionArgsJson;
+    string thoughtSignature;
+    string functionResponseJson;
+};
+
 class GeminiChat : public ChatBot {
 
 public:
@@ -32,10 +45,12 @@ private:
     static string jsonEscape(const string &s);
     static bool parseJsonString(const string &s, size_t &i, string &out);
     static string extractCandidateText(const string &body);
+    static bool extractFunctionCall(const string &body, GeminiFunctionCall &fc);
     string getSystemInstruction(uint32_t from) const;
     string buildRequest(uint32_t from,
                         const vector<ChatTurn> &history,
-                        const string &message) const;
+                        const string &message,
+                        const vector<GeminiToolTurn> &toolTurns) const;
     string httpPost(const string &url, const string &body) const;
 
 private:
