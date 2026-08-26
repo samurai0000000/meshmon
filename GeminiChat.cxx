@@ -236,73 +236,111 @@ string GeminiChat::getSystemInstruction(uint32_t from, uint32_t dest, uint8_t ch
 
 string GeminiChat::extractCandidateText(const string &body)
 {
-    size_t cand;
-    size_t pos;
-    string value;
-    string found;
-
-    cand = body.find("\"candidates\"");
+    size_t cand = body.find("\"candidates\"");
     if (cand == string::npos) {
         return string();
     }
 
-    pos = cand;
-    while (pos < body.size()) {
-        size_t textKey;
-        size_t i;
-        size_t windowBeg;
-        size_t windowEnd;
-        bool thought = false;
+    size_t contentPos = body.find("\"content\"", cand);
+    if (contentPos == string::npos) {
+        return string();
+    }
 
-        textKey = body.find("\"text\"", pos);
-        if (textKey == string::npos) {
+    size_t partsKey = body.find("\"parts\"", contentPos);
+    if (partsKey == string::npos) {
+        return string();
+    }
+
+    string partsJson;
+    if (!extractJsonArray(body, partsKey, partsJson)) {
+        return string();
+    }
+
+    string found;
+    size_t pos = 0;
+    while (pos < partsJson.size()) {
+        size_t objStart = partsJson.find('{', pos);
+        if (objStart == string::npos) {
             break;
         }
-        pos = textKey + 6;
 
-        i = textKey + 6;
-        while ((i < body.size()) &&
-               isspace(static_cast<unsigned char>(body[i]))) {
+        size_t objEnd = string::npos;
+        int depth = 0;
+        bool inString = false;
+        bool escape = false;
+        for (size_t i = objStart; i < partsJson.size(); i++) {
+            char c = partsJson[i];
+            if (inString) {
+                if (escape) {
+                    escape = false;
+                } else if (c == '\\') {
+                    escape = true;
+                } else if (c == '"') {
+                    inString = false;
+                }
+                continue;
+            }
+            if (c == '"') {
+                inString = true;
+                escape = false;
+            } else if (c == '{') {
+                depth++;
+            } else if (c == '}') {
+                depth--;
+                if (depth == 0) {
+                    objEnd = i;
+                    break;
+                }
+            }
+        }
+        if (objEnd == string::npos) {
+            break;
+        }
+
+        string partObj = partsJson.substr(objStart, objEnd - objStart + 1);
+        pos = objEnd + 1;
+
+        if ((partObj.find("\"thought\":true") != string::npos) ||
+            (partObj.find("\"thought\": true") != string::npos) ||
+            (partObj.find("\"thought\": 1") != string::npos)) {
+            continue;
+        }
+
+        if (partObj.find("\"functionCall\"") != string::npos) {
+            continue;
+        }
+
+        size_t textKey = partObj.find("\"text\"");
+        if (textKey == string::npos) {
+            continue;
+        }
+        size_t i = textKey + 6;
+        while ((i < partObj.size()) && isspace(static_cast<unsigned char>(partObj[i]))) {
             i++;
         }
-        if ((i >= body.size()) || (body[i] != ':')) {
+        if ((i >= partObj.size()) || (partObj[i] != ':')) {
             continue;
         }
         i++;
-        while ((i < body.size()) &&
-               isspace(static_cast<unsigned char>(body[i]))) {
+        while ((i < partObj.size()) && isspace(static_cast<unsigned char>(partObj[i]))) {
             i++;
         }
-        if (!parseJsonString(body, i, value)) {
+        string value;
+        if (!parseJsonString(partObj, i, value)) {
             continue;
         }
 
-        while (!value.empty() &&
-               isspace(static_cast<unsigned char>(value[value.size() - 1]))) {
+        while (!value.empty() && isspace(static_cast<unsigned char>(value[value.size() - 1]))) {
             value.erase(value.size() - 1);
         }
-        {
-            size_t lead = 0;
-            while ((lead < value.size()) &&
-                   isspace(static_cast<unsigned char>(value[lead]))) {
-                lead++;
-            }
-            if (lead != 0) {
-                value = value.substr(lead);
-            }
+        size_t lead = 0;
+        while ((lead < value.size()) && isspace(static_cast<unsigned char>(value[lead]))) {
+            lead++;
+        }
+        if (lead != 0) {
+            value = value.substr(lead);
         }
         if (value.empty()) {
-            continue;
-        }
-
-        windowBeg = (textKey > 96) ? (textKey - 96) : cand;
-        windowEnd = (i + 96 < body.size()) ? (i + 96) : body.size();
-        if (body.find("\"thought\":true", windowBeg) < windowEnd) {
-            thought = true;
-        } else if (body.find("\"thought\": true", windowBeg) < windowEnd) {
-            thought = true;
-        }
-        if (thought) {
             continue;
         }
 
