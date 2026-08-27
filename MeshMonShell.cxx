@@ -19,7 +19,7 @@
 MeshMonShell::MeshMonShell(shared_ptr<MeshClient> client)
     : MeshShell(client)
 {
-
+    _help_list.push_back("calib");
 }
 
 MeshMonShell::~MeshMonShell()
@@ -43,22 +43,16 @@ void MeshMonShell::printStatusHelp(void)
 
 int MeshMonShell::help(int argc, char **argv)
 {
-    if ((argc > 1) && (strcmp(argv[1], "status") == 0)) {
-        printStatusHelp();
-        return 0;
-    }
-    if ((argc > 1) && (strcmp(argv[1], "calib") == 0)) {
-        char *calibArgv[2] = { argv[1], (char *) "help" };
-        return calib(2, calibArgv);
-    }
-
-    MeshShell::help(argc, argv);
-    this->printf("\tcalib\n");
-    return 0;
+    return MeshShell::help(argc, argv);
 }
 
 int MeshMonShell::system(int argc, char **argv)
 {
+    if ((argc >= 2) &&
+        ((strcmp(argv[1], "-h") == 0) || (strcmp(argv[1], "--help") == 0))) {
+        return MeshShell::system(argc, argv);
+    }
+
     shared_ptr<MeshMon> meshmon = dynamic_pointer_cast<MeshMon>(_client);
     const shared_ptr<MqttClient> meshtasticMqtt =
         meshmon ? meshmon->meshtasticMqtt() : NULL;
@@ -909,6 +903,23 @@ bool MeshMonShell::resolveNodeKey(const string &nodeArg, string &outKey,
 
 int MeshMonShell::calib(int argc, char **argv)
 {
+    if ((argc >= 2) &&
+        ((strcmp(argv[1], "-h") == 0) || (strcmp(argv[1], "--help") == 0) ||
+         (strcmp(argv[1], "help") == 0))) {
+        this->printf("Usage: %s [-h|--help] [command] [args...]\n", argv[0]);
+        this->printf("  Manage telemetry sensor calibration points.\n");
+        this->printf("Commands:\n");
+        this->printf("  calib                                  Show all calibration points\n");
+        this->printf("  calib show [<node>]                    Show calibration for a node\n");
+        this->printf("  calib set <node> <sensor> <raw> <cal>  Set a calibration point\n");
+        this->printf("  calib del <node> <sensor> <raw>        Delete a calibration point\n");
+        this->printf("  calib clear <node> [<sensor>]          Clear calibration for a node\n");
+        this->printf("  calib reload                           Reload calibration from ~/.meshmon.calib\n");
+        this->printf("Sensors: temp (temperature, \u00b0C), hum (humidity, %%), press (pressure, hPa)\n");
+        this->printf("Nodes: node shortname, hex ID (e.g. 2bf941d4, !2bf941d4) or 'default'\n");
+        return 0;
+    }
+
     shared_ptr<MeshMon> meshmon = dynamic_pointer_cast<MeshMon>(_client);
     shared_ptr<Calibration> calibration =
         meshmon ? meshmon->calibration() : NULL;
