@@ -42,6 +42,7 @@ protected:
     virtual void gotRebooted(bool rebooted);
     virtual void loop(void);
     virtual void crontab(const struct tm *now);
+    virtual void hourlyTask(const struct tm *now);
     virtual void gotModuleConfigMQTT(const meshtastic_ModuleConfig_MQTTConfig &c);
     virtual void gotMqttClientProxyMessage(const meshtastic_MqttClientProxyMessage &m);
     virtual void gotTextMessage(const meshtastic_MeshPacket &packet,
