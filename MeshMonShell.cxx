@@ -8,6 +8,7 @@
 #include <MqttClient.hxx>
 #include <MeshMonShell.hxx>
 #include <Calibration.hxx>
+#include <GeminiChat.hxx>
 #include <cstring>
 #include <cstdlib>
 #include <cctype>
@@ -20,6 +21,7 @@ MeshMonShell::MeshMonShell(shared_ptr<MeshClient> client)
     : MeshShell(client)
 {
     _help_list.push_back("calib");
+    _help_list.push_back("chatbot");
 }
 
 MeshMonShell::~MeshMonShell()
@@ -118,6 +120,9 @@ int MeshMonShell::unknown_command(int argc, char **argv)
 {
     if ((argc > 0) && (strcmp(argv[0], "calib") == 0)) {
         return calib(argc, argv);
+    }
+    if ((argc > 0) && (strcmp(argv[0], "chatbot") == 0)) {
+        return chatbot(argc, argv);
     }
 
     return MeshShell::unknown_command(argc, argv);
@@ -1086,6 +1091,221 @@ int MeshMonShell::calib(int argc, char **argv)
     this->printf("Nodes: node shortname, hex ID (e.g. 2bf941d4, !2bf941d4) or 'default'\n");
 
     return 0;
+}
+
+void MeshMonShell::printChatbotHelp(void)
+{
+    this->printf("Usage:\n");
+    this->printf("  chatbot                     - Show chatbot status and configuration\n");
+    this->printf("  chatbot status              - Show chatbot status and configuration\n");
+    this->printf("  chatbot stats [reset]       - Show invocation statistics (or reset counters)\n");
+    this->printf("  chatbot tokens [reset]      - Show detailed token usage (or reset counters)\n");
+    this->printf("  chatbot search <on|off>     - Enable or disable Google Search grounding\n");
+    this->printf("  chatbot timeout <seconds>   - Set API HTTP request timeout in seconds\n");
+    this->printf("  chatbot max_tokens <num>    - Set max output tokens limit (16..4096)\n");
+    this->printf("  chatbot model [name]        - Show or change active Gemini model\n");
+    this->printf("  chatbot help                - Show this help message\n");
+}
+
+int MeshMonShell::chatbot(int argc, char **argv)
+{
+    shared_ptr<MeshMon> meshmon = dynamic_pointer_cast<MeshMon>(_client);
+    if (!meshmon) {
+        this->printf("Error: MeshMon client not available\n");
+        return -1;
+    }
+
+    shared_ptr<ChatBot> bot = meshmon->chatbot();
+    if (!bot) {
+        this->printf("Chatbot is not configured or disabled (check gemini section in ~/.meshmon)\n");
+        return 0;
+    }
+
+    shared_ptr<GeminiChat> gemini = dynamic_pointer_cast<GeminiChat>(bot);
+
+    if ((argc >= 2) &&
+        ((strcmp(argv[1], "help") == 0) ||
+         (strcmp(argv[1], "-h") == 0) ||
+         (strcmp(argv[1], "--help") == 0) ||
+         (strcmp(argv[1], "?") == 0))) {
+        printChatbotHelp();
+        return 0;
+    }
+
+    if ((argc <= 1) || (strcmp(argv[1], "status") == 0)) {
+        ChatBotStats stats = bot->getStats();
+        this->printf("Chatbot Status:\n");
+        this->printf("  Type:            %s\n", gemini ? "GeminiChat" : "Generic ChatBot");
+        this->printf("  Enabled:         %s\n", bot->enabled() ? "yes" : "no");
+        if (gemini) {
+            this->printf("  Model:           %s\n", gemini->getModel().c_str());
+            this->printf("  Timeout:         %u s\n", gemini->getTimeout());
+            this->printf("  Max Tokens:      %u\n", gemini->getMaxOutputTokens());
+            this->printf("  Google Search:   %s\n", gemini->getWebSearch() ? "enabled" : "disabled");
+            GeminiTokenUsage usage = gemini->getTokenUsage();
+            this->printf("  Total Tokens:    %lu (prompt: %lu, candidate: %lu, cached: %lu)\n",
+                         (unsigned long) usage.totalTokens,
+                         (unsigned long) usage.promptTokens,
+                         (unsigned long) usage.candidateTokens,
+                         (unsigned long) usage.cachedContentTokens);
+        }
+        double successRate = (stats.invocations > 0)
+            ? ((double) stats.successes / (double) stats.invocations * 100.0) : 0.0;
+        this->printf("  Invocations:     %lu (successes: %lu, failures: %lu, rate: %.1f%%)\n",
+                     (unsigned long) stats.invocations,
+                     (unsigned long) stats.successes,
+                     (unsigned long) stats.failures,
+                     successRate);
+        return 0;
+    }
+
+    if (strcmp(argv[1], "stats") == 0) {
+        if ((argc >= 3) && (strcmp(argv[2], "reset") == 0)) {
+            bot->resetStats();
+            if (gemini) {
+                gemini->resetTokenUsage();
+            }
+            this->printf("Chatbot invocation and token statistics reset.\n");
+            return 0;
+        }
+
+        ChatBotStats stats = bot->getStats();
+        double successRate = (stats.invocations > 0)
+            ? ((double) stats.successes / (double) stats.invocations * 100.0) : 0.0;
+
+        this->printf("Chatbot Invocations:\n");
+        this->printf("  Total:           %lu\n", (unsigned long) stats.invocations);
+        this->printf("  Successes:       %lu\n", (unsigned long) stats.successes);
+        this->printf("  Failures:        %lu\n", (unsigned long) stats.failures);
+        this->printf("  Success Rate:    %.1f%%\n", successRate);
+
+        if (gemini) {
+            GeminiTokenUsage usage = gemini->getTokenUsage();
+            this->printf("\nToken Usage:\n");
+            this->printf("  API Calls:       %u\n", usage.callCount);
+            this->printf("  Prompt Tokens:   %lu\n", (unsigned long) usage.promptTokens);
+            this->printf("  Cand. Tokens:    %lu\n", (unsigned long) usage.candidateTokens);
+            this->printf("  Cached Tokens:   %lu\n", (unsigned long) usage.cachedContentTokens);
+            this->printf("  Total Tokens:    %lu\n", (unsigned long) usage.totalTokens);
+            this->printf("  Last Request:    %lu total (%lu prompt, %lu cand, %lu cached)\n",
+                         (unsigned long) usage.lastTotalTokens,
+                         (unsigned long) usage.lastPromptTokens,
+                         (unsigned long) usage.lastCandidateTokens,
+                         (unsigned long) usage.lastCachedContentTokens);
+        }
+        return 0;
+    }
+
+    if (strcmp(argv[1], "tokens") == 0) {
+        if (!gemini) {
+            this->printf("Token statistics are only available for GeminiChat\n");
+            return -1;
+        }
+
+        if ((argc >= 3) && (strcmp(argv[2], "reset") == 0)) {
+            gemini->resetTokenUsage();
+            this->printf("Token usage counters reset.\n");
+            return 0;
+        }
+
+        GeminiTokenUsage usage = gemini->getTokenUsage();
+        this->printf("Gemini Token Usage:\n");
+        this->printf("  API Calls:       %u\n", usage.callCount);
+        this->printf("  Prompt Tokens:   %lu\n", (unsigned long) usage.promptTokens);
+        this->printf("  Cand. Tokens:    %lu\n", (unsigned long) usage.candidateTokens);
+        this->printf("  Cached Tokens:   %lu\n", (unsigned long) usage.cachedContentTokens);
+        this->printf("  Total Tokens:    %lu\n", (unsigned long) usage.totalTokens);
+        this->printf("  Last Request:    %lu total (%lu prompt, %lu cand, %lu cached)\n",
+                     (unsigned long) usage.lastTotalTokens,
+                     (unsigned long) usage.lastPromptTokens,
+                     (unsigned long) usage.lastCandidateTokens,
+                     (unsigned long) usage.lastCachedContentTokens);
+        return 0;
+    }
+
+    if (strcmp(argv[1], "search") == 0) {
+        if (!gemini) {
+            this->printf("Google Search grounding is only available for GeminiChat\n");
+            return -1;
+        }
+        if (argc < 3) {
+            this->printf("Google Search grounding is currently %s\n",
+                         gemini->getWebSearch() ? "enabled" : "disabled");
+            return 0;
+        }
+        if ((strcmp(argv[2], "on") == 0) || (strcmp(argv[2], "1") == 0) ||
+            (strcmp(argv[2], "enable") == 0) || (strcmp(argv[2], "true") == 0)) {
+            gemini->setWebSearch(true);
+            this->printf("Google Search grounding enabled.\n");
+        } else if ((strcmp(argv[2], "off") == 0) || (strcmp(argv[2], "0") == 0) ||
+                   (strcmp(argv[2], "disable") == 0) || (strcmp(argv[2], "false") == 0)) {
+            gemini->setWebSearch(false);
+            this->printf("Google Search grounding disabled.\n");
+        } else {
+            this->printf("Invalid option '%s'. Use 'on' or 'off'.\n", argv[2]);
+            return -1;
+        }
+        return 0;
+    }
+
+    if (strcmp(argv[1], "timeout") == 0) {
+        if (!gemini) {
+            this->printf("Timeout configuration is only available for GeminiChat\n");
+            return -1;
+        }
+        if (argc < 3) {
+            this->printf("Current HTTP timeout is %u seconds\n", gemini->getTimeout());
+            return 0;
+        }
+        char *endptr = NULL;
+        long val = strtol(argv[2], &endptr, 10);
+        if ((endptr == argv[2]) || (*endptr != '\0') || (val <= 0) || (val > 300)) {
+            this->printf("Invalid timeout '%s'. Specify seconds between 1 and 300.\n", argv[2]);
+            return -1;
+        }
+        gemini->setTimeout((uint32_t) val);
+        this->printf("HTTP timeout set to %ld seconds.\n", val);
+        return 0;
+    }
+
+    if ((strcmp(argv[1], "max_tokens") == 0) ||
+        (strcmp(argv[1], "max_output_tokens") == 0)) {
+        if (!gemini) {
+            this->printf("Max tokens configuration is only available for GeminiChat\n");
+            return -1;
+        }
+        if (argc < 3) {
+            this->printf("Current max output tokens is %u\n", gemini->getMaxOutputTokens());
+            return 0;
+        }
+        char *endptr = NULL;
+        long val = strtol(argv[2], &endptr, 10);
+        if ((endptr == argv[2]) || (*endptr != '\0') || (val < 16) || (val > 4096)) {
+            this->printf("Invalid max_tokens '%s'. Specify an integer between 16 and 4096.\n", argv[2]);
+            return -1;
+        }
+        gemini->setMaxOutputTokens((uint32_t) val);
+        this->printf("Max output tokens set to %ld.\n", val);
+        return 0;
+    }
+
+    if (strcmp(argv[1], "model") == 0) {
+        if (!gemini) {
+            this->printf("Model configuration is only available for GeminiChat\n");
+            return -1;
+        }
+        if (argc < 3) {
+            this->printf("Current Gemini model is '%s'\n", gemini->getModel().c_str());
+            return 0;
+        }
+        string newModel = argv[2];
+        gemini->setModel(newModel);
+        this->printf("Gemini model set to '%s'.\n", newModel.c_str());
+        return 0;
+    }
+
+    this->printf("Unknown chatbot subcommand '%s'. Type 'chatbot help' for usage.\n", argv[1]);
+    return -1;
 }
 
 /*

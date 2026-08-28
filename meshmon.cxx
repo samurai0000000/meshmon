@@ -365,7 +365,9 @@ static bool validGeminiModel(const string &model)
 }
 
 static bool readGeminiConfig(Config &cfg, const string &cfgfile,
-                             string &apiKey, string &model)
+                             string &apiKey, string &model,
+                             uint32_t &timeout, bool &search,
+                             uint32_t &maxOutputTokens)
 {
     Setting &root = cfg.getRoot();
 
@@ -384,7 +386,7 @@ static bool readGeminiConfig(Config &cfg, const string &cfgfile,
             geminiCfgFail(cfgfile, "gemini.api_key is empty");
         }
 
-        model = "gemini-flash-latest";
+        model = "gemini-3.5-flash";
         if (gemini.exists("model")) {
             if (!gemini.lookupValue("model", model)) {
                 geminiCfgFail(cfgfile, "gemini.model is not a string");
@@ -393,6 +395,53 @@ static bool readGeminiConfig(Config &cfg, const string &cfgfile,
                 geminiCfgFail(cfgfile, "gemini.model is empty or invalid");
             }
         }
+
+        timeout = 30;
+        int timeoutInt = 30;
+        if (gemini.exists("timeout")) {
+            if (!gemini.lookupValue("timeout", timeoutInt)) {
+                geminiCfgFail(cfgfile, "gemini.timeout is not an integer");
+            }
+        } else if (gemini.exists("timeout_s")) {
+            if (!gemini.lookupValue("timeout_s", timeoutInt)) {
+                geminiCfgFail(cfgfile, "gemini.timeout_s is not an integer");
+            }
+        }
+        if ((timeoutInt <= 0) || (timeoutInt > 300)) {
+            geminiCfgFail(cfgfile, "gemini.timeout must be between 1 and 300 seconds");
+        }
+        timeout = (uint32_t) timeoutInt;
+
+        search = true;
+        if (gemini.exists("search")) {
+            if (!gemini.lookupValue("search", search)) {
+                geminiCfgFail(cfgfile, "gemini.search is not a boolean");
+            }
+        } else if (gemini.exists("web_search")) {
+            if (!gemini.lookupValue("web_search", search)) {
+                geminiCfgFail(cfgfile, "gemini.web_search is not a boolean");
+            }
+        } else if (gemini.exists("google_search")) {
+            if (!gemini.lookupValue("google_search", search)) {
+                geminiCfgFail(cfgfile, "gemini.google_search is not a boolean");
+            }
+        }
+
+        maxOutputTokens = 512;
+        int maxTokensInt = 512;
+        if (gemini.exists("max_output_tokens")) {
+            if (!gemini.lookupValue("max_output_tokens", maxTokensInt)) {
+                geminiCfgFail(cfgfile, "gemini.max_output_tokens is not an integer");
+            }
+        } else if (gemini.exists("max_tokens")) {
+            if (!gemini.lookupValue("max_tokens", maxTokensInt)) {
+                geminiCfgFail(cfgfile, "gemini.max_tokens is not an integer");
+            }
+        }
+        if ((maxTokensInt < 16) || (maxTokensInt > 4096)) {
+            geminiCfgFail(cfgfile, "gemini.max_output_tokens must be between 16 and 4096");
+        }
+        maxOutputTokens = (uint32_t) maxTokensInt;
     } catch (const SettingTypeException &) {
         geminiCfgFail(cfgfile, "gemini is not a group");
     }
@@ -503,8 +552,13 @@ int main(int argc, char **argv)
     bool haveGemini = false;
     string geminiApiKey;
     string geminiModel;
+    uint32_t geminiTimeout = 30;
+    bool geminiSearch = true;
+    uint32_t geminiMaxOutputTokens = 512;
 
-    haveGemini = readGeminiConfig(cfg, cfgfile, geminiApiKey, geminiModel);
+    haveGemini = readGeminiConfig(cfg, cfgfile, geminiApiKey, geminiModel,
+                                  geminiTimeout, geminiSearch,
+                                  geminiMaxOutputTokens);
 
     for (;;) {
         int option_index = 0;
@@ -658,7 +712,10 @@ int main(int argc, char **argv)
         }
         if (haveGemini) {
             shared_ptr<GeminiChat> bot = make_shared<GeminiChat>(geminiApiKey,
-                                                                 geminiModel);
+                                                                 geminiModel,
+                                                                 geminiSearch,
+                                                                 geminiTimeout,
+                                                                 geminiMaxOutputTokens);
             bot->loadTasksFromFile();
             mon->setChatBot(bot);
         }

@@ -20,10 +20,15 @@
 #define GEMINI_CONNECT_TIMEOUT_S 10
 #define GEMINI_MAX_OUTPUT_TOKENS 512
 
-GeminiChat::GeminiChat(const string &apiKey, const string &model)
+GeminiChat::GeminiChat(const string &apiKey, const string &model,
+                       bool webSearch, uint32_t timeoutSec,
+                       uint32_t maxOutputTokens)
     : ChatBot(),
       _apiKey(apiKey),
-      _model(model.empty() ? string("gemini-flash-latest") : model)
+      _model(model.empty() ? string("gemini-3.5-flash") : model),
+      _webSearchEnabled(webSearch),
+      _timeoutSec(timeoutSec > 0 ? timeoutSec : GEMINI_TIMEOUT_S),
+      _maxOutputTokens(maxOutputTokens > 0 ? maxOutputTokens : GEMINI_MAX_OUTPUT_TOKENS)
 {
 
 }
@@ -35,7 +40,80 @@ GeminiChat::~GeminiChat()
 
 bool GeminiChat::enabled(void) const
 {
+    lock_guard<mutex> lock(_stateMutex);
     return !_apiKey.empty() && !_model.empty();
+}
+
+void GeminiChat::setWebSearch(bool enable)
+{
+    lock_guard<mutex> lock(_stateMutex);
+    _webSearchEnabled = enable;
+}
+
+bool GeminiChat::getWebSearch(void) const
+{
+    lock_guard<mutex> lock(_stateMutex);
+    return _webSearchEnabled;
+}
+
+void GeminiChat::setTimeout(uint32_t seconds)
+{
+    lock_guard<mutex> lock(_stateMutex);
+    if (seconds > 0) {
+        _timeoutSec = seconds;
+    }
+}
+
+uint32_t GeminiChat::getTimeout(void) const
+{
+    lock_guard<mutex> lock(_stateMutex);
+    return _timeoutSec;
+}
+
+void GeminiChat::setMaxOutputTokens(uint32_t tokens)
+{
+    lock_guard<mutex> lock(_stateMutex);
+    if (tokens > 0) {
+        _maxOutputTokens = tokens;
+    }
+}
+
+uint32_t GeminiChat::getMaxOutputTokens(void) const
+{
+    lock_guard<mutex> lock(_stateMutex);
+    return _maxOutputTokens;
+}
+
+void GeminiChat::setModel(const string &model)
+{
+    lock_guard<mutex> lock(_stateMutex);
+    if (!model.empty()) {
+        _model = model;
+    }
+}
+
+string GeminiChat::getModel(void) const
+{
+    lock_guard<mutex> lock(_stateMutex);
+    return _model;
+}
+
+uint64_t GeminiChat::getTokensUsed(void) const
+{
+    lock_guard<mutex> lock(_stateMutex);
+    return _usage.totalTokens;
+}
+
+GeminiTokenUsage GeminiChat::getTokenUsage(void) const
+{
+    lock_guard<mutex> lock(_stateMutex);
+    return _usage;
+}
+
+void GeminiChat::resetTokenUsage(void)
+{
+    lock_guard<mutex> lock(_stateMutex);
+    _usage = GeminiTokenUsage();
 }
 
 string GeminiChat::jsonEscape(const string &s)
@@ -572,14 +650,15 @@ string GeminiChat::buildRequest(uint32_t from,
     }
 
     ss << "],";
-    ss << "\"tools\":[{\"google_search\":{}},"
-       << "{\"functionDeclarations\":[" << kMeshFunctionDeclarations << "]}],";
+    if (getWebSearch()) {
+        ss << "\"tools\":[{\"google_search\":{}},"
+           << "{\"functionDeclarations\":[" << kMeshFunctionDeclarations << "]}],";
+    } else {
+        ss << "\"tools\":[{\"functionDeclarations\":[" << kMeshFunctionDeclarations << "]}],";
+    }
     ss << "\"toolConfig\":{\"includeServerSideToolInvocations\":true},";
     ss << "\"generationConfig\":{"
-       << "\"maxOutputTokens\":" << GEMINI_MAX_OUTPUT_TOKENS << ","
-       << "\"thinkingConfig\":{"
-       << "\"thinkingBudget\":0"
-       << "}"
+       << "\"maxOutputTokens\":" << getMaxOutputTokens()
        << "}";
     ss << "}";
 
@@ -623,9 +702,10 @@ string GeminiChat::httpPost(const string &url, const string &body) const
     curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long) body.size());
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, geminiCurlWrite);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, (long) GEMINI_TIMEOUT_S);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, (long) getTimeout());
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT,
                      (long) GEMINI_CONNECT_TIMEOUT_S);
+    curl_easy_setopt(curl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "meshmon-gemini");
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
 
@@ -654,6 +734,47 @@ string GeminiChat::httpPost(const string &url, const string &body) const
     return result;
 }
 
+void GeminiChat::extractUsageMetadata(const string &body)
+{
+    size_t uPos = body.find("\"usageMetadata\"");
+    if (uPos == string::npos) {
+        return;
+    }
+
+    string uJson = body.substr(uPos);
+    int64_t promptCount = 0;
+    int64_t candCount = 0;
+    int64_t totalCount = 0;
+    int64_t cachedCount = 0;
+
+    parseJsonIntField(uJson, "promptTokenCount", promptCount);
+    parseJsonIntField(uJson, "candidatesTokenCount", candCount);
+    parseJsonIntField(uJson, "totalTokenCount", totalCount);
+    parseJsonIntField(uJson, "cachedContentTokenCount", cachedCount);
+
+    {
+        lock_guard<mutex> lock(_stateMutex);
+        _usage.lastPromptTokens = (promptCount > 0) ? (uint64_t) promptCount : 0;
+        _usage.lastCandidateTokens = (candCount > 0) ? (uint64_t) candCount : 0;
+        _usage.lastTotalTokens = (totalCount > 0) ? (uint64_t) totalCount : 0;
+        _usage.lastCachedContentTokens = (cachedCount > 0) ? (uint64_t) cachedCount : 0;
+
+        _usage.promptTokens += _usage.lastPromptTokens;
+        _usage.candidateTokens += _usage.lastCandidateTokens;
+        _usage.totalTokens += _usage.lastTotalTokens;
+        _usage.cachedContentTokens += _usage.lastCachedContentTokens;
+        _usage.callCount++;
+
+#if DEBUG_CHATBOT
+        cout << "chatbot: tokens prompt=" << _usage.lastPromptTokens
+             << " cand=" << _usage.lastCandidateTokens
+             << " total=" << _usage.lastTotalTokens
+             << " (cum total=" << _usage.totalTokens
+             << " calls=" << _usage.callCount << ")" << endl;
+#endif
+    }
+}
+
 #define GEMINI_MAX_TOOL_ITERATIONS 3
 
 string GeminiChat::generate(uint32_t from,
@@ -677,7 +798,7 @@ string GeminiChat::generate(uint32_t from,
     }
 
     url = string("https://generativelanguage.googleapis.com/v1beta/models/") +
-        _model + string(":generateContent");
+        getModel() + string(":generateContent");
 
     for (int iter = 0; iter < GEMINI_MAX_TOOL_ITERATIONS; iter++) {
 #if DEBUG_CHATBOT
@@ -694,6 +815,8 @@ string GeminiChat::generate(uint32_t from,
 #endif
             return string();
         }
+
+        extractUsageMetadata(response);
 
         string modelPartsJson;
         vector<GeminiFunctionCall> fcs;

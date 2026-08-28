@@ -63,6 +63,14 @@ struct ScheduledTask {
     }
 };
 
+struct ChatBotStats {
+    uint64_t invocations;
+    uint64_t successes;
+    uint64_t failures;
+
+    ChatBotStats() : invocations(0), successes(0), failures(0) {}
+};
+
 class ChatBot {
 
 public:
@@ -72,6 +80,10 @@ public:
 
     virtual void setClient(shared_ptr<MeshClient> client);
     virtual bool enabled(void) const;
+
+    ChatBotStats getStats(void) const;
+    void resetStats(void);
+    virtual uint64_t getTokensUsed(void) const;
 
     void setConfigPath(const string &path);
     const string &getConfigPath(void) const;
@@ -165,6 +177,7 @@ private:
     map<uint32_t, Conversation> _conversations;
     vector<ScheduledTask> _tasks;
     uint32_t _nextTaskId;
+    ChatBotStats _stats;
 
 };
 

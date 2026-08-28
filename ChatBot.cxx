@@ -19,7 +19,7 @@
 #define DEBUG_CHATBOT 0
 #endif
 
-#define CHAT_HISTORY_MAX    20
+#define CHAT_HISTORY_MAX    10
 #define CHAT_IDLE_SECONDS   3600
 #define CHAT_MAX_BYTES      200
 
@@ -532,6 +532,23 @@ bool ChatBot::enabled(void) const
     return true;
 }
 
+ChatBotStats ChatBot::getStats(void) const
+{
+    lock_guard<mutex> lock(_mutex);
+    return _stats;
+}
+
+void ChatBot::resetStats(void)
+{
+    lock_guard<mutex> lock(_mutex);
+    _stats = ChatBotStats();
+}
+
+uint64_t ChatBot::getTokensUsed(void) const
+{
+    return 0;
+}
+
 void ChatBot::setConfigPath(const string &path)
 {
     lock_guard<mutex> lock(_mutex);
@@ -955,6 +972,10 @@ void ChatBot::processDueTasks(time_t now)
         string outputText;
 
         if (task.type == TASK_PROMPT) {
+            {
+                unique_lock<mutex> lock(_mutex);
+                _stats.invocations++;
+            }
             vector<ChatTurn> history;
             {
                 unique_lock<mutex> lock(_mutex);
@@ -964,6 +985,14 @@ void ChatBot::processDueTasks(time_t now)
                 }
             }
             outputText = generate(task.from, task.dest, task.channel, history, task.content);
+            {
+                unique_lock<mutex> lock(_mutex);
+                if (!outputText.empty()) {
+                    _stats.successes++;
+                } else {
+                    _stats.failures++;
+                }
+            }
         } else {
             outputText = task.content;
         }
@@ -1118,8 +1147,21 @@ void ChatBot::processJob(const ChatJob &job)
 
     Conversation &conv = _conversations[job.from];
 
+    {
+        unique_lock<mutex> lock(_mutex);
+        _stats.invocations++;
+    }
+
     generated = generate(job.from, job.dest, job.channel, conv.turns, job.message);
     success = !generated.empty();
+    {
+        unique_lock<mutex> lock(_mutex);
+        if (success) {
+            _stats.successes++;
+        } else {
+            _stats.failures++;
+        }
+    }
 #if DEBUG_CHATBOT
     cout << "chatbot: generate from=" << job.from
          << " history=" << conv.turns.size()

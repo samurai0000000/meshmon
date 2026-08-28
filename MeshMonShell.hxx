@@ -27,9 +27,11 @@ protected:
     virtual int status(int argc, char **argv);
     virtual int unknown_command(int argc, char **argv);
     virtual int calib(int argc, char **argv);
+    virtual int chatbot(int argc, char **argv);
 
 private:
 
+    void printChatbotHelp(void);
     void printCurve(const char *name, const CalibrationCurve &curve,
                     const char *unit);
     void printNode(const string &nodeKey, const NodeCalibration &nodeCal);

@@ -113,6 +113,10 @@ public:
         return _calibration;
     }
 
+    inline const shared_ptr<ChatBot> chatbot(void) const {
+        return _chatbot;
+    }
+
     void setOwnMqtt(const string &server, uint16_t port,
                     const string &user, const string &password,
                     const string &topic, bool tls);
