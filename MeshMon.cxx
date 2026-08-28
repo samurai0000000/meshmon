@@ -26,6 +26,7 @@
 MeshMon::MeshMon()
     : MeshClient()
 {
+    _isClockSynced = true;
     _announcedUp = false;
 }
 
@@ -73,6 +74,22 @@ void MeshMon::setNvm(shared_ptr<BaseNvm> nvm)
     HomeChat::setNvm(nvm);
 }
 
+void MeshMon::syncHostClock(uint32_t epoch_seconds)
+{
+    (void)(epoch_seconds);
+    _isClockSynced = true;
+}
+
+void MeshMon::syncRadioClock(void)
+{
+    if (!isConnected()) {
+        return;
+    }
+
+    time_t now = time(NULL);
+    setTime((uint32_t) now);
+}
+
 void MeshMon::gotConfigCompleteId(uint32_t id)
 {
     MeshClient::gotConfigCompleteId(id);
@@ -83,6 +100,13 @@ void MeshMon::gotConfigCompleteId(uint32_t id)
         }
         syncFromNvm();
     }
+
+    syncRadioClock();
+}
+
+void MeshMon::gotDeviceConfig(const meshtastic_Config_DeviceConfig &c)
+{
+    MeshClient::gotDeviceConfig(c);
 }
 
 void MeshMon::gotRebooted(bool rebooted)
@@ -820,6 +844,24 @@ bool MeshMon::saveNvm(void)
     result = MeshNvm::saveNvm();
 
     return result;
+}
+
+void MeshMon::crontab(const struct tm *now)
+{
+    MeshClient::crontab(now);
+
+    if (now != NULL && now->tm_min == 0) {
+        syncRadioClock();
+    }
+}
+
+void MeshMon::handleTimeBroadcast(const meshtastic_MeshPacket &packet,
+                                  time_t epoch, const string &tz)
+{
+    (void)(packet);
+    (void)(epoch);
+    (void)(tz);
+    // Time announcements from HomeChat are ignored on the Linux server.
 }
 
 string MeshMon::handleEnv(uint32_t node_num, string &message)

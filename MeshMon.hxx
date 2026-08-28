@@ -36,9 +36,12 @@ protected:
 
     // Extend MeshClient
 
+    virtual void syncHostClock(uint32_t epoch_seconds);
     virtual void gotConfigCompleteId(uint32_t id);
+    virtual void gotDeviceConfig(const meshtastic_Config_DeviceConfig &c);
     virtual void gotRebooted(bool rebooted);
     virtual void loop(void);
+    virtual void crontab(const struct tm *now);
     virtual void gotModuleConfigMQTT(const meshtastic_ModuleConfig_MQTTConfig &c);
     virtual void gotMqttClientProxyMessage(const meshtastic_MqttClientProxyMessage &m);
     virtual void gotTextMessage(const meshtastic_MeshPacket &packet,
@@ -83,10 +86,14 @@ protected:
 
     // Extend HomeChat
 
+    virtual void handleTimeBroadcast(const meshtastic_MeshPacket &packet,
+                                     time_t epoch, const string &tz);
     virtual string handleEnv(uint32_t node_num, string &message);
     virtual string handleUnknown(uint32_t node_num, uint32_t dest,
                                  uint8_t channel, string &message);
     virtual int vprintf(const char *format, va_list ap) const;
+
+    void syncRadioClock(void);
 
 
 public:
