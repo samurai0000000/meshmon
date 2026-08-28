@@ -855,13 +855,102 @@ void MeshMon::crontab(const struct tm *now)
     }
 }
 
+bool MeshMon::handleTextMessage(const meshtastic_MeshPacket &packet,
+                                const string &_message)
+{
+    if (packet.from == whoami() || packet.from == 0) {
+        return HomeChat::handleTextMessage(packet, _message);
+    }
+
+    bool directMessage = false;
+    bool channelMessage = false;
+    bool addressed2Me = false;
+    string message = _message;
+    string first_word;
+    uint32_t dest = 0xffffffffU;
+    uint8_t channel = 0xffU;
+
+    if (packet.to == whoami()) {
+        directMessage = true;
+        dest = packet.from;
+        channel = packet.channel;
+    } else {
+        channelMessage = true;
+        dest = 0xffffffffU;
+        channel = packet.channel;
+    }
+
+    // get first word
+    trimWhitespace(message);
+    first_word = message.substr(0, message.find(' '));
+    toLowercase(first_word);
+
+    if (channelMessage &&
+        ((first_word == lookupShortName(whoami())) ||
+         (first_word == lookupLongName(whoami())) ||
+         (first_word.find(whoamiString()) != string::npos) ||
+         (first_word == "all"))) {
+        addressed2Me = true;
+        message = message.substr(first_word.size());
+        trimWhitespace(message);
+    }
+
+    if (directMessage || addressed2Me) {
+        string query = message;
+        trimWhitespace(query);
+        toLowercase(query);
+        while (!query.empty() &&
+               (query.back() == '?' || query.back() == '!' ||
+                query.back() == '.' || query.back() == ',')) {
+            query.pop_back();
+            trimWhitespace(query);
+        }
+
+        if (query == "time") {
+            if (directMessage) {
+                this->printf("%s:%c%s\n",
+                             getDisplayName(packet.from).c_str(),
+                             _message.find('\n') == string::npos ? ' ' : '\n',
+                             _message.c_str());
+            } else {
+                this->printf("%s on #%s:%c%s\n",
+                             getDisplayName(packet.from).c_str(),
+                             getChannelName(packet.channel).c_str(),
+                             _message.find('\n') == string::npos ? ' ' : '\n',
+                             _message.c_str());
+            }
+
+            time_t now = ::time(NULL);
+            struct tm tm;
+            char timeBuf[64];
+            localtime_r(&now, &tm);
+            strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S %Z", &tm);
+            string reply = "The local time is " + string(timeBuf);
+
+            bool result = textMessage(dest, channel, reply);
+            if (result == false) {
+                this->printf("textMessage '%s' failed!\n",
+                             reply.c_str());
+            } else {
+                this->printf("my_reply to %s: %s\n",
+                             getDisplayName(packet.from).c_str(),
+                             reply.c_str());
+            }
+
+            setLastMessageFrom(packet.from, _message);
+            return true;
+        }
+    }
+
+    return HomeChat::handleTextMessage(packet, _message);
+}
+
 void MeshMon::handleTimeBroadcast(const meshtastic_MeshPacket &packet,
                                   time_t epoch, const string &tz)
 {
     (void)(packet);
     (void)(epoch);
     (void)(tz);
-    // Time announcements from HomeChat are ignored on the Linux server.
 }
 
 string MeshMon::handleEnv(uint32_t node_num, string &message)

@@ -86,6 +86,8 @@ protected:
 
     // Extend HomeChat
 
+    virtual bool handleTextMessage(const meshtastic_MeshPacket &packet,
+                                   const string &message);
     virtual void handleTimeBroadcast(const meshtastic_MeshPacket &packet,
                                      time_t epoch, const string &tz);
     virtual string handleEnv(uint32_t node_num, string &message);
