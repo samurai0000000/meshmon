@@ -16,7 +16,7 @@
 #define DEBUG_CHATBOT 0
 #endif
 
-#define GEMINI_TIMEOUT_S 15
+#define GEMINI_TIMEOUT_S 30
 #define GEMINI_CONNECT_TIMEOUT_S 10
 #define GEMINI_MAX_OUTPUT_TOKENS 512
 
@@ -223,8 +223,9 @@ string GeminiChat::getSystemInstruction(uint32_t from, uint32_t dest, uint8_t ch
 
     ss << " Current channel index is " << (unsigned int) channel << ".";
 
-    ss << " You have access to tools to query mesh network nodes, telemetry, stats, locations, "
+    ss << " You have access to Google Search and tools to query mesh network nodes, telemetry, stats, locations, "
        << "and schedule future or recurring tasks (schedule_task, list_scheduled_tasks, cancel_scheduled_task). "
+       << "Use Google Search only when real-time, external web information (such as live weather, news, or external data) is explicitly required. "
        << "For scheduling: all times and cron expressions default to the local time zone. Use delay_seconds (e.g. 600 for 10m), at_time (local datetime format 'YYYY-MM-DD HH:MM:SS' or with timezone offset), or 5-field cron (e.g. '0 6 * * 1' for Monday 6am local time). "
        << "Set action_type to 'message' (static text) or 'prompt' (to re-evaluate prompt and live data at trigger time). "
        << "Optional channel (by name or index) and target_node can be specified to route the message. "
@@ -506,17 +507,14 @@ bool GeminiChat::extractFunctionCalls(const string &body,
     return !fcs.empty();
 }
 
-static const char *kMeshToolDeclarations =
-    "{\"google_search\":{}},"
-    "{\"functionDeclarations\":["
+static const char *kMeshFunctionDeclarations =
     "{\"name\":\"get_mesh_nodes\",\"description\":\"Get list of all discovered nodes in the Meshtastic mesh network including node IDs, names, signal quality (SNR), hops away, and last heard time.\",\"parameters\":{\"type\":\"OBJECT\",\"properties\":{}}},"
     "{\"name\":\"get_node_telemetry\",\"description\":\"Get device metrics (battery percentage, voltage, channel utilization, uptime) and environmental sensor metrics (temperature, humidity, barometric pressure, air quality) for a specific node or all nodes.\",\"parameters\":{\"type\":\"OBJECT\",\"properties\":{\"node\":{\"type\":\"STRING\",\"description\":\"Optional node ID (e.g. !12345678 or 0x12345678) or node name. If omitted, returns telemetry for all nodes.\"}}}},"
     "{\"name\":\"get_network_stats\",\"description\":\"Get mesh network traffic statistics (packets and bytes transmitted and received, direct message and channel message counts), LoRa radio settings (preset, region, hop limit, tx power), and active channels.\",\"parameters\":{\"type\":\"OBJECT\",\"properties\":{}}},"
     "{\"name\":\"get_node_positions\",\"description\":\"Get GPS location coordinates (latitude, longitude, altitude) for nodes on the mesh network.\",\"parameters\":{\"type\":\"OBJECT\",\"properties\":{\"node\":{\"type\":\"STRING\",\"description\":\"Optional node ID or name. If omitted, returns positions for all nodes.\"}}}},"
     "{\"name\":\"schedule_task\",\"description\":\"Schedule a future or recurring message or dynamic prompt to be executed and sent over the mesh network.\",\"parameters\":{\"type\":\"OBJECT\",\"properties\":{\"content\":{\"type\":\"STRING\",\"description\":\"The message text to send or prompt to evaluate when triggered.\"},\"action_type\":{\"type\":\"STRING\",\"description\":\"'message' (default) to send content directly, or 'prompt' to evaluate content as an AI prompt at trigger time.\"},\"delay_seconds\":{\"type\":\"INTEGER\",\"description\":\"Relative delay in seconds from now (e.g. 600 for 10 minutes).\"},\"at_time\":{\"type\":\"STRING\",\"description\":\"Datetime string in local time (e.g. '2026-08-31 06:00:00' or with timezone offset like '2026-08-31 06:00:00 +08:00').\"},\"cron\":{\"type\":\"STRING\",\"description\":\"5-field cron expression in local time, e.g. '0 6 * * 1' for Monday 6am local time.\"},\"channel\":{\"type\":\"STRING\",\"description\":\"Optional target channel name (e.g. 'CasaMag') or channel index.\"},\"target_node\":{\"type\":\"STRING\",\"description\":\"Optional target node ID (e.g. '!12345678') or 'broadcast'. Defaults to sender context.\"},\"max_repeats\":{\"type\":\"INTEGER\",\"description\":\"Optional maximum repeat count for cron/recurring tasks (default: infinite for cron, 1 for one-shot).\"}},\"required\":[\"content\"]}},"
     "{\"name\":\"list_scheduled_tasks\",\"description\":\"List all currently active scheduled tasks.\",\"parameters\":{\"type\":\"OBJECT\",\"properties\":{}}},"
-    "{\"name\":\"cancel_scheduled_task\",\"description\":\"Cancel a scheduled task by ID or cancel all active scheduled tasks.\",\"parameters\":{\"type\":\"OBJECT\",\"properties\":{\"id\":{\"type\":\"INTEGER\",\"description\":\"Task ID to cancel.\"},\"all\":{\"type\":\"BOOLEAN\",\"description\":\"Set to true to cancel all tasks.\"}}}}"
-    "]}";
+    "{\"name\":\"cancel_scheduled_task\",\"description\":\"Cancel a scheduled task by ID or cancel all active scheduled tasks.\",\"parameters\":{\"type\":\"OBJECT\",\"properties\":{\"id\":{\"type\":\"INTEGER\",\"description\":\"Task ID to cancel.\"},\"all\":{\"type\":\"BOOLEAN\",\"description\":\"Set to true to cancel all tasks.\"}}}}";
 
 string GeminiChat::buildRequest(uint32_t from,
                                 uint32_t dest,
@@ -574,7 +572,8 @@ string GeminiChat::buildRequest(uint32_t from,
     }
 
     ss << "],";
-    ss << "\"tools\":[" << kMeshToolDeclarations << "],";
+    ss << "\"tools\":[{\"google_search\":{}},"
+       << "{\"functionDeclarations\":[" << kMeshFunctionDeclarations << "]}],";
     ss << "\"toolConfig\":{\"includeServerSideToolInvocations\":true},";
     ss << "\"generationConfig\":{"
        << "\"maxOutputTokens\":" << GEMINI_MAX_OUTPUT_TOKENS << ","
