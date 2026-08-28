@@ -1209,6 +1209,27 @@ void ChatBot::processJob(const ChatJob &job)
 #endif
 }
 
+namespace {
+
+struct ClientScopeLock {
+    const SimpleClient *_c;
+    ClientScopeLock(const shared_ptr<SimpleClient> &c)
+        : _c(c ? c.get() : NULL)
+    {
+        if (_c) {
+            _c->lock();
+        }
+    }
+    ~ClientScopeLock()
+    {
+        if (_c) {
+            _c->unlock();
+        }
+    }
+};
+
+} // namespace
+
 uint8_t ChatBot::resolveChannel(const string &channelQuery, uint8_t defaultChannel) const
 {
     if (channelQuery.empty()) {
@@ -1230,6 +1251,7 @@ uint8_t ChatBot::resolveChannel(const string &channelQuery, uint8_t defaultChann
     }
 
     if (_client != NULL) {
+        ClientScopeLock clientLock(_client);
         uint8_t ch = _client->getChannel(channelQuery);
         if (ch != 0xffU) {
             return ch;
@@ -1280,6 +1302,7 @@ uint32_t ChatBot::resolveNodeId(const string &nodeQuery) const
     }
 
     if (_client != NULL) {
+        ClientScopeLock clientLock(_client);
         const map<uint32_t, meshtastic_NodeInfo> &nodes = _client->nodeInfos();
         for (map<uint32_t, meshtastic_NodeInfo>::const_iterator it = nodes.begin();
              it != nodes.end(); it++) {
@@ -1322,6 +1345,7 @@ string ChatBot::toolGetMeshNodes(void) const
         return "{\"error\": \"client not connected\"}";
     }
 
+    ClientScopeLock clientLock(_client);
     stringstream ss;
     const map<uint32_t, meshtastic_NodeInfo> &nodes = _client->nodeInfos();
     uint32_t myId = _client->whoami();
@@ -1377,6 +1401,7 @@ string ChatBot::toolGetNodeTelemetry(const string &nodeQuery) const
         return "{\"error\": \"client not connected\"}";
     }
 
+    ClientScopeLock clientLock(_client);
     uint32_t targetId = 0xffffffffU;
     if (!nodeQuery.empty()) {
         targetId = resolveNodeId(nodeQuery);
@@ -1472,6 +1497,7 @@ string ChatBot::toolGetNetworkStats(void) const
         return "{\"error\": \"client not connected\"}";
     }
 
+    ClientScopeLock clientLock(_client);
     stringstream ss;
     ss << "{\"mesh_stats\":{";
     ss << "\"packets_rx\":" << _client->meshDevicePacketsReceived() << ",";
@@ -1521,6 +1547,7 @@ string ChatBot::toolGetNodePositions(const string &nodeQuery) const
         return "{\"error\": \"client not connected\"}";
     }
 
+    ClientScopeLock clientLock(_client);
     uint32_t targetId = 0xffffffffU;
     if (!nodeQuery.empty()) {
         targetId = resolveNodeId(nodeQuery);
