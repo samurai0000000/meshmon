@@ -836,6 +836,11 @@ void MeshMon::hourlyTask(const struct tm *now)
         return;
     }
 
+    int robotChan = getRobotChannel();
+    if (robotChan < 0) {
+        return;
+    }
+
     struct tm tm_buf;
     if (now == NULL) {
         time_t t = ::time(NULL);
@@ -847,11 +852,11 @@ void MeshMon::hourlyTask(const struct tm *now)
     strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S %Z", now);
     string msg = "The local time is " + string(timeBuf);
 
-    bool result = textMessage(0xffffffffU, 0, msg);
+    bool result = textMessage(0xffffffffU, (uint8_t) robotChan, msg);
     if (result == false) {
         this->printf("textMessage '%s' failed!\n", msg.c_str());
     } else {
-        this->printf("hourlyTask broadcast on #0: %s\n", msg.c_str());
+        this->printf("hourlyTask broadcast on #%d: %s\n", robotChan, msg.c_str());
     }
 }
 
