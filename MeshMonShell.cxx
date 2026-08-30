@@ -1096,15 +1096,23 @@ int MeshMonShell::calib(int argc, char **argv)
 void MeshMonShell::printChatbotHelp(void)
 {
     this->printf("Usage:\n");
-    this->printf("  chatbot                     - Show chatbot status and configuration\n");
-    this->printf("  chatbot status              - Show chatbot status and configuration\n");
-    this->printf("  chatbot stats [reset]       - Show invocation statistics (or reset counters)\n");
-    this->printf("  chatbot tokens [reset]      - Show detailed token usage (or reset counters)\n");
-    this->printf("  chatbot search <on|off>     - Enable or disable Google Search grounding\n");
-    this->printf("  chatbot timeout <seconds>   - Set API HTTP request timeout in seconds\n");
-    this->printf("  chatbot max_tokens <num>    - Set max output tokens limit (16..4096)\n");
-    this->printf("  chatbot model [name]        - Show or change active Gemini model\n");
-    this->printf("  chatbot help                - Show this help message\n");
+    this->printf("  chatbot                              - Show chatbot status and configuration\n");
+    this->printf("  chatbot status                       - Show chatbot status and configuration\n");
+    this->printf("  chatbot <enable|disable|on|off>      - Enable or disable the chatbot\n");
+    this->printf("  chatbot stats [reset]                - Show invocation statistics (or reset counters)\n");
+    this->printf("  chatbot tokens [reset]               - Show detailed token usage (or reset counters)\n");
+    this->printf("  chatbot search <on|off>              - Enable or disable Google Search grounding\n");
+    this->printf("  chatbot timeout <seconds>            - Set API HTTP request timeout in seconds (1..300)\n");
+    this->printf("  chatbot max_tokens <num>             - Set max output tokens limit (16..8192)\n");
+    this->printf("  chatbot thinking [<num|on|off|auto>] - Set thinking budget (0=off, auto=-1, or tokens)\n");
+    this->printf("  chatbot temp [<val|default>]         - Set temperature (0.0..2.0 or default)\n");
+    this->printf("  chatbot top_p [<val|default>]        - Set top-p sampling (0.0..1.0 or default)\n");
+    this->printf("  chatbot top_k [<val|default>]        - Set top-k sampling (1..100 or default)\n");
+    this->printf("  chatbot model [name]                 - Show or change active Gemini model\n");
+    this->printf("  chatbot history [<max_turns>]        - Show or set max conversation history turns\n");
+    this->printf("  chatbot idle [<seconds>]             - Show or set conversation idle timeout\n");
+    this->printf("  chatbot clear [<node>]               - Clear conversation history\n");
+    this->printf("  chatbot help                         - Show this help message\n");
 }
 
 int MeshMonShell::chatbot(int argc, char **argv)
@@ -1141,13 +1149,44 @@ int MeshMonShell::chatbot(int argc, char **argv)
             this->printf("  Model:           %s\n", gemini->getModel().c_str());
             this->printf("  Timeout:         %u s\n", gemini->getTimeout());
             this->printf("  Max Tokens:      %u\n", gemini->getMaxOutputTokens());
+            int32_t tb = gemini->getThinkingBudget();
+            if (tb == 0) {
+                this->printf("  Thinking Budget: 0 (disabled)\n");
+            } else if (tb < 0) {
+                this->printf("  Thinking Budget: auto (unconstrained)\n");
+            } else {
+                this->printf("  Thinking Budget: %d tokens\n", tb);
+            }
+            float temp = gemini->getTemperature();
+            if (temp < 0.0f) {
+                this->printf("  Temperature:     default\n");
+            } else {
+                this->printf("  Temperature:     %.2f\n", temp);
+            }
+            float topP = gemini->getTopP();
+            if (topP < 0.0f) {
+                this->printf("  Top-P:           default\n");
+            } else {
+                this->printf("  Top-P:           %.2f\n", topP);
+            }
+            int32_t topK = gemini->getTopK();
+            if (topK < 0) {
+                this->printf("  Top-K:           default\n");
+            } else {
+                this->printf("  Top-K:           %d\n", topK);
+            }
             this->printf("  Google Search:   %s\n", gemini->getWebSearch() ? "enabled" : "disabled");
+            this->printf("  Max History:     %zu turns\n", bot->getMaxHistoryTurns());
+            this->printf("  Idle Timeout:    %u s\n", bot->getIdleTimeout());
             GeminiTokenUsage usage = gemini->getTokenUsage();
             this->printf("  Total Tokens:    %lu (prompt: %lu, candidate: %lu, cached: %lu)\n",
                          (unsigned long) usage.totalTokens,
                          (unsigned long) usage.promptTokens,
                          (unsigned long) usage.candidateTokens,
                          (unsigned long) usage.cachedContentTokens);
+        } else {
+            this->printf("  Max History:     %zu turns\n", bot->getMaxHistoryTurns());
+            this->printf("  Idle Timeout:    %u s\n", bot->getIdleTimeout());
         }
         double successRate = (stats.invocations > 0)
             ? ((double) stats.successes / (double) stats.invocations * 100.0) : 0.0;
@@ -1156,6 +1195,18 @@ int MeshMonShell::chatbot(int argc, char **argv)
                      (unsigned long) stats.successes,
                      (unsigned long) stats.failures,
                      successRate);
+        return 0;
+    }
+
+    if ((strcmp(argv[1], "enable") == 0) || (strcmp(argv[1], "on") == 0)) {
+        bot->setEnabled(true);
+        this->printf("Chatbot enabled.\n");
+        return 0;
+    }
+
+    if ((strcmp(argv[1], "disable") == 0) || (strcmp(argv[1], "off") == 0)) {
+        bot->setEnabled(false);
+        this->printf("Chatbot disabled.\n");
         return 0;
     }
 
@@ -1280,12 +1331,142 @@ int MeshMonShell::chatbot(int argc, char **argv)
         }
         char *endptr = NULL;
         long val = strtol(argv[2], &endptr, 10);
-        if ((endptr == argv[2]) || (*endptr != '\0') || (val < 16) || (val > 4096)) {
-            this->printf("Invalid max_tokens '%s'. Specify an integer between 16 and 4096.\n", argv[2]);
+        if ((endptr == argv[2]) || (*endptr != '\0') || (val < 16) || (val > 8192)) {
+            this->printf("Invalid max_tokens '%s'. Specify an integer between 16 and 8192.\n", argv[2]);
             return -1;
         }
         gemini->setMaxOutputTokens((uint32_t) val);
         this->printf("Max output tokens set to %ld.\n", val);
+        return 0;
+    }
+
+    if ((strcmp(argv[1], "thinking") == 0) || (strcmp(argv[1], "thinking_budget") == 0)) {
+        if (!gemini) {
+            this->printf("Thinking budget configuration is only available for GeminiChat\n");
+            return -1;
+        }
+        if (argc < 3) {
+            int32_t tb = gemini->getThinkingBudget();
+            if (tb == 0) {
+                this->printf("Current thinking budget is 0 (disabled)\n");
+            } else if (tb < 0) {
+                this->printf("Current thinking budget is auto (unconstrained)\n");
+            } else {
+                this->printf("Current thinking budget is %d tokens\n", tb);
+            }
+            return 0;
+        }
+        if ((strcmp(argv[2], "off") == 0) || (strcmp(argv[2], "0") == 0) ||
+            (strcmp(argv[2], "disable") == 0) || (strcmp(argv[2], "none") == 0)) {
+            gemini->setThinkingBudget(0);
+            this->printf("Thinking budget set to 0 (disabled).\n");
+        } else if ((strcmp(argv[2], "on") == 0) || (strcmp(argv[2], "auto") == 0) ||
+                   (strcmp(argv[2], "-1") == 0) || (strcmp(argv[2], "enable") == 0)) {
+            gemini->setThinkingBudget(-1);
+            this->printf("Thinking budget set to auto (unconstrained).\n");
+        } else {
+            char *endptr = NULL;
+            long val = strtol(argv[2], &endptr, 10);
+            if ((endptr == argv[2]) || (*endptr != '\0') || (val < -1) || (val > 65536)) {
+                this->printf("Invalid thinking budget '%s'. Specify 0 (disabled), auto, or token count (e.g. 512).\n", argv[2]);
+                return -1;
+            }
+            gemini->setThinkingBudget((int32_t) val);
+            this->printf("Thinking budget set to %ld tokens.\n", val);
+        }
+        return 0;
+    }
+
+    if ((strcmp(argv[1], "temp") == 0) || (strcmp(argv[1], "temperature") == 0)) {
+        if (!gemini) {
+            this->printf("Temperature configuration is only available for GeminiChat\n");
+            return -1;
+        }
+        if (argc < 3) {
+            float temp = gemini->getTemperature();
+            if (temp < 0.0f) {
+                this->printf("Current temperature is default (model default)\n");
+            } else {
+                this->printf("Current temperature is %.2f\n", temp);
+            }
+            return 0;
+        }
+        if ((strcmp(argv[2], "default") == 0) || (strcmp(argv[2], "-1") == 0) ||
+            (strcmp(argv[2], "auto") == 0) || (strcmp(argv[2], "none") == 0)) {
+            gemini->setTemperature(-1.0f);
+            this->printf("Temperature reset to model default.\n");
+        } else {
+            char *endptr = NULL;
+            double val = strtod(argv[2], &endptr);
+            if ((endptr == argv[2]) || (*endptr != '\0') || (val < 0.0) || (val > 2.0)) {
+                this->printf("Invalid temperature '%s'. Specify a value between 0.0 and 2.0, or 'default'.\n", argv[2]);
+                return -1;
+            }
+            gemini->setTemperature(static_cast<float>(val));
+            this->printf("Temperature set to %.2f.\n", val);
+        }
+        return 0;
+    }
+
+    if (strcmp(argv[1], "top_p") == 0) {
+        if (!gemini) {
+            this->printf("Top-P configuration is only available for GeminiChat\n");
+            return -1;
+        }
+        if (argc < 3) {
+            float topP = gemini->getTopP();
+            if (topP < 0.0f) {
+                this->printf("Current top-p is default (model default)\n");
+            } else {
+                this->printf("Current top-p is %.2f\n", topP);
+            }
+            return 0;
+        }
+        if ((strcmp(argv[2], "default") == 0) || (strcmp(argv[2], "-1") == 0) ||
+            (strcmp(argv[2], "auto") == 0) || (strcmp(argv[2], "none") == 0)) {
+            gemini->setTopP(-1.0f);
+            this->printf("Top-P reset to model default.\n");
+        } else {
+            char *endptr = NULL;
+            double val = strtod(argv[2], &endptr);
+            if ((endptr == argv[2]) || (*endptr != '\0') || (val < 0.0) || (val > 1.0)) {
+                this->printf("Invalid top-p '%s'. Specify a value between 0.0 and 1.0, or 'default'.\n", argv[2]);
+                return -1;
+            }
+            gemini->setTopP(static_cast<float>(val));
+            this->printf("Top-P set to %.2f.\n", val);
+        }
+        return 0;
+    }
+
+    if (strcmp(argv[1], "top_k") == 0) {
+        if (!gemini) {
+            this->printf("Top-K configuration is only available for GeminiChat\n");
+            return -1;
+        }
+        if (argc < 3) {
+            int32_t topK = gemini->getTopK();
+            if (topK < 0) {
+                this->printf("Current top-k is default (model default)\n");
+            } else {
+                this->printf("Current top-k is %d\n", topK);
+            }
+            return 0;
+        }
+        if ((strcmp(argv[2], "default") == 0) || (strcmp(argv[2], "-1") == 0) ||
+            (strcmp(argv[2], "auto") == 0) || (strcmp(argv[2], "none") == 0)) {
+            gemini->setTopK(-1);
+            this->printf("Top-K reset to model default.\n");
+        } else {
+            char *endptr = NULL;
+            long val = strtol(argv[2], &endptr, 10);
+            if ((endptr == argv[2]) || (*endptr != '\0') || (val < 1) || (val > 100)) {
+                this->printf("Invalid top-k '%s'. Specify an integer between 1 and 100, or 'default'.\n", argv[2]);
+                return -1;
+            }
+            gemini->setTopK((int32_t) val);
+            this->printf("Top-K set to %ld.\n", val);
+        }
         return 0;
     }
 
@@ -1301,6 +1482,70 @@ int MeshMonShell::chatbot(int argc, char **argv)
         string newModel = argv[2];
         gemini->setModel(newModel);
         this->printf("Gemini model set to '%s'.\n", newModel.c_str());
+        return 0;
+    }
+
+    if ((strcmp(argv[1], "history") == 0) || (strcmp(argv[1], "max_history") == 0)) {
+        if (argc < 3) {
+            this->printf("Current max conversation history is %zu turns\n", bot->getMaxHistoryTurns());
+            return 0;
+        }
+        char *endptr = NULL;
+        long val = strtol(argv[2], &endptr, 10);
+        if ((endptr == argv[2]) || (*endptr != '\0') || (val < 1) || (val > 100)) {
+            this->printf("Invalid history '%s'. Specify turns between 1 and 100.\n", argv[2]);
+            return -1;
+        }
+        bot->setMaxHistoryTurns((size_t) val);
+        this->printf("Max conversation history set to %ld turns.\n", val);
+        return 0;
+    }
+
+    if ((strcmp(argv[1], "idle") == 0) || (strcmp(argv[1], "idle_timeout") == 0)) {
+        if (argc < 3) {
+            this->printf("Current conversation idle timeout is %u seconds\n", bot->getIdleTimeout());
+            return 0;
+        }
+        char *endptr = NULL;
+        long val = strtol(argv[2], &endptr, 10);
+        if ((endptr == argv[2]) || (*endptr != '\0') || (val < 10) || (val > 86400)) {
+            this->printf("Invalid idle timeout '%s'. Specify seconds between 10 and 86400.\n", argv[2]);
+            return -1;
+        }
+        bot->setIdleTimeout((uint32_t) val);
+        this->printf("Conversation idle timeout set to %ld seconds.\n", val);
+        return 0;
+    }
+
+    if (strcmp(argv[1], "clear") == 0) {
+        if (argc >= 3) {
+            string nodeStr = argv[2];
+            uint32_t nodeId = 0;
+            if (nodeStr.front() == '!' || nodeStr.front() == '@') {
+                nodeStr = nodeStr.substr(1);
+            }
+            if ((nodeStr.size() >= 2) && (nodeStr[0] == '0') &&
+                ((nodeStr[1] == 'x') || (nodeStr[1] == 'X'))) {
+                nodeStr = nodeStr.substr(2);
+            }
+            char *endptr = NULL;
+            unsigned long val = strtoul(nodeStr.c_str(), &endptr, 16);
+            if ((endptr != nodeStr.c_str()) && (*endptr == '\0')) {
+                nodeId = (uint32_t) val;
+            } else if (_client) {
+                nodeId = _client->getId(argv[2]);
+            }
+            if (nodeId == 0) {
+                this->printf("Cannot resolve node '%s'\n", argv[2]);
+                return -1;
+            }
+            bot->clearConversations(nodeId);
+            this->printf("Conversation history cleared for node !%08x (%s).\n",
+                         nodeId, _client ? _client->getDisplayName(nodeId).c_str() : argv[2]);
+        } else {
+            bot->clearConversations(0);
+            this->printf("All conversation histories cleared.\n");
+        }
         return 0;
     }
 

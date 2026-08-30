@@ -21,6 +21,18 @@ struct GeminiToolTurn {
     vector<pair<string, string>> functionResponses;
 };
 
+struct GeminiHttpPostResult {
+    long httpCode;
+    int curlCode;
+    string body;
+    string errorMessage;
+    double elapsedSec;
+
+    GeminiHttpPostResult()
+        : httpCode(0), curlCode(0), elapsedSec(0.0) {
+    }
+};
+
 struct GeminiTokenUsage {
     uint64_t promptTokens;
     uint64_t candidateTokens;
@@ -48,10 +60,11 @@ public:
                const string &model = "gemini-3.5-flash",
                bool webSearch = true,
                uint32_t timeoutSec = 30,
-               uint32_t maxOutputTokens = 512);
+               uint32_t maxOutputTokens = 512,
+               int32_t thinkingBudget = 0);
     virtual ~GeminiChat();
 
-    virtual bool enabled(void) const;
+    virtual bool enabled(void) const override;
 
     void setWebSearch(bool enable);
     bool getWebSearch(void) const;
@@ -61,6 +74,21 @@ public:
 
     void setMaxOutputTokens(uint32_t tokens);
     uint32_t getMaxOutputTokens(void) const;
+
+    void setThinkingBudget(int32_t budget);
+    int32_t getThinkingBudget(void) const;
+
+    void setTemperature(float temp);
+    float getTemperature(void) const;
+
+    void setTopP(float topP);
+    float getTopP(void) const;
+
+    void setTopK(int32_t topK);
+    int32_t getTopK(void) const;
+
+    void setCustomInstruction(const string &instruction);
+    string getCustomInstruction(void) const;
 
     void setModel(const string &model);
     string getModel(void) const;
@@ -84,7 +112,11 @@ protected:
     static bool extractFunctionCalls(const string &body,
                                      string &modelPartsJson,
                                      vector<GeminiFunctionCall> &fcs);
-    void extractUsageMetadata(const string &body);
+    bool extractUsageMetadata(const string &body,
+                              uint64_t *outPrompt = NULL,
+                              uint64_t *outCand = NULL,
+                              uint64_t *outTotal = NULL,
+                              uint64_t *outCached = NULL);
     string getSystemInstruction(uint32_t from, uint32_t dest, uint8_t channel) const;
     string buildRequest(uint32_t from,
                         uint32_t dest,
@@ -92,7 +124,12 @@ protected:
                         const vector<ChatTurn> &history,
                         const string &message,
                         const vector<GeminiToolTurn> &toolTurns) const;
-    string httpPost(const string &url, const string &body) const;
+    GeminiHttpPostResult httpPost(const string &url, const string &body) const;
+    void sendQueryStatus(uint32_t queryCount,
+                         double elapsedSec,
+                         uint64_t promptTokens, uint64_t candTokens,
+                         uint64_t totalTokens, uint64_t cachedTokens,
+                         const string &errorMsg);
 
 private:
 
@@ -101,6 +138,11 @@ private:
     bool _webSearchEnabled;
     uint32_t _timeoutSec;
     uint32_t _maxOutputTokens;
+    int32_t _thinkingBudget;
+    float _temperature;
+    float _topP;
+    int32_t _topK;
+    string _customInstruction;
     GeminiTokenUsage _usage;
     mutable mutex _stateMutex;
 

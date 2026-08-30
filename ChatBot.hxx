@@ -79,7 +79,16 @@ public:
     virtual ~ChatBot();
 
     virtual void setClient(shared_ptr<MeshClient> client);
+    virtual void setEnabled(bool enable);
     virtual bool enabled(void) const;
+
+    void setMaxHistoryTurns(size_t turns);
+    size_t getMaxHistoryTurns(void) const;
+
+    void setIdleTimeout(uint32_t seconds);
+    uint32_t getIdleTimeout(void) const;
+
+    void clearConversations(uint32_t nodeId = 0);
 
     ChatBotStats getStats(void) const;
     void resetStats(void);
@@ -95,6 +104,8 @@ public:
     void ask(uint32_t from, uint32_t dest, uint8_t channel,
              const string &message);
     bool pollReply(ChatReply &reply);
+    void queueReply(uint32_t from, uint32_t dest, uint8_t channel,
+                    const string &text);
 
     void start(void);
     void stop(void);
@@ -178,6 +189,9 @@ private:
     vector<ScheduledTask> _tasks;
     uint32_t _nextTaskId;
     ChatBotStats _stats;
+    bool _enabled;
+    size_t _maxHistoryTurns;
+    uint32_t _idleTimeoutSec;
 
 };
 

@@ -10,6 +10,8 @@
 #include <cctype>
 #include <sstream>
 #include <iostream>
+#include <chrono>
+#include <iomanip>
 #include <GeminiChat.hxx>
 
 #ifndef DEBUG_CHATBOT
@@ -22,13 +24,18 @@
 
 GeminiChat::GeminiChat(const string &apiKey, const string &model,
                        bool webSearch, uint32_t timeoutSec,
-                       uint32_t maxOutputTokens)
+                       uint32_t maxOutputTokens,
+                       int32_t thinkingBudget)
     : ChatBot(),
       _apiKey(apiKey),
       _model(model.empty() ? string("gemini-3.5-flash") : model),
       _webSearchEnabled(webSearch),
       _timeoutSec(timeoutSec > 0 ? timeoutSec : GEMINI_TIMEOUT_S),
-      _maxOutputTokens(maxOutputTokens > 0 ? maxOutputTokens : GEMINI_MAX_OUTPUT_TOKENS)
+      _maxOutputTokens(maxOutputTokens > 0 ? maxOutputTokens : GEMINI_MAX_OUTPUT_TOKENS),
+      _thinkingBudget(thinkingBudget),
+      _temperature(-1.0f),
+      _topP(-1.0f),
+      _topK(-1)
 {
 
 }
@@ -41,7 +48,7 @@ GeminiChat::~GeminiChat()
 bool GeminiChat::enabled(void) const
 {
     lock_guard<mutex> lock(_stateMutex);
-    return !_apiKey.empty() && !_model.empty();
+    return ChatBot::enabled() && !_apiKey.empty() && !_model.empty();
 }
 
 void GeminiChat::setWebSearch(bool enable)
@@ -82,6 +89,66 @@ uint32_t GeminiChat::getMaxOutputTokens(void) const
 {
     lock_guard<mutex> lock(_stateMutex);
     return _maxOutputTokens;
+}
+
+void GeminiChat::setThinkingBudget(int32_t budget)
+{
+    lock_guard<mutex> lock(_stateMutex);
+    _thinkingBudget = budget;
+}
+
+int32_t GeminiChat::getThinkingBudget(void) const
+{
+    lock_guard<mutex> lock(_stateMutex);
+    return _thinkingBudget;
+}
+
+void GeminiChat::setTemperature(float temp)
+{
+    lock_guard<mutex> lock(_stateMutex);
+    _temperature = temp;
+}
+
+float GeminiChat::getTemperature(void) const
+{
+    lock_guard<mutex> lock(_stateMutex);
+    return _temperature;
+}
+
+void GeminiChat::setTopP(float topP)
+{
+    lock_guard<mutex> lock(_stateMutex);
+    _topP = topP;
+}
+
+float GeminiChat::getTopP(void) const
+{
+    lock_guard<mutex> lock(_stateMutex);
+    return _topP;
+}
+
+void GeminiChat::setTopK(int32_t topK)
+{
+    lock_guard<mutex> lock(_stateMutex);
+    _topK = topK;
+}
+
+int32_t GeminiChat::getTopK(void) const
+{
+    lock_guard<mutex> lock(_stateMutex);
+    return _topK;
+}
+
+void GeminiChat::setCustomInstruction(const string &instruction)
+{
+    lock_guard<mutex> lock(_stateMutex);
+    _customInstruction = instruction;
+}
+
+string GeminiChat::getCustomInstruction(void) const
+{
+    lock_guard<mutex> lock(_stateMutex);
+    return _customInstruction;
 }
 
 void GeminiChat::setModel(const string &model)
@@ -309,6 +376,15 @@ string GeminiChat::getSystemInstruction(uint32_t from, uint32_t dest, uint8_t ch
        << "Optional channel (by name or index) and target_node can be specified to route the message. "
        << "Reply in one short plain-text sentence. Maximum 180 characters. "
        << "No markdown, no lists, no emoji, and no quotes around the whole reply.";
+
+    string customInst;
+    {
+        lock_guard<mutex> lock(_stateMutex);
+        customInst = _customInstruction;
+    }
+    if (!customInst.empty()) {
+        ss << " " << customInst;
+    }
 
     return ss.str();
 }
@@ -656,10 +732,34 @@ string GeminiChat::buildRequest(uint32_t from,
     } else {
         ss << "\"tools\":[{\"functionDeclarations\":[" << kMeshFunctionDeclarations << "]}],";
     }
+    int32_t thinkingBudget;
+    float temperature;
+    float topP;
+    int32_t topK;
+    {
+        lock_guard<mutex> lock(_stateMutex);
+        thinkingBudget = _thinkingBudget;
+        temperature = _temperature;
+        topP = _topP;
+        topK = _topK;
+    }
+
     ss << "\"toolConfig\":{\"includeServerSideToolInvocations\":true},";
     ss << "\"generationConfig\":{"
-       << "\"maxOutputTokens\":" << getMaxOutputTokens()
-       << "}";
+       << "\"maxOutputTokens\":" << getMaxOutputTokens();
+    if (thinkingBudget >= 0) {
+        ss << ",\"thinkingConfig\":{\"thinkingBudget\":" << thinkingBudget << "}";
+    }
+    if (temperature >= 0.0f) {
+        ss << ",\"temperature\":" << temperature;
+    }
+    if (topP >= 0.0f) {
+        ss << ",\"topP\":" << topP;
+    }
+    if (topK >= 0) {
+        ss << ",\"topK\":" << topK;
+    }
+    ss << "}";
     ss << "}";
 
     return ss.str();
@@ -674,7 +774,7 @@ static size_t geminiCurlWrite(char *ptr, size_t size, size_t nmemb,
     return size * nmemb;
 }
 
-string GeminiChat::httpPost(const string &url, const string &body) const
+GeminiHttpPostResult GeminiChat::httpPost(const string &url, const string &body) const
 {
     CURL *curl = NULL;
     struct curl_slist *headers = NULL;
@@ -682,14 +782,15 @@ string GeminiChat::httpPost(const string &url, const string &body) const
     string keyHeader;
     CURLcode rc;
     long httpCode = 0;
-    string result;
+    GeminiHttpPostResult result;
 
     curl = curl_easy_init();
     if (curl == NULL) {
 #if DEBUG_CHATBOT
         cout << "chatbot: curl_easy_init failed" << endl;
 #endif
-        return string();
+        result.errorMessage = "curl_easy_init failed";
+        return result;
     }
 
     keyHeader = string("x-goog-api-key: ") + _apiKey;
@@ -709,23 +810,42 @@ string GeminiChat::httpPost(const string &url, const string &body) const
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "meshmon-gemini");
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
 
+    chrono::steady_clock::time_point tStart = chrono::steady_clock::now();
     rc = curl_easy_perform(curl);
+    chrono::steady_clock::time_point tEnd = chrono::steady_clock::now();
+
+    result.curlCode = (int) rc;
+    result.elapsedSec = chrono::duration<double>(tEnd - tStart).count();
+
     if (rc == CURLE_OK) {
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpCode);
+        result.httpCode = httpCode;
+        result.body = response;
 #if DEBUG_CHATBOT
         cout << "chatbot: HTTP " << httpCode
-             << " bytes=" << response.size() << endl;
+             << " bytes=" << response.size()
+             << " time=" << result.elapsedSec << "s" << endl;
 #endif
         if (httpCode == 200) {
-            result = response;
+            // OK
         } else {
             cerr << "gemini: HTTP " << httpCode << ": " << response << endl;
+            string errMsg;
+            string errStatus;
+            if (parseJsonStringField(response, "message", errMsg) && !errMsg.empty()) {
+                result.errorMessage = "HTTP " + to_string(httpCode) + " (" + errMsg + ")";
+            } else if (parseJsonStringField(response, "status", errStatus) && !errStatus.empty()) {
+                result.errorMessage = "HTTP " + to_string(httpCode) + " (" + errStatus + ")";
+            } else {
+                result.errorMessage = "HTTP " + to_string(httpCode);
+            }
         }
     } else {
 #if DEBUG_CHATBOT
         cout << "chatbot: curl " << curl_easy_strerror(rc) << endl;
 #endif
         cerr << "gemini: " << curl_easy_strerror(rc) << endl;
+        result.errorMessage = curl_easy_strerror(rc);
     }
 
     curl_slist_free_all(headers);
@@ -734,11 +854,19 @@ string GeminiChat::httpPost(const string &url, const string &body) const
     return result;
 }
 
-void GeminiChat::extractUsageMetadata(const string &body)
+bool GeminiChat::extractUsageMetadata(const string &body,
+                                     uint64_t *outPrompt,
+                                     uint64_t *outCand,
+                                     uint64_t *outTotal,
+                                     uint64_t *outCached)
 {
     size_t uPos = body.find("\"usageMetadata\"");
     if (uPos == string::npos) {
-        return;
+        if (outPrompt) *outPrompt = 0;
+        if (outCand) *outCand = 0;
+        if (outTotal) *outTotal = 0;
+        if (outCached) *outCached = 0;
+        return false;
     }
 
     string uJson = body.substr(uPos);
@@ -752,17 +880,27 @@ void GeminiChat::extractUsageMetadata(const string &body)
     parseJsonIntField(uJson, "totalTokenCount", totalCount);
     parseJsonIntField(uJson, "cachedContentTokenCount", cachedCount);
 
+    uint64_t lp = (promptCount > 0) ? (uint64_t) promptCount : 0;
+    uint64_t lc = (candCount > 0) ? (uint64_t) candCount : 0;
+    uint64_t lt = (totalCount > 0) ? (uint64_t) totalCount : 0;
+    uint64_t lcc = (cachedCount > 0) ? (uint64_t) cachedCount : 0;
+
+    if (outPrompt) *outPrompt = lp;
+    if (outCand) *outCand = lc;
+    if (outTotal) *outTotal = lt;
+    if (outCached) *outCached = lcc;
+
     {
         lock_guard<mutex> lock(_stateMutex);
-        _usage.lastPromptTokens = (promptCount > 0) ? (uint64_t) promptCount : 0;
-        _usage.lastCandidateTokens = (candCount > 0) ? (uint64_t) candCount : 0;
-        _usage.lastTotalTokens = (totalCount > 0) ? (uint64_t) totalCount : 0;
-        _usage.lastCachedContentTokens = (cachedCount > 0) ? (uint64_t) cachedCount : 0;
+        _usage.lastPromptTokens = lp;
+        _usage.lastCandidateTokens = lc;
+        _usage.lastTotalTokens = lt;
+        _usage.lastCachedContentTokens = lcc;
 
-        _usage.promptTokens += _usage.lastPromptTokens;
-        _usage.candidateTokens += _usage.lastCandidateTokens;
-        _usage.totalTokens += _usage.lastTotalTokens;
-        _usage.cachedContentTokens += _usage.lastCachedContentTokens;
+        _usage.promptTokens += lp;
+        _usage.candidateTokens += lc;
+        _usage.totalTokens += lt;
+        _usage.cachedContentTokens += lcc;
         _usage.callCount++;
 
 #if DEBUG_CHATBOT
@@ -773,6 +911,49 @@ void GeminiChat::extractUsageMetadata(const string &body)
              << " calls=" << _usage.callCount << ")" << endl;
 #endif
     }
+
+    return true;
+}
+
+void GeminiChat::sendQueryStatus(uint32_t queryCount,
+                                 double elapsedSec,
+                                 uint64_t promptTokens, uint64_t candTokens,
+                                 uint64_t totalTokens, uint64_t cachedTokens,
+                                 const string &errorMsg)
+{
+    shared_ptr<MeshClient> client = getClient();
+    if (client == NULL) {
+        return;
+    }
+
+    int robotChan = client->getRobotChannel();
+    if (robotChan < 0) {
+        return;
+    }
+
+    stringstream ss;
+    char timeBuf[32];
+    snprintf(timeBuf, sizeof(timeBuf), "%.2fs", elapsedSec);
+
+    ss << "gemini-chatbot: queries=" << queryCount << ", ";
+
+    if (!errorMsg.empty()) {
+        ss << "error=" << errorMsg;
+        if (totalTokens > 0) {
+            ss << ", tokens=" << totalTokens;
+        }
+        ss << ", time=" << timeBuf;
+    } else {
+        ss << "tokens=" << totalTokens
+           << " (prompt=" << promptTokens
+           << ", cand=" << candTokens;
+        if (cachedTokens > 0) {
+            ss << ", cached=" << cachedTokens;
+        }
+        ss << "), time=" << timeBuf;
+    }
+
+    queueReply(0xffffffffU, 0xffffffffU, static_cast<uint8_t>(robotChan), ss.str());
 }
 
 #define GEMINI_MAX_TOOL_ITERATIONS 3
@@ -785,8 +966,15 @@ string GeminiChat::generate(uint32_t from,
 {
     string url;
     string body;
-    string response;
     vector<GeminiToolTurn> toolTurns;
+    uint32_t queryCount = 0;
+    uint64_t totalPromptTokens = 0;
+    uint64_t totalCandTokens = 0;
+    uint64_t totalTokensSum = 0;
+    uint64_t totalCachedTokens = 0;
+    double totalElapsedSec = 0.0;
+    string lastError;
+    string textResult;
 
     if (!enabled() || message.empty()) {
 #if DEBUG_CHATBOT
@@ -801,6 +989,7 @@ string GeminiChat::generate(uint32_t from,
         getModel() + string(":generateContent");
 
     for (int iter = 0; iter < GEMINI_MAX_TOOL_ITERATIONS; iter++) {
+        queryCount++;
 #if DEBUG_CHATBOT
         cout << "chatbot: POST " << url
              << " history=" << history.size()
@@ -808,19 +997,29 @@ string GeminiChat::generate(uint32_t from,
              << " iter=" << iter << endl;
 #endif
         body = buildRequest(from, dest, channel, history, message, toolTurns);
-        response = httpPost(url, body);
-        if (response.empty()) {
+        GeminiHttpPostResult res = httpPost(url, body);
+        totalElapsedSec += res.elapsedSec;
+
+        if ((res.httpCode != 200) || res.body.empty()) {
 #if DEBUG_CHATBOT
-            cout << "chatbot: empty HTTP body" << endl;
+            cout << "chatbot: HTTP post failed code=" << res.httpCode
+                 << " err='" << res.errorMessage << "'" << endl;
 #endif
-            return string();
+            lastError = res.errorMessage.empty() ? "empty response from Gemini API" : res.errorMessage;
+            break;
         }
 
-        extractUsageMetadata(response);
+        uint64_t promptTokens = 0, candTokens = 0, totalTokens = 0, cachedTokens = 0;
+        extractUsageMetadata(res.body, &promptTokens, &candTokens, &totalTokens, &cachedTokens);
+
+        totalPromptTokens += promptTokens;
+        totalCandTokens += candTokens;
+        totalTokensSum += totalTokens;
+        totalCachedTokens += cachedTokens;
 
         string modelPartsJson;
         vector<GeminiFunctionCall> fcs;
-        if (extractFunctionCalls(response, modelPartsJson, fcs)) {
+        if (extractFunctionCalls(res.body, modelPartsJson, fcs)) {
 #if DEBUG_CHATBOT
             cout << "chatbot: functionCalls count=" << fcs.size() << endl;
 #endif
@@ -843,11 +1042,11 @@ string GeminiChat::generate(uint32_t from,
             continue;
         }
 
-        string text = extractCandidateText(response);
+        textResult = extractCandidateText(res.body);
 #if DEBUG_CHATBOT
-        cout << "chatbot: parsed text bytes=" << text.size() << endl;
-        if (text.empty()) {
-            string err = response;
+        cout << "chatbot: parsed text bytes=" << textResult.size() << endl;
+        if (textResult.empty()) {
+            string err = res.body;
             size_t i;
             for (i = 0; i < err.size(); i++) {
                 if ((err[i] == '\n') || (err[i] == '\r')) {
@@ -860,10 +1059,17 @@ string GeminiChat::generate(uint32_t from,
             cout << "chatbot: HTTP 200 body " << err << endl;
         }
 #endif
-        return text;
+        break;
     }
 
-    return string();
+    if (queryCount > 0) {
+        sendQueryStatus(queryCount, totalElapsedSec,
+                        totalPromptTokens, totalCandTokens,
+                        totalTokensSum, totalCachedTokens,
+                        lastError);
+    }
+
+    return textResult;
 }
 
 /*

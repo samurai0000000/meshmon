@@ -367,7 +367,15 @@ static bool validGeminiModel(const string &model)
 static bool readGeminiConfig(Config &cfg, const string &cfgfile,
                              string &apiKey, string &model,
                              uint32_t &timeout, bool &search,
-                             uint32_t &maxOutputTokens)
+                             uint32_t &maxOutputTokens,
+                             int32_t &thinkingBudget,
+                             float &temperature,
+                             float &topP,
+                             int32_t &topK,
+                             string &systemInstruction,
+                             size_t &maxHistory,
+                             uint32_t &idleTimeout,
+                             bool &enabled)
 {
     Setting &root = cfg.getRoot();
 
@@ -377,6 +385,13 @@ static bool readGeminiConfig(Config &cfg, const string &cfgfile,
 
     try {
         Setting &gemini = root["gemini"];
+
+        enabled = true;
+        if (gemini.exists("enabled")) {
+            if (!gemini.lookupValue("enabled", enabled)) {
+                geminiCfgFail(cfgfile, "gemini.enabled is not a boolean");
+            }
+        }
 
         if (!gemini.exists("api_key") ||
             !gemini.lookupValue("api_key", apiKey)) {
@@ -438,10 +453,122 @@ static bool readGeminiConfig(Config &cfg, const string &cfgfile,
                 geminiCfgFail(cfgfile, "gemini.max_tokens is not an integer");
             }
         }
-        if ((maxTokensInt < 16) || (maxTokensInt > 4096)) {
-            geminiCfgFail(cfgfile, "gemini.max_output_tokens must be between 16 and 4096");
+        if ((maxTokensInt < 16) || (maxTokensInt > 8192)) {
+            geminiCfgFail(cfgfile, "gemini.max_output_tokens must be between 16 and 8192");
         }
         maxOutputTokens = (uint32_t) maxTokensInt;
+
+        thinkingBudget = 0;
+        if (gemini.exists("thinking_budget")) {
+            int tbInt = 0;
+            if (gemini.lookupValue("thinking_budget", tbInt)) {
+                if (tbInt < -1 || tbInt > 65536) {
+                    geminiCfgFail(cfgfile, "gemini.thinking_budget must be >= -1");
+                }
+                thinkingBudget = tbInt;
+            } else {
+                bool tbBool = false;
+                if (gemini.lookupValue("thinking_budget", tbBool)) {
+                    thinkingBudget = tbBool ? -1 : 0;
+                } else {
+                    geminiCfgFail(cfgfile, "gemini.thinking_budget is invalid");
+                }
+            }
+        } else if (gemini.exists("thinking")) {
+            bool tbBool = false;
+            if (gemini.lookupValue("thinking", tbBool)) {
+                thinkingBudget = tbBool ? -1 : 0;
+            } else {
+                int tbInt = 0;
+                if (gemini.lookupValue("thinking", tbInt)) {
+                    thinkingBudget = tbInt;
+                } else {
+                    geminiCfgFail(cfgfile, "gemini.thinking is invalid");
+                }
+            }
+        }
+
+        temperature = -1.0f;
+        if (gemini.exists("temperature")) {
+            double tempDbl = 0.0;
+            if (gemini.lookupValue("temperature", tempDbl)) {
+                if (tempDbl < 0.0 || tempDbl > 2.0) {
+                    geminiCfgFail(cfgfile, "gemini.temperature must be between 0.0 and 2.0");
+                }
+                temperature = static_cast<float>(tempDbl);
+            } else {
+                int tempInt = 0;
+                if (gemini.lookupValue("temperature", tempInt)) {
+                    temperature = static_cast<float>(tempInt);
+                } else {
+                    geminiCfgFail(cfgfile, "gemini.temperature is invalid");
+                }
+            }
+        } else if (gemini.exists("temp")) {
+            double tempDbl = 0.0;
+            if (gemini.lookupValue("temp", tempDbl)) {
+                temperature = static_cast<float>(tempDbl);
+            }
+        }
+
+        topP = -1.0f;
+        if (gemini.exists("top_p")) {
+            double topPDbl = 0.0;
+            if (gemini.lookupValue("top_p", topPDbl)) {
+                if (topPDbl < 0.0 || topPDbl > 1.0) {
+                    geminiCfgFail(cfgfile, "gemini.top_p must be between 0.0 and 1.0");
+                }
+                topP = static_cast<float>(topPDbl);
+            } else {
+                geminiCfgFail(cfgfile, "gemini.top_p is invalid");
+            }
+        }
+
+        topK = -1;
+        if (gemini.exists("top_k")) {
+            int topKInt = 0;
+            if (gemini.lookupValue("top_k", topKInt)) {
+                if (topKInt < 1 || topKInt > 100) {
+                    geminiCfgFail(cfgfile, "gemini.top_k must be between 1 and 100");
+                }
+                topK = topKInt;
+            } else {
+                geminiCfgFail(cfgfile, "gemini.top_k is not an integer");
+            }
+        }
+
+        systemInstruction.clear();
+        if (gemini.exists("system_instruction")) {
+            gemini.lookupValue("system_instruction", systemInstruction);
+        } else if (gemini.exists("instruction")) {
+            gemini.lookupValue("instruction", systemInstruction);
+        } else if (gemini.exists("prompt")) {
+            gemini.lookupValue("prompt", systemInstruction);
+        }
+
+        maxHistory = 10;
+        int maxHistInt = 10;
+        if (gemini.exists("max_history")) {
+            if (gemini.lookupValue("max_history", maxHistInt) && maxHistInt >= 1 && maxHistInt <= 100) {
+                maxHistory = static_cast<size_t>(maxHistInt);
+            }
+        } else if (gemini.exists("history_max")) {
+            if (gemini.lookupValue("history_max", maxHistInt) && maxHistInt >= 1 && maxHistInt <= 100) {
+                maxHistory = static_cast<size_t>(maxHistInt);
+            }
+        }
+
+        idleTimeout = 300;
+        int idleInt = 300;
+        if (gemini.exists("idle_timeout")) {
+            if (gemini.lookupValue("idle_timeout", idleInt) && idleInt >= 10 && idleInt <= 86400) {
+                idleTimeout = static_cast<uint32_t>(idleInt);
+            }
+        } else if (gemini.exists("idle_timeout_s")) {
+            if (gemini.lookupValue("idle_timeout_s", idleInt) && idleInt >= 10 && idleInt <= 86400) {
+                idleTimeout = static_cast<uint32_t>(idleInt);
+            }
+        }
     } catch (const SettingTypeException &) {
         geminiCfgFail(cfgfile, "gemini is not a group");
     }
@@ -555,10 +682,26 @@ int main(int argc, char **argv)
     uint32_t geminiTimeout = 30;
     bool geminiSearch = true;
     uint32_t geminiMaxOutputTokens = 512;
+    int32_t geminiThinkingBudget = 0;
+    float geminiTemperature = -1.0f;
+    float geminiTopP = -1.0f;
+    int32_t geminiTopK = -1;
+    string geminiSystemInstruction;
+    size_t geminiMaxHistory = 10;
+    uint32_t geminiIdleTimeout = 300;
+    bool geminiEnabled = true;
 
     haveGemini = readGeminiConfig(cfg, cfgfile, geminiApiKey, geminiModel,
                                   geminiTimeout, geminiSearch,
-                                  geminiMaxOutputTokens);
+                                  geminiMaxOutputTokens,
+                                  geminiThinkingBudget,
+                                  geminiTemperature,
+                                  geminiTopP,
+                                  geminiTopK,
+                                  geminiSystemInstruction,
+                                  geminiMaxHistory,
+                                  geminiIdleTimeout,
+                                  geminiEnabled);
 
     for (;;) {
         int option_index = 0;
@@ -715,7 +858,23 @@ int main(int argc, char **argv)
                                                                  geminiModel,
                                                                  geminiSearch,
                                                                  geminiTimeout,
-                                                                 geminiMaxOutputTokens);
+                                                                 geminiMaxOutputTokens,
+                                                                 geminiThinkingBudget);
+            bot->setEnabled(geminiEnabled);
+            if (geminiTemperature >= 0.0f) {
+                bot->setTemperature(geminiTemperature);
+            }
+            if (geminiTopP >= 0.0f) {
+                bot->setTopP(geminiTopP);
+            }
+            if (geminiTopK >= 0) {
+                bot->setTopK(geminiTopK);
+            }
+            if (!geminiSystemInstruction.empty()) {
+                bot->setCustomInstruction(geminiSystemInstruction);
+            }
+            bot->setMaxHistoryTurns(geminiMaxHistory);
+            bot->setIdleTimeout(geminiIdleTimeout);
             bot->loadTasksFromFile();
             mon->setChatBot(bot);
         }

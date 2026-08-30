@@ -129,9 +129,15 @@ void MeshMon::loop(void)
                      << " bytes=" << reply.text.size() << endl;
 #endif
             } else {
-                cout << "chatbot_reply to "
-                     << getDisplayName(reply.from) << ": "
-                     << reply.text << endl;
+                if (reply.dest == 0xffffffffU) {
+                    cout << "chatbot broadcast on #"
+                         << (unsigned int) reply.channel << ": "
+                         << reply.text << endl;
+                } else {
+                    cout << "chatbot_reply to "
+                         << getDisplayName(reply.from) << ": "
+                         << reply.text << endl;
+                }
             }
         }
     }
@@ -860,6 +866,105 @@ void MeshMon::hourlyTask(const struct tm *now)
     }
 }
 
+bool MeshMon::matchBotAddressing(const string &rawMessage, bool directMessage, string &cleanQuery) const
+{
+    string msg = rawMessage;
+    trimWhitespace(msg);
+    if (msg.empty()) {
+        cleanQuery.clear();
+        return directMessage;
+    }
+
+    if (directMessage) {
+        cleanQuery = msg;
+    }
+
+    size_t startIdx = 0;
+    if (msg[0] == '@') {
+        startIdx = 1;
+        while (startIdx < msg.size() && isspace(static_cast<unsigned char>(msg[startIdx]))) {
+            startIdx++;
+        }
+    }
+
+    uint32_t myId = whoami();
+    string shortName = lookupShortName(myId);
+    string longName = lookupLongName(myId);
+    char hexBuf[16];
+    snprintf(hexBuf, sizeof(hexBuf), "%08x", myId);
+    string hexId = hexBuf;
+    string hexIdBang = "!" + hexId;
+
+    vector<string> candidates;
+    if (!longName.empty()) {
+        candidates.push_back(longName);
+    }
+    candidates.push_back(hexIdBang);
+    candidates.push_back(hexId);
+    if (!shortName.empty()) {
+        candidates.push_back(shortName);
+    }
+    if (!directMessage) {
+        candidates.push_back("all");
+    }
+
+    sort(candidates.begin(), candidates.end(), [](const string &a, const string &b) {
+        return a.size() > b.size();
+    });
+
+    for (size_t i = 0; i < candidates.size(); i++) {
+        const string &cand = candidates[i];
+        if (cand.empty()) {
+            continue;
+        }
+
+        if (msg.size() < startIdx + cand.size()) {
+            continue;
+        }
+
+        bool match = true;
+        for (size_t c = 0; c < cand.size(); c++) {
+            if (tolower(static_cast<unsigned char>(msg[startIdx + c])) !=
+                tolower(static_cast<unsigned char>(cand[c]))) {
+                match = false;
+                break;
+            }
+        }
+
+        if (match) {
+            size_t endPos = startIdx + cand.size();
+            if (endPos == msg.size()) {
+                cleanQuery.clear();
+                return true;
+            }
+
+            char delimiter = msg[endPos];
+            if (!isalnum(static_cast<unsigned char>(delimiter))) {
+                while (endPos < msg.size()) {
+                    char d = msg[endPos];
+                    if (isspace(static_cast<unsigned char>(d)) ||
+                        d == ',' || d == ':' || d == '!' || d == '?' ||
+                        d == ';' || d == '-' || d == '.' || d == '"' || d == '\'') {
+                        endPos++;
+                    } else {
+                        break;
+                    }
+                }
+                cleanQuery = msg.substr(endPos);
+                trimWhitespace(cleanQuery);
+                return true;
+            }
+        }
+    }
+
+    if (directMessage) {
+        cleanQuery = msg;
+        return true;
+    }
+
+    return false;
+}
+
 bool MeshMon::handleTextMessage(const meshtastic_MeshPacket &packet,
                                 const string &_message)
 {
@@ -947,7 +1052,48 @@ bool MeshMon::handleTextMessage(const meshtastic_MeshPacket &packet,
         }
     }
 
-    return HomeChat::handleTextMessage(packet, _message);
+    bool handled = HomeChat::handleTextMessage(packet, _message);
+    if (handled) {
+        return true;
+    }
+
+    // Chatbot-only relaxed addressing handoff
+    if ((_chatbot != NULL) && _chatbot->enabled()) {
+        string cleanQuery;
+        if (matchBotAddressing(_message, directMessage, cleanQuery)) {
+            if (!cleanQuery.empty()) {
+                bool isAdmin = false, isMate = false;
+                getAuthority(packet.from, isAdmin, isMate);
+                bool fromAuthChan = isAuthChannel(getChannelName(packet.channel));
+
+                if (isAdmin || isMate || fromAuthChan) {
+#if DEBUG_CHATBOT
+                    cout << "chatbot: ask (relaxed) from=" << packet.from
+                         << " dest=" << dest
+                         << " channel=" << (unsigned int) channel
+                         << " query='" << cleanQuery << "'" << endl;
+#endif
+                    _chatbot->ask(packet.from, dest, channel, cleanQuery);
+                    setLastMessageFrom(packet.from, _message);
+                    return true;
+                } else {
+                    string firstWordLower = _message.substr(0, _message.find(' '));
+                    toLowercase(firstWordLower);
+                    if (firstWordLower != "all") {
+                        if (_message != getLastMessageFrom(packet.from)) {
+                            string unauthReply = lookupShortName(packet.from) +
+                                ", you are not authorized to speak to me!";
+                            textMessage(dest, channel, unauthReply);
+                        }
+                    }
+                    setLastMessageFrom(packet.from, _message);
+                    return true;
+                }
+            }
+        }
+    }
+
+    return false;
 }
 
 void MeshMon::handleTimeBroadcast(const meshtastic_MeshPacket &packet,
@@ -971,30 +1117,6 @@ string MeshMon::handleEnv(uint32_t node_num, string &message)
     ss <<  setprecision(3) << getCpuTempC();
 
     return ss.str();
-}
-
-string MeshMon::handleUnknown(uint32_t node_num, uint32_t dest,
-                              uint8_t channel, string &message)
-{
-    if ((_chatbot != NULL) && _chatbot->enabled()) {
-#if DEBUG_CHATBOT
-        cout << "chatbot: ask from=" << node_num
-             << " dest=" << dest
-             << " channel=" << (unsigned int) channel
-             << " msg='" << message << "'" << endl;
-#endif
-        _chatbot->ask(node_num, dest, channel, message);
-    } else {
-#if DEBUG_CHATBOT
-        cout << "chatbot: skip handleUnknown null="
-             << ((_chatbot == NULL) ? 1 : 0)
-             << " enabled="
-             << ((_chatbot != NULL) && _chatbot->enabled() ? 1 : 0)
-             << endl;
-#endif
-    }
-
-    return string();
 }
 
 static inline int stdio_vprintf(const char *format, va_list ap)

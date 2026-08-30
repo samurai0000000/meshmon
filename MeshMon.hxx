@@ -92,10 +92,9 @@ protected:
     virtual void handleTimeBroadcast(const meshtastic_MeshPacket &packet,
                                      time_t epoch, const string &tz);
     virtual string handleEnv(uint32_t node_num, string &message);
-    virtual string handleUnknown(uint32_t node_num, uint32_t dest,
-                                 uint8_t channel, string &message);
     virtual int vprintf(const char *format, va_list ap) const;
 
+    bool matchBotAddressing(const string &rawMessage, bool directMessage, string &cleanQuery) const;
     void syncRadioClock(void);
 
 

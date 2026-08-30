@@ -511,7 +511,10 @@ ChatBot::ChatBot(shared_ptr<MeshClient> client)
     : _client(client),
       _thread(NULL),
       _isRunning(false),
-      _nextTaskId(1)
+      _nextTaskId(1),
+      _enabled(true),
+      _maxHistoryTurns(CHAT_HISTORY_MAX),
+      _idleTimeoutSec(CHAT_IDLE_SECONDS)
 {
 
 }
@@ -527,9 +530,48 @@ void ChatBot::setClient(shared_ptr<MeshClient> client)
     _client = client;
 }
 
+void ChatBot::setEnabled(bool enable)
+{
+    _enabled = enable;
+}
+
 bool ChatBot::enabled(void) const
 {
-    return true;
+    return _enabled;
+}
+
+void ChatBot::setMaxHistoryTurns(size_t turns)
+{
+    lock_guard<mutex> lock(_mutex);
+    _maxHistoryTurns = (turns == 0) ? 1 : turns;
+}
+
+size_t ChatBot::getMaxHistoryTurns(void) const
+{
+    lock_guard<mutex> lock(_mutex);
+    return _maxHistoryTurns;
+}
+
+void ChatBot::setIdleTimeout(uint32_t seconds)
+{
+    lock_guard<mutex> lock(_mutex);
+    _idleTimeoutSec = seconds;
+}
+
+uint32_t ChatBot::getIdleTimeout(void) const
+{
+    lock_guard<mutex> lock(_mutex);
+    return _idleTimeoutSec;
+}
+
+void ChatBot::clearConversations(uint32_t nodeId)
+{
+    lock_guard<mutex> lock(_mutex);
+    if (nodeId == 0) {
+        _conversations.clear();
+    } else {
+        _conversations.erase(nodeId);
+    }
 }
 
 ChatBotStats ChatBot::getStats(void) const
@@ -890,6 +932,24 @@ bool ChatBot::pollReply(ChatReply &reply)
     return true;
 }
 
+void ChatBot::queueReply(uint32_t from, uint32_t dest, uint8_t channel,
+                         const string &text)
+{
+    string replyText = truncateToMesh(text);
+    if (replyText.empty()) {
+        return;
+    }
+
+    ChatReply reply;
+    reply.from = from;
+    reply.dest = dest;
+    reply.channel = channel;
+    reply.text = replyText;
+
+    unique_lock<mutex> lock(_mutex);
+    _replies.push_back(reply);
+}
+
 void ChatBot::start(void)
 {
     if (!_isRunning.load()) {
@@ -1096,10 +1156,16 @@ void ChatBot::run(void)
 void ChatBot::expireIdle(time_t now)
 {
     map<uint32_t, Conversation>::iterator it;
+    time_t timeoutSec;
+
+    {
+        lock_guard<mutex> lock(_mutex);
+        timeoutSec = (time_t) _idleTimeoutSec;
+    }
 
     it = _conversations.begin();
     while (it != _conversations.end()) {
-        if ((now - it->second.lastUsed) >= (time_t) CHAT_IDLE_SECONDS) {
+        if ((now - it->second.lastUsed) >= timeoutSec) {
             map<uint32_t, Conversation>::iterator eraseIt = it;
             it++;
             _conversations.erase(eraseIt);
@@ -1183,13 +1249,83 @@ void ChatBot::processJob(const ChatJob &job)
     modelTurn.text = reply;
     conv.turns.push_back(userTurn);
     conv.turns.push_back(modelTurn);
-    while (conv.turns.size() > CHAT_HISTORY_MAX) {
-        conv.turns.erase(conv.turns.begin());
+    {
+        size_t maxTurns;
+        {
+            lock_guard<mutex> lock(_mutex);
+            maxTurns = _maxHistoryTurns;
+        }
+        while (conv.turns.size() > maxTurns) {
+            conv.turns.erase(conv.turns.begin());
+        }
     }
     while (!conv.turns.empty() && !conv.turns.front().user) {
         conv.turns.erase(conv.turns.begin());
     }
     conv.lastUsed = now;
+
+    // Address the sender when replying to a user message, if within 160 character limit
+    string outText = reply;
+    if ((job.from != 0) && (job.from != 0xffffffffU)) {
+        string shortName;
+        string longName;
+        char hexBuf[16];
+        snprintf(hexBuf, sizeof(hexBuf), "!%08x", job.from);
+        string idStr = hexBuf;
+
+        shared_ptr<MeshClient> client = getClient();
+        if (client != NULL) {
+            shortName = client->lookupShortName(job.from);
+            longName = client->lookupLongName(job.from);
+        }
+
+        // Check if reply already begins with addressing the sender
+        bool alreadyAddressed = false;
+        vector<string> nameChecks;
+        if (!shortName.empty()) nameChecks.push_back(shortName);
+        if (!longName.empty()) nameChecks.push_back(longName);
+        nameChecks.push_back(idStr);
+
+        for (size_t i = 0; i < nameChecks.size(); i++) {
+            const string &name = nameChecks[i];
+            if (reply.size() >= name.size()) {
+                bool startsWithName = true;
+                for (size_t c = 0; c < name.size(); c++) {
+                    if (tolower(static_cast<unsigned char>(reply[c])) !=
+                        tolower(static_cast<unsigned char>(name[c]))) {
+                        startsWithName = false;
+                        break;
+                    }
+                }
+                if (startsWithName) {
+                    if (reply.size() == name.size()) {
+                        alreadyAddressed = true;
+                        break;
+                    }
+                    char delim = reply[name.size()];
+                    if (delim == ':' || delim == ',' || delim == '!' || isspace(static_cast<unsigned char>(delim))) {
+                        alreadyAddressed = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (!alreadyAddressed) {
+            string prefix;
+            if (!shortName.empty() && (shortName != idStr)) {
+                prefix = shortName + ": ";
+            } else if (!longName.empty() && (longName != idStr)) {
+                prefix = longName + ": ";
+            } else {
+                prefix = idStr + ": ";
+            }
+
+            if ((prefix.size() + reply.size()) <= 160) {
+                outText = prefix + reply;
+            }
+        }
+    }
 
     {
         ChatReply out;
@@ -1197,7 +1333,7 @@ void ChatBot::processJob(const ChatJob &job)
         out.from = job.from;
         out.dest = job.dest;
         out.channel = job.channel;
-        out.text = reply;
+        out.text = outText;
 
         unique_lock<mutex> lock(_mutex);
         _replies.push_back(out);
@@ -1205,7 +1341,7 @@ void ChatBot::processJob(const ChatJob &job)
 #if DEBUG_CHATBOT
     cout << "chatbot: reply ready from=" << job.from
          << " dest=" << job.dest
-         << " bytes=" << reply.size() << endl;
+         << " bytes=" << outText.size() << endl;
 #endif
 }
 
