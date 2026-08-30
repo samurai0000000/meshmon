@@ -130,7 +130,6 @@ private:
     shared_ptr<MqttClient> _myownMqtt;
     shared_ptr<ChatBot> _chatbot;
     shared_ptr<Calibration> _calibration;
-    bool _announcedUp;
     map<uint32_t, string> _haEnvNames;
     map<uint32_t, unsigned int> _haEnvMetrics;
 
