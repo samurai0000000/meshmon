@@ -374,6 +374,7 @@ static bool readGeminiConfig(Config &cfg, const string &cfgfile,
                              int32_t &topK,
                              string &systemInstruction,
                              size_t &maxHistory,
+                             int32_t &maxContextTurns,
                              uint32_t &idleTimeout,
                              bool &enabled)
 {
@@ -558,6 +559,22 @@ static bool readGeminiConfig(Config &cfg, const string &cfgfile,
             }
         }
 
+        maxContextTurns = 6;
+        int maxContextInt = 6;
+        if (gemini.exists("max_context_turns")) {
+            if (gemini.lookupValue("max_context_turns", maxContextInt) && maxContextInt >= 1 && maxContextInt <= 100) {
+                maxContextTurns = maxContextInt;
+            }
+        } else if (gemini.exists("max_context")) {
+            if (gemini.lookupValue("max_context", maxContextInt) && maxContextInt >= 1 && maxContextInt <= 100) {
+                maxContextTurns = maxContextInt;
+            }
+        } else if (gemini.exists("context_turns")) {
+            if (gemini.lookupValue("context_turns", maxContextInt) && maxContextInt >= 1 && maxContextInt <= 100) {
+                maxContextTurns = maxContextInt;
+            }
+        }
+
         idleTimeout = 300;
         int idleInt = 300;
         if (gemini.exists("idle_timeout")) {
@@ -688,6 +705,7 @@ int main(int argc, char **argv)
     int32_t geminiTopK = -1;
     string geminiSystemInstruction;
     size_t geminiMaxHistory = 10;
+    int32_t geminiMaxContext = 6;
     uint32_t geminiIdleTimeout = 300;
     bool geminiEnabled = true;
 
@@ -700,6 +718,7 @@ int main(int argc, char **argv)
                                   geminiTopK,
                                   geminiSystemInstruction,
                                   geminiMaxHistory,
+                                  geminiMaxContext,
                                   geminiIdleTimeout,
                                   geminiEnabled);
 
@@ -874,6 +893,7 @@ int main(int argc, char **argv)
                 bot->setCustomInstruction(geminiSystemInstruction);
             }
             bot->setMaxHistoryTurns(geminiMaxHistory);
+            bot->setMaxContextTurns(geminiMaxContext);
             bot->setIdleTimeout(geminiIdleTimeout);
             bot->loadTasksFromFile();
             mon->setChatBot(bot);

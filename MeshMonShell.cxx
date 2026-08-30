@@ -1110,6 +1110,7 @@ void MeshMonShell::printChatbotHelp(void)
     this->printf("  chatbot top_k [<val|default>]        - Set top-k sampling (1..100 or default)\n");
     this->printf("  chatbot model [name]                 - Show or change active Gemini model\n");
     this->printf("  chatbot history [<max_turns>]        - Show or set max conversation history turns\n");
+    this->printf("  chatbot context [<max_turns>]        - Show or set max context turns sent to API\n");
     this->printf("  chatbot idle [<seconds>]             - Show or set conversation idle timeout\n");
     this->printf("  chatbot clear [<node>]               - Clear conversation history\n");
     this->printf("  chatbot help                         - Show this help message\n");
@@ -1177,6 +1178,7 @@ int MeshMonShell::chatbot(int argc, char **argv)
             }
             this->printf("  Google Search:   %s\n", gemini->getWebSearch() ? "enabled" : "disabled");
             this->printf("  Max History:     %zu turns\n", bot->getMaxHistoryTurns());
+            this->printf("  Max Context:     %d turns\n", gemini->getMaxContextTurns());
             this->printf("  Idle Timeout:    %u s\n", bot->getIdleTimeout());
             GeminiTokenUsage usage = gemini->getTokenUsage();
             this->printf("  Total Tokens:    %lu (prompt: %lu, candidate: %lu, cached: %lu)\n",
@@ -1498,6 +1500,27 @@ int MeshMonShell::chatbot(int argc, char **argv)
         }
         bot->setMaxHistoryTurns((size_t) val);
         this->printf("Max conversation history set to %ld turns.\n", val);
+        return 0;
+    }
+
+    if ((strcmp(argv[1], "context") == 0) || (strcmp(argv[1], "max_context") == 0) ||
+        (strcmp(argv[1], "max_context_turns") == 0)) {
+        if (!gemini) {
+            this->printf("Context window configuration is only available for GeminiChat\n");
+            return -1;
+        }
+        if (argc < 3) {
+            this->printf("Current max context window is %d turns\n", gemini->getMaxContextTurns());
+            return 0;
+        }
+        char *endptr = NULL;
+        long val = strtol(argv[2], &endptr, 10);
+        if ((endptr == argv[2]) || (*endptr != '\0') || (val < 1) || (val > 100)) {
+            this->printf("Invalid context turns '%s'. Specify turns between 1 and 100.\n", argv[2]);
+            return -1;
+        }
+        gemini->setMaxContextTurns((int32_t) val);
+        this->printf("Max context window set to %ld turns.\n", val);
         return 0;
     }
 

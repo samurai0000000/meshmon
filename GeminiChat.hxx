@@ -78,6 +78,9 @@ public:
     void setThinkingBudget(int32_t budget);
     int32_t getThinkingBudget(void) const;
 
+    void setMaxContextTurns(int32_t turns);
+    int32_t getMaxContextTurns(void) const;
+
     void setTemperature(float temp);
     float getTemperature(void) const;
 
@@ -139,6 +142,7 @@ private:
     uint32_t _timeoutSec;
     uint32_t _maxOutputTokens;
     int32_t _thinkingBudget;
+    int32_t _maxContextTurns;
     float _temperature;
     float _topP;
     int32_t _topK;
