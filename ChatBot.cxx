@@ -1485,17 +1485,77 @@ string ChatBot::toolGetMeshNodes(void) const
     stringstream ss;
     const map<uint32_t, meshtastic_NodeInfo> &nodes = _client->nodeInfos();
     uint32_t myId = _client->whoami();
+    time_t now = time(NULL);
 
-    ss << "{\"total_nodes\":" << nodes.size() << ",\"nodes\":[";
-    bool first = true;
+    size_t active1h = 0;
+    size_t active24h = 0;
+    size_t direct1hop = 0;
+    uint32_t maxHops = 0;
+    uint32_t farthestNodeId = 0;
+
     for (map<uint32_t, meshtastic_NodeInfo>::const_iterator it = nodes.begin();
          it != nodes.end(); it++) {
+        if (it->second.last_heard != 0) {
+            time_t ago = now - it->second.last_heard;
+            if (ago >= 0) {
+                if (ago <= 3600) {
+                    active1h++;
+                }
+                if (ago <= 86400) {
+                    active24h++;
+                }
+            }
+        }
+        if (it->second.has_hops_away) {
+            if (it->second.hops_away <= 1) {
+                direct1hop++;
+            }
+            if (it->second.hops_away > maxHops) {
+                maxHops = it->second.hops_away;
+                farthestNodeId = it->first;
+            }
+        }
+    }
+
+    ss << fixed << setprecision(1);
+    ss << "{\"summary\":{";
+    ss << "\"total_nodes\":" << nodes.size() << ",";
+    ss << "\"active_1h\":" << active1h << ",";
+    ss << "\"active_24h\":" << active24h << ",";
+    ss << "\"direct_1hop\":" << direct1hop << ",";
+    ss << "\"max_hops\":" << maxHops;
+    if (farthestNodeId != 0) {
+        char idBuf[16];
+        snprintf(idBuf, sizeof(idBuf), "!%08x", farthestNodeId);
+        string fName = _client->lookupShortName(farthestNodeId);
+        if (fName.empty()) {
+            fName = idBuf;
+        }
+        ss << ",\"farthest_node\":\"" << jsonEscape(fName) << "\"";
+    }
+    ss << "},\"nodes\":[";
+
+    bool first = true;
+    size_t emitted = 0;
+    for (map<uint32_t, meshtastic_NodeInfo>::const_iterator it = nodes.begin();
+         it != nodes.end(); it++) {
+        uint32_t id = it->first;
+        bool isDirect = it->second.has_hops_away && (it->second.hops_away <= 1);
+        bool isActive24h = (it->second.last_heard != 0) && ((now - it->second.last_heard) <= 86400);
+
+        if (nodes.size() > 30 && id != myId && !isDirect && !isActive24h) {
+            continue;
+        }
+        if (emitted >= 30) {
+            break;
+        }
+
         if (!first) {
             ss << ",";
         }
         first = false;
+        emitted++;
 
-        uint32_t id = it->first;
         char idBuf[16];
         snprintf(idBuf, sizeof(idBuf), "!%08x", id);
 
@@ -1507,10 +1567,10 @@ string ChatBot::toolGetMeshNodes(void) const
             ss << ",\"is_self\":true";
         }
         if (!sName.empty()) {
-            ss << ",\"short_name\":\"" << jsonEscape(sName) << "\"";
+            ss << ",\"name\":\"" << jsonEscape(sName) << "\"";
         }
-        if (!lName.empty()) {
-            ss << ",\"long_name\":\"" << jsonEscape(lName) << "\"";
+        if (!lName.empty() && (lName != sName)) {
+            ss << ",\"long\":\"" << jsonEscape(lName) << "\"";
         }
         if (it->second.has_hops_away) {
             ss << ",\"hops\":" << (unsigned int) it->second.hops_away;
@@ -1519,10 +1579,9 @@ string ChatBot::toolGetMeshNodes(void) const
             ss << ",\"snr\":" << it->second.snr;
         }
         if (it->second.last_heard != 0) {
-            time_t now = time(NULL);
             int ago = (int)(now - it->second.last_heard);
             if (ago >= 0) {
-                ss << ",\"last_heard_seconds_ago\":" << ago;
+                ss << ",\"last_seen_s\":" << ago;
             }
         }
         ss << "}";
@@ -1546,11 +1605,96 @@ string ChatBot::toolGetNodeTelemetry(const string &nodeQuery) const
         }
     }
 
-    stringstream ss;
-    ss << "{\"telemetry\":[";
-    bool first = true;
-
     const map<uint32_t, meshtastic_NodeInfo> &nodes = _client->nodeInfos();
+
+    size_t reportingBattery = 0;
+    size_t batteryCount = 0;
+    size_t poweredCount = 0;
+    double batterySum = 0.0;
+    size_t reportingEnv = 0;
+    float tempMin = 999.0f;
+    float tempMax = -999.0f;
+    double tempSum = 0.0;
+    size_t tempCount = 0;
+    double rhSum = 0.0;
+    size_t rhCount = 0;
+    double pressSum = 0.0;
+    size_t pressCount = 0;
+
+    for (map<uint32_t, meshtastic_NodeInfo>::const_iterator it = nodes.begin();
+         it != nodes.end(); it++) {
+        uint32_t id = it->first;
+        if ((targetId != 0xffffffffU) && (id != targetId)) {
+            continue;
+        }
+
+        map<uint32_t, meshtastic_DeviceMetrics>::const_iterator dIt =
+            _client->deviceMetrics().find(id);
+        map<uint32_t, meshtastic_EnvironmentMetrics>::const_iterator eIt =
+            _client->environmentMetrics().find(id);
+
+        const meshtastic_DeviceMetrics *dm = NULL;
+        if (dIt != _client->deviceMetrics().end()) {
+            dm = &dIt->second;
+        } else if (it->second.has_device_metrics) {
+            dm = &it->second.device_metrics;
+        }
+
+        if (dm != NULL && dm->has_battery_level) {
+            reportingBattery++;
+            if (dm->battery_level > 0 && dm->battery_level <= 100) {
+                batteryCount++;
+                batterySum += dm->battery_level;
+            } else if (dm->battery_level > 100) {
+                poweredCount++;
+            }
+        }
+
+        if (eIt != _client->environmentMetrics().end()) {
+            reportingEnv++;
+            if (eIt->second.has_temperature) {
+                float t = eIt->second.temperature;
+                if (t < tempMin) tempMin = t;
+                if (t > tempMax) tempMax = t;
+                tempSum += t;
+                tempCount++;
+            }
+            if (eIt->second.has_relative_humidity) {
+                rhSum += eIt->second.relative_humidity;
+                rhCount++;
+            }
+            if (eIt->second.has_barometric_pressure) {
+                pressSum += eIt->second.barometric_pressure;
+                pressCount++;
+            }
+        }
+    }
+
+    stringstream ss;
+    ss << fixed << setprecision(1);
+    ss << "{\"summary\":{";
+    ss << "\"nodes_reporting_battery\":" << reportingBattery << ",";
+    ss << "\"battery_powered_count\":" << batteryCount << ",";
+    ss << "\"external_power_count\":" << poweredCount << ",";
+    if (batteryCount > 0) {
+        ss << "\"avg_battery_percent\":" << (batterySum / (double) batteryCount) << ",";
+    }
+    ss << "\"nodes_reporting_env\":" << reportingEnv;
+    if (tempCount > 0) {
+        ss << ",\"temp_min_c\":" << tempMin
+           << ",\"temp_max_c\":" << tempMax
+           << ",\"temp_avg_c\":" << (tempSum / (double) tempCount);
+    }
+    if (rhCount > 0) {
+        ss << ",\"avg_humidity_percent\":" << (rhSum / (double) rhCount);
+    }
+    if (pressCount > 0) {
+        ss << ",\"avg_pressure_hpa\":" << (pressSum / (double) pressCount);
+    }
+    ss << "},\"telemetry\":[";
+
+    bool first = true;
+    size_t emitted = 0;
     for (map<uint32_t, meshtastic_NodeInfo>::const_iterator it = nodes.begin();
          it != nodes.end(); it++) {
         uint32_t id = it->first;
@@ -1576,10 +1720,15 @@ string ChatBot::toolGetNodeTelemetry(const string &nodeQuery) const
             continue;
         }
 
+        if (targetId == 0xffffffffU && emitted >= 20) {
+            break;
+        }
+
         if (!first) {
             ss << ",";
         }
         first = false;
+        emitted++;
 
         char idBuf[16];
         snprintf(idBuf, sizeof(idBuf), "!%08x", id);
@@ -1591,31 +1740,31 @@ string ChatBot::toolGetNodeTelemetry(const string &nodeQuery) const
 
         if (dm != NULL) {
             if (dm->has_battery_level) {
-                ss << ",\"battery_level\":" << dm->battery_level;
+                ss << ",\"battery\":" << dm->battery_level;
             }
             if (dm->has_voltage) {
-                ss << ",\"voltage\":" << dm->voltage;
+                ss << ",\"volt\":" << dm->voltage;
             }
             if (dm->has_channel_utilization) {
-                ss << ",\"channel_utilization\":" << dm->channel_utilization;
+                ss << ",\"ch_util\":" << dm->channel_utilization;
             }
             if (dm->has_air_util_tx) {
-                ss << ",\"air_util_tx\":" << dm->air_util_tx;
+                ss << ",\"air_tx\":" << dm->air_util_tx;
             }
             if (dm->has_uptime_seconds) {
-                ss << ",\"uptime_seconds\":" << dm->uptime_seconds;
+                ss << ",\"uptime_s\":" << dm->uptime_seconds;
             }
         }
 
         if (eIt != _client->environmentMetrics().end()) {
             if (eIt->second.has_temperature) {
-                ss << ",\"temperature_c\":" << eIt->second.temperature;
+                ss << ",\"temp_c\":" << eIt->second.temperature;
             }
             if (eIt->second.has_relative_humidity) {
-                ss << ",\"humidity\":" << eIt->second.relative_humidity;
+                ss << ",\"rh\":" << eIt->second.relative_humidity;
             }
             if (eIt->second.has_barometric_pressure) {
-                ss << ",\"pressure_hpa\":" << eIt->second.barometric_pressure;
+                ss << ",\"press_hpa\":" << eIt->second.barometric_pressure;
             }
             if (eIt->second.has_iaq) {
                 ss << ",\"iaq\":" << eIt->second.iaq;
