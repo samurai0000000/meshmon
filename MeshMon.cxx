@@ -867,13 +867,11 @@ void MeshMon::hourlyTask(const struct tm *now)
 
     char timeBuf[64];
     strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S %Z", now);
-    string msg = "The local time is " + string(timeBuf);
+    string msg = "local-time: " + string(timeBuf);
 
     bool result = textMessage(0xffffffffU, (uint8_t) robotChan, msg);
     if (result == false) {
         this->printf("textMessage '%s' failed!\n", msg.c_str());
-    } else {
-        this->printf("hourlyTask broadcast on #%d: %s\n", robotChan, msg.c_str());
     }
 }
 
@@ -1121,10 +1119,10 @@ string MeshMon::handleEnv(uint32_t node_num, string &message)
 
     ss << HomeChat::handleEnv(node_num, message);
     if (!ss.str().empty()) {
-        ss << endl;
+        ss << " ";
     }
 
-    ss << "cpu temperature: ";
+    ss << "temp_cpu=";
     ss <<  setprecision(3) << getCpuTempC();
 
     return ss.str();
