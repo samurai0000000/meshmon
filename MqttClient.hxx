@@ -8,8 +8,13 @@
 #define MQTTCLIENT_HXX
 
 #include <atomic>
+#include <condition_variable>
+#include <memory>
+#include <mutex>
 #include <queue>
-#include <LibMeshtastic.hxx>
+#include <string>
+#include <thread>
+#include <libmeshtastic.h>
 
 using namespace std;
 

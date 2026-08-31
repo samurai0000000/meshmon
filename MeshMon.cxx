@@ -26,7 +26,18 @@
 MeshMon::MeshMon()
     : MeshClient()
 {
+    _verbose = false;
     _isClockSynced = true;
+}
+
+bool MeshMon::verbose(void) const
+{
+    return _verbose;
+}
+
+void MeshMon::setVerbose(bool verbose)
+{
+    _verbose = verbose;
 }
 
 MeshMon::~MeshMon()
@@ -89,7 +100,7 @@ void MeshMon::syncRadioClock(void)
     }
 
     time_t now = time(NULL);
-    setTime((uint32_t) now);
+    adminSetTime((uint32_t) now);
 }
 
 void MeshMon::gotConfigCompleteId(uint32_t id)

@@ -9,6 +9,7 @@
 #include <iostream>
 #include <sstream>
 #include <chrono>
+#include <thread>
 #include <MqttClient.hxx>
 
 #define MQTT_QUEUE_MAX 64

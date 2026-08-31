@@ -7,8 +7,8 @@
 #ifndef MESHMON_HXX
 #define MESHMON_HXX
 
-#include <LibMeshtastic.hxx>
 #include <HomeChat.hxx>
+#include <MeshClient.hxx>
 #include <MeshNvm.hxx>
 #include <ChatBot.hxx>
 #include <Calibration.hxx>
@@ -26,6 +26,9 @@ public:
     ~MeshMon();
 
     void join(void);
+
+    bool verbose(void) const;
+    void setVerbose(bool verbose);
 
     virtual void setClient(shared_ptr<SimpleClient> client);
     virtual void setNvm(shared_ptr<BaseNvm> nvm);
@@ -125,6 +128,7 @@ public:
 
 private:
 
+    bool _verbose;
     shared_ptr<MqttClient> _meshtasticMqtt;
     shared_ptr<MqttClient> _myownMqtt;
     shared_ptr<ChatBot> _chatbot;

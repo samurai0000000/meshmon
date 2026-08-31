@@ -598,7 +598,6 @@ static const struct option long_options[] = {
     { "stdio", no_argument, NULL, 's', },
     { "port", required_argument, NULL, 'p', },
     { "daemon", no_argument, NULL, 'b', },
-    { "verbose", no_argument, NULL, 'v', },
     { "log", no_argument, NULL, 'l', },
     { 0, 0, 0, 0 },
 };
@@ -612,7 +611,6 @@ int main(int argc, char **argv)
     bool useStdioShell = false;
     uint16_t port = 0;
     bool daemon = false;
-    bool verbose = false;
     bool log = false;
     string banner;
     string version;
@@ -724,7 +722,7 @@ int main(int argc, char **argv)
 
     for (;;) {
         int option_index = 0;
-        int c = getopt_long(argc, argv, "d:sp:bvl",
+        int c = getopt_long(argc, argv, "d:sp:bl",
                             long_options, &option_index);
         if (c == -1) {
             break;
@@ -745,9 +743,6 @@ int main(int argc, char **argv)
             break;
         case 'b':
             daemon = true;
-            break;
-        case 'v':
-            verbose = true;
             break;
         case 'l':
             log = true;
@@ -786,7 +781,6 @@ int main(int argc, char **argv)
         int fdevnull;
 
         useStdioShell = false;
-        verbose = false;
         if (port == 0) {
             port = 16876;
         }
@@ -866,7 +860,6 @@ int main(int argc, char **argv)
 
         mon->setClient(mon);
         mon->setNvm(mon);
-        mon->setVerbose(verbose);
         mon->enableLogStderr(log);
         if (haveOwnMqtt) {
             mon->setOwnMqtt(mqttServer, mqttPort, mqttUser, mqttPassword,
