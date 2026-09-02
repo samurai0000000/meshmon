@@ -565,6 +565,27 @@ static string haDiscoveryJson(const string &name,
     return os.str();
 }
 
+bool MeshMon::isSensorForwardAllowed(uint32_t nodeId) const
+{
+    if (nodeId == 0) {
+        return false;
+    }
+
+    if (nodeId == whoami()) {
+        return true;
+    }
+
+    if (admins().find(nodeId) != admins().end()) {
+        return true;
+    }
+
+    if (mates().find(nodeId) != mates().end()) {
+        return true;
+    }
+
+    return false;
+}
+
 void MeshMon::gotEnvironmentMetrics(const meshtastic_MeshPacket &packet,
                                     const meshtastic_EnvironmentMetrics &metrics)
 {
@@ -583,6 +604,10 @@ void MeshMon::gotEnvironmentMetrics(const meshtastic_MeshPacket &packet,
 #endif
 
     if (_myownMqtt == NULL) {
+        return;
+    }
+
+    if (!isSensorForwardAllowed(packet.from)) {
         return;
     }
 
@@ -843,11 +868,11 @@ void MeshMon::crontab(const struct tm *now)
 
     if (now != NULL && now->tm_min == 0) {
         syncRadioClock();
-        hourlyTask(now);
+        topOfHourTask(now);
     }
 }
 
-void MeshMon::hourlyTask(const struct tm *now)
+void MeshMon::topOfHourTask(const struct tm *now)
 {
     if (!isConnected()) {
         return;
