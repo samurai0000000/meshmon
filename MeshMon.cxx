@@ -118,7 +118,7 @@ void MeshMon::gotConfigCompleteId(uint32_t id)
 
 void MeshMon::gotDeviceConfig(const meshtastic_Config_DeviceConfig &c)
 {
-    MeshClient::gotDeviceConfig(c);
+    _deviceConfig = c;
 }
 
 void MeshMon::gotRebooted(bool rebooted)
