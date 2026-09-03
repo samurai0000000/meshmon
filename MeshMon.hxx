@@ -136,6 +136,10 @@ private:
     shared_ptr<Calibration> _calibration;
     map<uint32_t, string> _haEnvNames;
     map<uint32_t, unsigned int> _haEnvMetrics;
+    map<uint32_t, string> _haPowerNames;
+    map<uint32_t, unsigned int> _haPowerMetrics;
+    map<uint32_t, string> _haDeviceNames;
+    map<uint32_t, unsigned int> _haDeviceMetrics;
 
 };
 

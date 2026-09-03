@@ -481,24 +481,7 @@ void MeshMon::gotAdminMessage(const meshtastic_MeshPacket &packet,
 #endif
 }
 
-void MeshMon::gotDeviceMetrics(const meshtastic_MeshPacket &packet,
-                               const meshtastic_DeviceMetrics &metrics)
-{
-    MeshClient::gotDeviceMetrics(packet, metrics);
 
-#if 0
-    if (!verbose()) {
-        if (packet.from != whoami()) {
-            cout << getDisplayName(packet.from)
-                 << " sent device metrics"
-                 << " [rssi:" << packet.rx_rssi << "]"
-                 << " [hops:" << hopsAway(packet) << "]"
-                 << endl;
-        }
-    }
-#endif
-
-}
 
 static string jsonEscape(const string &s)
 {
@@ -538,6 +521,18 @@ static string nodeHexId(uint32_t id)
 #define HA_ENV_HUM   2u
 #define HA_ENV_PRES  4u
 
+#define HA_POW_CH1_VOLT  (1u << 0)
+#define HA_POW_CH1_CURR  (1u << 1)
+#define HA_POW_CH2_VOLT  (1u << 2)
+#define HA_POW_CH2_CURR  (1u << 3)
+#define HA_POW_CH3_VOLT  (1u << 4)
+#define HA_POW_CH3_CURR  (1u << 5)
+
+#define HA_DEV_BATTERY   (1u << 0)
+#define HA_DEV_VOLTAGE   (1u << 1)
+#define HA_DEV_CH_UTIL   (1u << 2)
+#define HA_DEV_AIR_UTIL  (1u << 3)
+
 static string haDiscoveryJson(const string &name,
                               const string &uniqueId,
                               const string &stateTopic,
@@ -551,9 +546,11 @@ static string haDiscoveryJson(const string &name,
     os << "{"
        << "\"name\":\"" << jsonEscape(name) << "\","
        << "\"unique_id\":\"" << jsonEscape(uniqueId) << "\","
-       << "\"state_topic\":\"" << jsonEscape(stateTopic) << "\","
-       << "\"device_class\":\"" << jsonEscape(deviceClass) << "\","
-       << "\"unit_of_measurement\":\"" << jsonEscape(unit) << "\","
+       << "\"state_topic\":\"" << jsonEscape(stateTopic) << "\",";
+    if (!deviceClass.empty()) {
+        os << "\"device_class\":\"" << jsonEscape(deviceClass) << "\",";
+    }
+    os << "\"unit_of_measurement\":\"" << jsonEscape(unit) << "\","
        << "\"state_class\":\"measurement\","
        << "\"device\":{"
        << "\"identifiers\":[\"" << jsonEscape(identifier) << "\"],"
@@ -736,6 +733,142 @@ void MeshMon::gotAirQualityMetrics(const meshtastic_MeshPacket &packet,
 
 }
 
+void MeshMon::gotDeviceMetrics(const meshtastic_MeshPacket &packet,
+                               const meshtastic_DeviceMetrics &metrics)
+{
+    MeshClient::gotDeviceMetrics(packet, metrics);
+
+#if 0
+    if (!verbose()) {
+        if (packet.from != whoami()) {
+            cout << getDisplayName(packet.from)
+                 << " sent device metrics"
+                 << " [rssi:" << packet.rx_rssi << "]"
+                 << " [hops:" << hopsAway(packet) << "]"
+                 << endl;
+        }
+    }
+#endif
+
+    if (_myownMqtt == NULL) {
+        return;
+    }
+
+    if (!isSensorForwardAllowed(packet.from)) {
+        return;
+    }
+
+    const string id = nodeHexId(packet.from);
+    string shortName = SimpleClient::lookupShortName(packet.from, true);
+    string longName = SimpleClient::lookupLongName(packet.from, true);
+    string identifier = shortName.empty() ? id : shortName;
+    string deviceName = longName.empty() ? (string("!") + id) : longName;
+    string namesKey = identifier + "\n" + deviceName;
+    unsigned int present = 0;
+    unsigned int already = 0;
+    unsigned int discover = 0;
+    map<uint32_t, string>::iterator nameIt;
+    map<uint32_t, unsigned int>::iterator metIt;
+    bool namesChanged;
+
+    if (metrics.has_battery_level && (metrics.battery_level > 0)) {
+        present |= HA_DEV_BATTERY;
+    }
+    if (metrics.has_voltage && (metrics.voltage > 0.0f)) {
+        present |= HA_DEV_VOLTAGE;
+    }
+    if (metrics.has_channel_utilization) {
+        present |= HA_DEV_CH_UTIL;
+    }
+    if (metrics.has_air_util_tx) {
+        present |= HA_DEV_AIR_UTIL;
+    }
+    if (present == 0) {
+        return;
+    }
+
+    nameIt = _haDeviceNames.find(packet.from);
+    metIt = _haDeviceMetrics.find(packet.from);
+    already = (metIt == _haDeviceMetrics.end()) ? 0 : metIt->second;
+    namesChanged = (nameIt == _haDeviceNames.end()) ||
+                   (nameIt->second != namesKey);
+    discover = namesChanged ? present : (present & ~already);
+
+    if (discover & HA_DEV_BATTERY) {
+        _myownMqtt->publish(
+            string("homeassistant/sensor/meshmon_") + id +
+            "_battery/config",
+            haDiscoveryJson("Battery",
+                            string("meshmon_") + id + "_battery",
+                            string("meshmon/") + id + "/battery",
+                            "battery", "%",
+                            identifier, deviceName),
+            true);
+    }
+    if (discover & HA_DEV_VOLTAGE) {
+        _myownMqtt->publish(
+            string("homeassistant/sensor/meshmon_") + id +
+            "_voltage/config",
+            haDiscoveryJson("Voltage",
+                            string("meshmon_") + id + "_voltage",
+                            string("meshmon/") + id + "/voltage",
+                            "voltage", "V",
+                            identifier, deviceName),
+            true);
+    }
+    if (discover & HA_DEV_CH_UTIL) {
+        _myownMqtt->publish(
+            string("homeassistant/sensor/meshmon_") + id +
+            "_channel_utilization/config",
+            haDiscoveryJson("Channel Utilization",
+                            string("meshmon_") + id + "_channel_utilization",
+                            string("meshmon/") + id + "/channel_utilization",
+                            "", "%",
+                            identifier, deviceName),
+            true);
+    }
+    if (discover & HA_DEV_AIR_UTIL) {
+        _myownMqtt->publish(
+            string("homeassistant/sensor/meshmon_") + id +
+            "_air_util_tx/config",
+            haDiscoveryJson("Air Util (Tx)",
+                            string("meshmon_") + id + "_air_util_tx",
+                            string("meshmon/") + id + "/air_util_tx",
+                            "", "%",
+                            identifier, deviceName),
+            true);
+    }
+
+    if (metrics.has_battery_level && (metrics.battery_level > 0)) {
+        char buf[32];
+        uint32_t bat = metrics.battery_level > 100 ? 100 : metrics.battery_level;
+        snprintf(buf, sizeof(buf), "%u", (unsigned int) bat);
+        _myownMqtt->publish(string("meshmon/") + id + "/battery",
+                            string(buf), true);
+    }
+    if (metrics.has_voltage && (metrics.voltage > 0.0f)) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%.2f", metrics.voltage);
+        _myownMqtt->publish(string("meshmon/") + id + "/voltage",
+                            string(buf), true);
+    }
+    if (metrics.has_channel_utilization) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%.2f", metrics.channel_utilization);
+        _myownMqtt->publish(string("meshmon/") + id + "/channel_utilization",
+                            string(buf), true);
+    }
+    if (metrics.has_air_util_tx) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%.2f", metrics.air_util_tx);
+        _myownMqtt->publish(string("meshmon/") + id + "/air_util_tx",
+                            string(buf), true);
+    }
+
+    _haDeviceNames[packet.from] = namesKey;
+    _haDeviceMetrics[packet.from] = already | present;
+}
+
 void MeshMon::gotPowerMetrics(const meshtastic_MeshPacket &packet,
                               const meshtastic_PowerMetrics &metrics)
 {
@@ -753,6 +886,162 @@ void MeshMon::gotPowerMetrics(const meshtastic_MeshPacket &packet,
     }
 #endif
 
+    if (_myownMqtt == NULL) {
+        return;
+    }
+
+    if (!isSensorForwardAllowed(packet.from)) {
+        return;
+    }
+
+    const string id = nodeHexId(packet.from);
+    string shortName = SimpleClient::lookupShortName(packet.from, true);
+    string longName = SimpleClient::lookupLongName(packet.from, true);
+    string identifier = shortName.empty() ? id : shortName;
+    string deviceName = longName.empty() ? (string("!") + id) : longName;
+    string namesKey = identifier + "\n" + deviceName;
+    unsigned int present = 0;
+    unsigned int already = 0;
+    unsigned int discover = 0;
+    map<uint32_t, string>::iterator nameIt;
+    map<uint32_t, unsigned int>::iterator metIt;
+    bool namesChanged;
+
+    if (metrics.has_ch1_voltage) {
+        present |= HA_POW_CH1_VOLT;
+    }
+    if (metrics.has_ch1_current) {
+        present |= HA_POW_CH1_CURR;
+    }
+    if (metrics.has_ch2_voltage) {
+        present |= HA_POW_CH2_VOLT;
+    }
+    if (metrics.has_ch2_current) {
+        present |= HA_POW_CH2_CURR;
+    }
+    if (metrics.has_ch3_voltage) {
+        present |= HA_POW_CH3_VOLT;
+    }
+    if (metrics.has_ch3_current) {
+        present |= HA_POW_CH3_CURR;
+    }
+    if (present == 0) {
+        return;
+    }
+
+    nameIt = _haPowerNames.find(packet.from);
+    metIt = _haPowerMetrics.find(packet.from);
+    already = (metIt == _haPowerMetrics.end()) ? 0 : metIt->second;
+    namesChanged = (nameIt == _haPowerNames.end()) ||
+                   (nameIt->second != namesKey);
+    discover = namesChanged ? present : (present & ~already);
+
+    if (discover & HA_POW_CH1_VOLT) {
+        _myownMqtt->publish(
+            string("homeassistant/sensor/meshmon_") + id +
+            "_ch1_voltage/config",
+            haDiscoveryJson("Channel 1 Voltage",
+                            string("meshmon_") + id + "_ch1_voltage",
+                            string("meshmon/") + id + "/ch1_voltage",
+                            "voltage", "V",
+                            identifier, deviceName),
+            true);
+    }
+    if (discover & HA_POW_CH1_CURR) {
+        _myownMqtt->publish(
+            string("homeassistant/sensor/meshmon_") + id +
+            "_ch1_current/config",
+            haDiscoveryJson("Channel 1 Current",
+                            string("meshmon_") + id + "_ch1_current",
+                            string("meshmon/") + id + "/ch1_current",
+                            "current", "mA",
+                            identifier, deviceName),
+            true);
+    }
+    if (discover & HA_POW_CH2_VOLT) {
+        _myownMqtt->publish(
+            string("homeassistant/sensor/meshmon_") + id +
+            "_ch2_voltage/config",
+            haDiscoveryJson("Channel 2 Voltage",
+                            string("meshmon_") + id + "_ch2_voltage",
+                            string("meshmon/") + id + "/ch2_voltage",
+                            "voltage", "V",
+                            identifier, deviceName),
+            true);
+    }
+    if (discover & HA_POW_CH2_CURR) {
+        _myownMqtt->publish(
+            string("homeassistant/sensor/meshmon_") + id +
+            "_ch2_current/config",
+            haDiscoveryJson("Channel 2 Current",
+                            string("meshmon_") + id + "_ch2_current",
+                            string("meshmon/") + id + "/ch2_current",
+                            "current", "mA",
+                            identifier, deviceName),
+            true);
+    }
+    if (discover & HA_POW_CH3_VOLT) {
+        _myownMqtt->publish(
+            string("homeassistant/sensor/meshmon_") + id +
+            "_ch3_voltage/config",
+            haDiscoveryJson("Channel 3 Voltage",
+                            string("meshmon_") + id + "_ch3_voltage",
+                            string("meshmon/") + id + "/ch3_voltage",
+                            "voltage", "V",
+                            identifier, deviceName),
+            true);
+    }
+    if (discover & HA_POW_CH3_CURR) {
+        _myownMqtt->publish(
+            string("homeassistant/sensor/meshmon_") + id +
+            "_ch3_current/config",
+            haDiscoveryJson("Channel 3 Current",
+                            string("meshmon_") + id + "_ch3_current",
+                            string("meshmon/") + id + "/ch3_current",
+                            "current", "mA",
+                            identifier, deviceName),
+            true);
+    }
+
+    if (metrics.has_ch1_voltage) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%.2f", metrics.ch1_voltage);
+        _myownMqtt->publish(string("meshmon/") + id + "/ch1_voltage",
+                            string(buf), true);
+    }
+    if (metrics.has_ch1_current) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%.2f", metrics.ch1_current);
+        _myownMqtt->publish(string("meshmon/") + id + "/ch1_current",
+                            string(buf), true);
+    }
+    if (metrics.has_ch2_voltage) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%.2f", metrics.ch2_voltage);
+        _myownMqtt->publish(string("meshmon/") + id + "/ch2_voltage",
+                            string(buf), true);
+    }
+    if (metrics.has_ch2_current) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%.2f", metrics.ch2_current);
+        _myownMqtt->publish(string("meshmon/") + id + "/ch2_current",
+                            string(buf), true);
+    }
+    if (metrics.has_ch3_voltage) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%.2f", metrics.ch3_voltage);
+        _myownMqtt->publish(string("meshmon/") + id + "/ch3_voltage",
+                            string(buf), true);
+    }
+    if (metrics.has_ch3_current) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%.2f", metrics.ch3_current);
+        _myownMqtt->publish(string("meshmon/") + id + "/ch3_current",
+                            string(buf), true);
+    }
+
+    _haPowerNames[packet.from] = namesKey;
+    _haPowerMetrics[packet.from] = already | present;
 }
 
 void MeshMon::gotLocalStats(const meshtastic_MeshPacket &packet,
