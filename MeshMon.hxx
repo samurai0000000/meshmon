@@ -12,6 +12,7 @@
 #include <MeshNvm.hxx>
 #include <ChatBot.hxx>
 #include <Calibration.hxx>
+#include <MeshMonDb.hxx>
 #include <map>
 
 using namespace std;
@@ -40,6 +41,7 @@ protected:
 
     // Extend MeshClient
 
+    virtual void gotPacket(const meshtastic_MeshPacket &packet);
     virtual void syncHostClock(uint32_t epoch_seconds);
     virtual void gotConfigCompleteId(uint32_t id);
     virtual void gotDeviceConfig(const meshtastic_Config_DeviceConfig &c);
@@ -97,10 +99,9 @@ protected:
                                      time_t epoch, const string &tz);
     virtual string handleEnv(uint32_t node_num, string &message);
     virtual int vprintf(const char *format, va_list ap) const;
-
     bool matchBotAddressing(const string &rawMessage, bool directMessage, string &cleanQuery) const;
     void syncRadioClock(void);
-
+    void publishGatewayStatsToMqtt(void);
 
 public:
 
@@ -120,12 +121,17 @@ public:
         return _chatbot;
     }
 
+    inline const shared_ptr<MeshMonDb> db(void) const {
+        return _db;
+    }
+
     void setOwnMqtt(const string &server, uint16_t port,
                     const string &user, const string &password,
                     const string &topic, bool tls);
 
     void setChatBot(shared_ptr<ChatBot> bot);
     void setCalibration(shared_ptr<Calibration> calib);
+    void setDb(shared_ptr<MeshMonDb> db);
 
 private:
 
@@ -134,6 +140,8 @@ private:
     shared_ptr<MqttClient> _myownMqtt;
     shared_ptr<ChatBot> _chatbot;
     shared_ptr<Calibration> _calibration;
+    shared_ptr<MeshMonDb> _db;
+    bool _haGatewayDiscovered;
     map<uint32_t, string> _haEnvNames;
     map<uint32_t, unsigned int> _haEnvMetrics;
     map<uint32_t, string> _haPowerNames;

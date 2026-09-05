@@ -29,6 +29,7 @@
 #include "MeshMon.hxx"
 #include "GeminiChat.hxx"
 #include "Calibration.hxx"
+#include "MeshMonDb.hxx"
 #include "version.h"
 
 using namespace libconfig;
@@ -38,6 +39,7 @@ using namespace libconfig;
 static vector<shared_ptr<MeshMon>> mons;
 static shared_ptr<MeshMonShell> stdioShell;
 static vector<shared_ptr<MeshMonShell>> netShells;
+static shared_ptr<MeshMonDb> g_db;
 static volatile sig_atomic_t g_stop = 0;
 static int g_stop_pipe[2] = { -1, -1 };
 
@@ -48,7 +50,8 @@ void sighandler(int signum)
     (void)(signum);
     g_stop = 1;
     if (g_stop_pipe[1] != -1) {
-        (void) write(g_stop_pipe[1], &c, 1);
+        ssize_t ret = write(g_stop_pipe[1], &c, 1);
+        (void) ret;
     }
 }
 
@@ -119,8 +122,15 @@ static void releaseMeshMons(void)
         (*it)->setClient(NULL);
         (*it)->setNvm(NULL);
         (*it)->setCalibration(NULL);
+        (*it)->setDb(NULL);
     }
     mons.clear();
+    if (g_db) {
+        g_db->stop();
+        g_db->join();
+        g_db->close();
+        g_db.reset();
+    }
 }
 
 static int g_lockFd = -1;
@@ -593,12 +603,83 @@ static bool readGeminiConfig(Config &cfg, const string &cfgfile,
     return true;
 }
 
+static string getDefaultDbPath(void)
+{
+    const char *homedir = getenv("HOME");
+    if ((homedir != NULL) && (homedir[0] != '\0')) {
+        return string(homedir) + "/.meshmon.db";
+    }
+
+    struct passwd *pw = getpwuid(getuid());
+    if ((pw != NULL) && (pw->pw_dir != NULL) && (pw->pw_dir[0] != '\0')) {
+        return string(pw->pw_dir) + "/.meshmon.db";
+    }
+
+    return "/tmp/.meshmon.db";
+}
+
+static bool readDatabaseConfig(Config &cfg, const string &cfgfile,
+                               string &dbPath, bool &dbEnabled,
+                               uint32_t &retentionDays)
+{
+    Setting &root = cfg.getRoot();
+
+    if (!root.exists("database")) {
+        return false;
+    }
+
+    try {
+        Setting &db = root["database"];
+
+        if (db.exists("enabled")) {
+            db.lookupValue("enabled", dbEnabled);
+        }
+        if (db.exists("path")) {
+            db.lookupValue("path", dbPath);
+        }
+        if (db.exists("retention_days")) {
+            int rd = 0;
+            if (db.lookupValue("retention_days", rd) && (rd > 0)) {
+                retentionDays = static_cast<uint32_t>(rd);
+            }
+        }
+    } catch (const SettingTypeException &) {
+        cerr << (cfgfile.empty() ? string("~/.meshmon") : cfgfile)
+             << ": database is not a group" << endl;
+    }
+
+    return true;
+}
+
+static void printUsage(const char *progname)
+{
+    cout << "Usage: " << progname << " [options]" << endl
+         << "Options:" << endl
+         << "  -d, --device <dev>         Add serial, TCP, or BLE Meshtastic device" << endl
+         << "  -s, --stdio                Enable stdio interactive shell" << endl
+         << "  -p, --port <port>          TCP port for network shell" << endl
+         << "  -b, --daemon               Run in background daemon mode" << endl
+         << "  -l, --log                  Enable device raw logging" << endl
+         << "  -D, --database <path>      Enable SQLite packet logging to specified file" << endl
+         << "      --no-database          Disable SQLite packet logging" << endl
+         << "      --retention-days <days> Prune database records older than N days" << endl
+         << "  -h, --help                 Display this help message" << endl
+         << "  -v, --version              Display version information" << endl;
+}
+
 static const struct option long_options[] = {
     { "device", required_argument, NULL, 'd', },
     { "stdio", no_argument, NULL, 's', },
     { "port", required_argument, NULL, 'p', },
     { "daemon", no_argument, NULL, 'b', },
     { "log", no_argument, NULL, 'l', },
+    { "database", required_argument, NULL, 'D', },
+    { "db", required_argument, NULL, 'D', },
+    { "no-database", no_argument, NULL, 1001, },
+    { "no-db", no_argument, NULL, 1001, },
+    { "retention-days", required_argument, NULL, 1002, },
+    { "help", no_argument, NULL, 'h', },
+    { "version", no_argument, NULL, 'v', },
     { 0, 0, 0, 0 },
 };
 
@@ -621,7 +702,7 @@ int main(int argc, char **argv)
     version = string("Version: ") + string(MYPROJECT_VERSION_STRING);
     built = string("Built: ") + string(MYPROJECT_WHOAMI) + string("@") +
         string(MYPROJECT_HOSTNAME) + string(" ") + string(MYPROJECT_DATE);
-    copyright = string("Copyright (C) 2025, Charles Chiou");
+    copyright = string("Copyright (C) 2026, Charles Chiou");
 
     loadLibConfig(cfg, cfgfile);
 
@@ -720,9 +801,15 @@ int main(int argc, char **argv)
                                   geminiIdleTimeout,
                                   geminiEnabled);
 
+    bool dbEnabled = true;
+    string dbPath = getDefaultDbPath();
+    uint32_t dbRetentionDays = 0;
+
+    readDatabaseConfig(cfg, cfgfile, dbPath, dbEnabled, dbRetentionDays);
+
     for (;;) {
         int option_index = 0;
-        int c = getopt_long(argc, argv, "d:sp:bl",
+        int c = getopt_long(argc, argv, "d:sp:blD:hv",
                             long_options, &option_index);
         if (c == -1) {
             break;
@@ -747,8 +834,29 @@ int main(int argc, char **argv)
         case 'l':
             log = true;
             break;
+        case 'D':
+            dbPath = string(optarg);
+            dbEnabled = true;
+            break;
+        case 1001:
+            dbEnabled = false;
+            break;
+        case 1002:
+            dbRetentionDays = (uint32_t) atoi(optarg);
+            break;
+        case 'h':
+            printUsage(argv[0]);
+            exit(EXIT_SUCCESS);
+            break;
+        case 'v':
+            cout << banner << endl
+                 << version << endl
+                 << built << endl
+                 << copyright << endl;
+            exit(EXIT_SUCCESS);
+            break;
         default:
-            fprintf(stderr, "Unrecognized argument specified!\n");
+            printUsage(argv[0]);
             exit(EXIT_FAILURE);
             break;
         }
@@ -760,6 +868,20 @@ int main(int argc, char **argv)
 
     if (!acquirePidLock()) {
         exit(EXIT_FAILURE);
+    }
+
+    if (dbEnabled && !dbPath.empty()) {
+        g_db = make_shared<MeshMonDb>();
+        if (g_db->open(dbPath)) {
+            g_db->start();
+            if (dbRetentionDays > 0) {
+                time_t threshold = time(NULL) - (dbRetentionDays * 86400);
+                g_db->pruneOlderThan(threshold);
+            }
+        } else {
+            cerr << "Failed to open database at " << dbPath << endl;
+            g_db.reset();
+        }
     }
 
     ret = mosquitto_lib_init();
@@ -860,6 +982,7 @@ int main(int argc, char **argv)
 
         mon->setClient(mon);
         mon->setNvm(mon);
+        mon->setDb(g_db);
         mon->enableLogStderr(log);
         if (haveOwnMqtt) {
             mon->setOwnMqtt(mqttServer, mqttPort, mqttUser, mqttPassword,
@@ -898,6 +1021,7 @@ int main(int argc, char **argv)
             stdioShell = make_shared<MeshMonShell>();
             stdioShell->setClient(mon);
             stdioShell->setNvm(mon);
+            stdioShell->setDb(g_db);
         }
 
         if (port != 0) {
@@ -905,6 +1029,7 @@ int main(int argc, char **argv)
 
             shell->setClient(mon);
             shell->setNvm(mon);
+            shell->setDb(g_db);
             if (shell->bindPort(port)) {
                 netShells.push_back(shell);
             }
@@ -947,7 +1072,8 @@ int main(int argc, char **argv)
     g_stop = 1;
     if (g_stop_pipe[1] != -1) {
         char c = 1;
-        (void) write(g_stop_pipe[1], &c, 1);
+        ssize_t ret = write(g_stop_pipe[1], &c, 1);
+        (void) ret;
     }
     if (stopThread.joinable()) {
         stopThread.join();

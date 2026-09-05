@@ -9,6 +9,7 @@
 
 #include <MeshShell.hxx>
 #include <Calibration.hxx>
+#include <MeshMonDb.hxx>
 
 using namespace std;
 
@@ -19,6 +20,11 @@ public:
     MeshMonShell(shared_ptr<MeshClient> client = NULL);
     ~MeshMonShell();
 
+    void setDb(shared_ptr<MeshMonDb> db);
+    inline const shared_ptr<MeshMonDb> db(void) const {
+        return _db;
+    }
+
 protected:
 
     virtual shared_ptr<MeshShell> newInstance(void);
@@ -28,9 +34,11 @@ protected:
     virtual int unknown_command(int argc, char **argv);
     virtual int calib(int argc, char **argv);
     virtual int chatbot(int argc, char **argv);
+    virtual int db(int argc, char **argv);
 
 private:
 
+    void printDbHelp(void);
     void printChatbotHelp(void);
     void printCurve(const char *name, const CalibrationCurve &curve,
                     const char *unit);
@@ -44,6 +52,8 @@ private:
     static string formatRelativeTime(time_t timestamp);
     static const char *hardwareModelString(meshtastic_HardwareModel model);
     static const char *roleString(meshtastic_Config_DeviceConfig_Role role);
+
+    shared_ptr<MeshMonDb> _db;
 
 };
 

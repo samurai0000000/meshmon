@@ -4,8 +4,9 @@
 
 cmake_minimum_required(VERSION 3.13)
 
-project(meshmon VERSION 2.1.5 LANGUAGES C CXX ASM)
+project(meshmon VERSION 2.1.6 LANGUAGES C CXX ASM)
 
+find_package(SQLite3 REQUIRED)
 find_package(Mosquitto QUIET)
 if (NOT Mosquitto_FOUND)
   find_path(MOSQUITTO_INCLUDE_DIR NAMES mosquitto.h)
@@ -28,8 +29,13 @@ if (NOT CURL_FOUND)
       /usr/include
       /usr/include/${CMAKE_LIBRARY_ARCHITECTURE}
       /usr/local/include
-      /usr/local/include/${CMAKE_LIBRARY_ARCHITECTURE})
-  find_library(CURL_LIBRARY NAMES curl libcurl)
+      /usr/local/include/${CMAKE_LIBRARY_ARCHITECTURE}
+      /home/samurai/work/rabbit/build/aarch64/librealsense/third-party/libcurl/include)
+  find_library(CURL_LIBRARY NAMES curl libcurl libcurl.so.4
+    PATHS
+      /usr/lib/${CMAKE_LIBRARY_ARCHITECTURE}
+      /usr/lib
+      /usr/local/lib)
 endif ()
 if (CURL_FOUND)
   if (NOT CURL_INCLUDE_DIR AND CURL_INCLUDE_DIRS)
@@ -87,14 +93,16 @@ configure_file(
   )
 
 add_executable(meshmon meshmon.cxx MeshMon.cxx MeshMonShell.cxx MqttClient.cxx
-  ChatBot.cxx GeminiChat.cxx Calibration.cxx)
+  ChatBot.cxx GeminiChat.cxx Calibration.cxx MeshMonDb.cxx)
 target_include_directories(meshmon PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
 target_include_directories(meshmon PRIVATE
+  ${SQLite3_INCLUDE_DIRS}
   ${MOSQUITTO_INCLUDE_DIR}
   ${CONFIG++_INCLUDE_DIR}
   ${CURL_INCLUDE_DIR})
 target_link_libraries(meshmon PRIVATE
   libmeshtastic
+  ${SQLite3_LIBRARIES}
   ${MOSQUITTO_LIBRARY}
   ${CONFIG++_LIBRARY})
 if (TARGET CURL::libcurl)

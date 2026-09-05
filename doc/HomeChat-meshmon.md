@@ -34,3 +34,22 @@ In addition to exact keywords, `meshmon` supports conversational inquiries from 
 When configured with an AI backend (e.g. Gemini), unhandled conversational questions addressed to `meshmon` from authorized users are routed to the AI assistant model:
 - Natural responses are truncated and formatted to fit Meshtastic packet MTU limits.
 - Supports conversational assistance, summary of network conditions, and general inquiries over LoRa text messages.
+
+---
+
+## 4. Mesh Database & RF Network Analytics Queries
+
+When SQLite packet logging is active, `meshmon` responds to on-air text queries with live RF metrics and network health summaries:
+
+| Query Command / Synonyms | Description | Example Reply |
+| :--- | :--- | :--- |
+| `traffic?`, `traffic`, `pkts?` | Packet counts & hourly breakdown | `traffic: 1250 pkts (1h: 120, 24h: 980)` |
+| `talkers?`, `toptalkers` | Top transmitting nodes (last 24h) | `top: !2bf941d4 (42 pkts), !a1b2c3d4 (18 pkts)` |
+| `neighbors?`, `direct` | Direct (0-hop) neighbors with RSSI/SNR | `neighbors(2): !2bf941d4 (rssi=-78 snr=6.2) !4a5b6c7d (rssi=-95 snr=-2.1)` |
+| `hops?`, `hopdist` | Distribution of hops traversed | `hops: 0hop=45% 1hop=35% 2hop=15% 3+hop=5%` |
+| `health?`, `chanhealth` | Channel airtime & SNR health | `channel: avg_snr=+4.8dB min=-11.2 max=+10.5 total_pkts=1250` |
+| `storm?`, `echoes?` | Mesh duplicate echo / storm detection | `storm: 21% dups (182 dups / 850 orig) max_echoes=5/pkt` |
+| `asymmetry?`, `noise?` | Link asymmetry & local noise floor elevation | `asymmetry: 3 nodes flagged (elevated local noise / TX power imbalance)` |
+| `spof?`, `repeaters?` | Critical relay repeater discovery | `spof: !2bf941d4 relays 64% of 2+ hop mesh traffic` |
+| `drift?`, `clocks?` | Remote node clock drift analysis | `drift: !a1b2c3d4 off by +42s, !c4d5e6f7 off by -120s` |
+

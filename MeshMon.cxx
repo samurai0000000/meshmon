@@ -28,6 +28,7 @@ MeshMon::MeshMon()
 {
     _verbose = false;
     _isClockSynced = true;
+    _haGatewayDiscovered = false;
 }
 
 bool MeshMon::verbose(void) const
@@ -287,6 +288,11 @@ void MeshMon::setCalibration(shared_ptr<Calibration> calib)
     _calibration = calib;
 }
 
+void MeshMon::setDb(shared_ptr<MeshMonDb> db)
+{
+    _db = db;
+}
+
 void MeshMon::gotModuleConfigMQTT(const meshtastic_ModuleConfig_MQTTConfig &c)
 {
     MeshClient::gotModuleConfigMQTT(c);
@@ -403,9 +409,23 @@ done:
     return;
 }
 
+void MeshMon::gotPacket(const meshtastic_MeshPacket &packet)
+{
+    time_t meshmonTime = time(NULL);
+    if (_db != NULL) {
+        _db->enqueuePacket(packet, meshmonTime);
+    }
+
+    MeshClient::gotPacket(packet);
+}
+
 void MeshMon::gotTextMessage(const meshtastic_MeshPacket &packet,
                              const string &message)
 {
+    if (_db != NULL) {
+        _db->enqueueTextMessage(packet, message, time(NULL));
+    }
+
     bool result = false;
 
     MeshClient::gotTextMessage(packet, message);
@@ -418,6 +438,10 @@ void MeshMon::gotTextMessage(const meshtastic_MeshPacket &packet,
 void MeshMon::gotPosition(const meshtastic_MeshPacket &packet,
                           const meshtastic_Position &position)
 {
+    if (_db != NULL) {
+        _db->enqueuePosition(packet, position, time(NULL));
+    }
+
     MeshClient::gotPosition(packet, position);
 
 #if 0
@@ -437,6 +461,11 @@ void MeshMon::gotPosition(const meshtastic_MeshPacket &packet,
 void MeshMon::gotUser(const meshtastic_MeshPacket &packet,
                       const meshtastic_User &user)
 {
+    if (_db != NULL) {
+        _db->enqueueNodeInfo(packet.from, user.long_name, user.short_name,
+                             user.hw_model, user.role, time(NULL));
+    }
+
     MeshClient::gotUser(packet, user);
 
 #if 0
@@ -586,6 +615,10 @@ bool MeshMon::isSensorForwardAllowed(uint32_t nodeId) const
 void MeshMon::gotEnvironmentMetrics(const meshtastic_MeshPacket &packet,
                                     const meshtastic_EnvironmentMetrics &metrics)
 {
+    if (_db != NULL) {
+        _db->enqueueEnvironmentMetrics(packet, metrics, time(NULL));
+    }
+
     MeshClient::gotEnvironmentMetrics(packet, metrics);
 
 #if 0
@@ -736,6 +769,10 @@ void MeshMon::gotAirQualityMetrics(const meshtastic_MeshPacket &packet,
 void MeshMon::gotDeviceMetrics(const meshtastic_MeshPacket &packet,
                                const meshtastic_DeviceMetrics &metrics)
 {
+    if (_db != NULL) {
+        _db->enqueueDeviceMetrics(packet, metrics, time(NULL));
+    }
+
     MeshClient::gotDeviceMetrics(packet, metrics);
 
 #if 0
@@ -872,6 +909,10 @@ void MeshMon::gotDeviceMetrics(const meshtastic_MeshPacket &packet,
 void MeshMon::gotPowerMetrics(const meshtastic_MeshPacket &packet,
                               const meshtastic_PowerMetrics &metrics)
 {
+    if (_db != NULL) {
+        _db->enqueuePowerMetrics(packet, metrics, time(NULL));
+    }
+
     MeshClient::gotPowerMetrics(packet, metrics);
 
 #if 0
@@ -1047,6 +1088,10 @@ void MeshMon::gotPowerMetrics(const meshtastic_MeshPacket &packet,
 void MeshMon::gotLocalStats(const meshtastic_MeshPacket &packet,
                             const meshtastic_LocalStats &stats)
 {
+    if (_db != NULL) {
+        _db->enqueueLocalStats(packet, stats, time(NULL));
+    }
+
     MeshClient::gotLocalStats(packet, stats);
 
 #if 0
@@ -1103,6 +1148,10 @@ void MeshMon::gotHostMetrics(const meshtastic_MeshPacket &packet,
 void MeshMon::gotTraceRoute(const meshtastic_MeshPacket &packet,
                             const meshtastic_RouteDiscovery &routeDiscovery)
 {
+    if (_db != NULL) {
+        _db->enqueueTraceRoute(packet, routeDiscovery, time(NULL));
+    }
+
     MeshClient::gotTraceRoute(packet, routeDiscovery);
 #if 0
     if (!verbose()) {
@@ -1154,6 +1203,8 @@ bool MeshMon::saveNvm(void)
 void MeshMon::crontab(const struct tm *now)
 {
     MeshClient::crontab(now);
+
+    publishGatewayStatsToMqtt();
 
     if (now != NULL && now->tm_min == 0) {
         syncRadioClock();
@@ -1373,6 +1424,163 @@ bool MeshMon::handleTextMessage(const meshtastic_MeshPacket &packet,
             setLastMessageFrom(packet.from, _message);
             return true;
         }
+
+        if (_db != NULL) {
+            string reply;
+            time_t dayAgo = time(NULL) - 86400;
+
+            if (query == "traffic" || query == "stats" || query == "db stats") {
+                TrafficSummary sum;
+                if (_db->getTrafficSummary(dayAgo, sum)) {
+                    float bcastPct = sum.totalPackets > 0 ?
+                        (sum.broadcastPackets * 100.0f / sum.totalPackets) : 0.0f;
+                    float directPct = sum.totalPackets > 0 ?
+                        (sum.directPackets * 100.0f / sum.totalPackets) : 0.0f;
+                    char buf[128];
+                    snprintf(buf, sizeof(buf),
+                             "traffic(24h): %u pkts, %llu bytes, bcast=%.0f%%, direct=%.0f%%",
+                             sum.totalPackets, (unsigned long long) sum.totalBytes,
+                             bcastPct, directPct);
+                    reply = buf;
+                }
+            } else if (query == "toptalkers" || query == "top" || query == "top talkers") {
+                vector<NodeTrafficStat> stats;
+                if (_db->getTopTalkers(dayAgo, 3, stats)) {
+                    ostringstream os;
+                    os << "toptalkers(24h): ";
+                    for (size_t i = 0; i < stats.size(); i++) {
+                        if (i > 0) os << ", ";
+                        os << (stats[i].shortName.empty() ? stats[i].nodeHex : stats[i].shortName)
+                           << ":" << stats[i].packetCount << "p";
+                    }
+                    reply = os.str();
+                }
+            } else if (query == "neighbors" || query == "direct" || query == "direct neighbors") {
+                vector<NeighborStat> stats;
+                if (_db->getNeighborStats(dayAgo, stats)) {
+                    ostringstream os;
+                    os << "neighbors(24h): " << stats.size() << " nodes.";
+                    if (!stats.empty()) {
+                        os << " best: " << (stats[0].shortName.empty() ? stats[0].nodeHex : stats[0].shortName)
+                           << " (" << fixed << setprecision(1) << stats[0].avgSnr << "dB)";
+                    }
+                    reply = os.str();
+                }
+            } else if (query == "storm" || query == "storms" || query == "echo") {
+                vector<EchoStormStat> stats;
+                if (_db->getEchoStorms(dayAgo, 1, stats)) {
+                    if (!stats.empty()) {
+                        char buf[128];
+                        snprintf(buf, sizeof(buf),
+                                 "storm(24h): max echo=%ux pkts on pkt !%08x from %s (%us duration)",
+                                 stats[0].echoCount, stats[0].packetId, stats[0].fromHex.c_str(),
+                                 stats[0].durationSec);
+                        reply = buf;
+                    } else {
+                        reply = "storm(24h): no duplicate packet floods detected.";
+                    }
+                }
+            } else if (query == "asymmetry") {
+                vector<LinkAsymmetryStat> stats;
+                if (_db->getLinkAsymmetry(dayAgo, stats)) {
+                    ostringstream os;
+                    os << "asymmetry: " << stats.size() << " links. ";
+                    if (!stats.empty()) {
+                        os << "weakest: " << (stats[0].shortName.empty() ? stats[0].nodeHex : stats[0].shortName)
+                           << " (" << fixed << setprecision(1) << stats[0].rxSnr << "dB)";
+                    }
+                    reply = os.str();
+                }
+            } else if (query == "spof" || query == "relays") {
+                vector<CriticalRepeaterStat> stats;
+                if (_db->getCriticalRepeaters(dayAgo, 2, stats)) {
+                    ostringstream os;
+                    os << "critical relays: ";
+                    if (stats.empty()) {
+                        os << "none detected.";
+                    } else {
+                        for (size_t i = 0; i < stats.size(); i++) {
+                            if (i > 0) os << ", ";
+                            os << (stats[i].shortName.empty() ? stats[i].repeaterHex : stats[i].shortName)
+                               << " (" << stats[i].relayCount << " relays)";
+                        }
+                    }
+                    reply = os.str();
+                }
+            } else if (query == "drift") {
+                vector<ClockDriftStat> stats;
+                if (_db->getClockDrift(dayAgo, stats)) {
+                    if (stats.empty()) {
+                        reply = "clock drift: no remote time skew detected.";
+                    } else {
+                        char buf[128];
+                        snprintf(buf, sizeof(buf),
+                                 "clock drift: max skew %s %ds (samples=%u)",
+                                 (stats[0].shortName.empty() ? stats[0].nodeHex.c_str() : stats[0].shortName.c_str()),
+                                 stats[0].avgSkewSec, stats[0].sampleCount);
+                        reply = buf;
+                    }
+                }
+            } else if (query == "hops") {
+                vector<HopStat> stats;
+                if (_db->getHopDistribution(dayAgo, stats)) {
+                    ostringstream os;
+                    os << "hops(24h): ";
+                    for (size_t i = 0; i < stats.size(); i++) {
+                        if (i > 0) os << ", ";
+                        os << stats[i].hops << "h:" << fixed << setprecision(0) << stats[i].pctShare << "%";
+                    }
+                    reply = os.str();
+                }
+            } else if (query == "apps") {
+                vector<AppStat> stats;
+                if (_db->getPortnumDistribution(dayAgo, stats)) {
+                    ostringstream os;
+                    os << "apps(24h): ";
+                    for (size_t i = 0; i < min((size_t) 3, stats.size()); i++) {
+                        if (i > 0) os << ", ";
+                        os << stats[i].appName << ":" << fixed << setprecision(0) << stats[i].pctShare << "%";
+                    }
+                    reply = os.str();
+                }
+            } else if (query == "health" || query == "channel") {
+                ChannelHealthStat h;
+                if (_db->getChannelHealth(dayAgo, h)) {
+                    char buf[128];
+                    snprintf(buf, sizeof(buf),
+                             "health(24h): ch_util=%.1f%% air_tx=%.1f%% pkts=%u dupes=%u",
+                             h.avgChannelUtil, h.avgAirUtilTx, h.totalPackets, h.duplicatePackets);
+                    reply = buf;
+                }
+            }
+
+            if (!reply.empty()) {
+                if (directMessage) {
+                    this->printf("%s:%c%s\n",
+                                 getDisplayName(packet.from).c_str(),
+                                 _message.find('\n') == string::npos ? ' ' : '\n',
+                                 _message.c_str());
+                } else {
+                    this->printf("%s on #%s:%c%s\n",
+                                 getDisplayName(packet.from).c_str(),
+                                 getChannelName(packet.channel).c_str(),
+                                 _message.find('\n') == string::npos ? ' ' : '\n',
+                                 _message.c_str());
+                }
+
+                bool result = textMessage(dest, channel, reply);
+                if (result == false) {
+                    this->printf("textMessage '%s' failed!\n", reply.c_str());
+                } else {
+                    this->printf("my_reply to %s: %s\n",
+                                 getDisplayName(packet.from).c_str(),
+                                 reply.c_str());
+                }
+
+                setLastMessageFrom(packet.from, _message);
+                return true;
+            }
+        }
     }
 
     bool handled = HomeChat::handleTextMessage(packet, _message);
@@ -1450,6 +1658,98 @@ static inline int stdio_vprintf(const char *format, va_list ap)
 int MeshMon::vprintf(const char *format, va_list ap) const
 {
     return stdio_vprintf(format, ap);
+}
+
+void MeshMon::publishGatewayStatsToMqtt(void)
+{
+    if (_myownMqtt == NULL || _db == NULL) {
+        return;
+    }
+
+    if (!_haGatewayDiscovered) {
+        _myownMqtt->publish(
+            "homeassistant/sensor/meshmon_gateway_packets/config",
+            haDiscoveryJson("Gateway Total Packets", "meshmon_gateway_packets",
+                            "meshmon/gateway/total_packets", "", "",
+                            "meshmon_gateway", "MeshMon Gateway"),
+            true);
+        _myownMqtt->publish(
+            "homeassistant/sensor/meshmon_gateway_active_nodes/config",
+            haDiscoveryJson("Gateway Active Nodes (24h)", "meshmon_gateway_active_nodes",
+                            "meshmon/gateway/active_nodes_24h", "", "",
+                            "meshmon_gateway", "MeshMon Gateway"),
+            true);
+        _myownMqtt->publish(
+            "homeassistant/sensor/meshmon_gateway_avg_snr/config",
+            haDiscoveryJson("Gateway Average SNR (1h)", "meshmon_gateway_avg_snr",
+                            "meshmon/gateway/avg_snr_1h", "", "dB",
+                            "meshmon_gateway", "MeshMon Gateway"),
+            true);
+        _myownMqtt->publish(
+            "homeassistant/sensor/meshmon_gateway_direct_neighbors/config",
+            haDiscoveryJson("Gateway Direct Neighbors", "meshmon_gateway_direct_neighbors",
+                            "meshmon/gateway/direct_neighbors", "", "",
+                            "meshmon_gateway", "MeshMon Gateway"),
+            true);
+        _myownMqtt->publish(
+            "homeassistant/sensor/meshmon_gateway_duplicate_packets/config",
+            haDiscoveryJson("Gateway Duplicate Packets", "meshmon_gateway_duplicate_packets",
+                            "meshmon/gateway/duplicate_packets", "", "",
+                            "meshmon_gateway", "MeshMon Gateway"),
+            true);
+        _myownMqtt->publish(
+            "homeassistant/sensor/meshmon_gateway_db_size/config",
+            haDiscoveryJson("Gateway DB Size", "meshmon_gateway_db_size",
+                            "meshmon/gateway/db_size_mb", "", "MB",
+                            "meshmon_gateway", "MeshMon Gateway"),
+            true);
+        _haGatewayDiscovered = true;
+    }
+
+    time_t now = time(NULL);
+    time_t hourAgo = now - 3600;
+    time_t dayAgo = now - 86400;
+    char buf[32];
+
+    uint64_t totalPkts = _db->getTotalPacketCount();
+    snprintf(buf, sizeof(buf), "%llu", (unsigned long long) totalPkts);
+    _myownMqtt->publish("meshmon/gateway/total_packets", string(buf), true);
+
+    TrafficSummary hourSum;
+    if (_db->getTrafficSummary(hourAgo, hourSum)) {
+        vector<NeighborStat> hourNeighbors;
+        if (_db->getNeighborStats(hourAgo, hourNeighbors) && !hourNeighbors.empty()) {
+            float sumSnr = 0.0f;
+            for (size_t i = 0; i < hourNeighbors.size(); i++) {
+                sumSnr += hourNeighbors[i].avgSnr;
+            }
+            snprintf(buf, sizeof(buf), "%.1f", sumSnr / (float) hourNeighbors.size());
+            _myownMqtt->publish("meshmon/gateway/avg_snr_1h", string(buf), true);
+        }
+    }
+
+    vector<NodeTrafficStat> dayTalkers;
+    if (_db->getTopTalkers(dayAgo, 1000, dayTalkers)) {
+        snprintf(buf, sizeof(buf), "%u", (unsigned int) dayTalkers.size());
+        _myownMqtt->publish("meshmon/gateway/active_nodes_24h", string(buf), true);
+    }
+
+    vector<NeighborStat> neighbors;
+    if (_db->getNeighborStats(dayAgo, neighbors)) {
+        snprintf(buf, sizeof(buf), "%u", (unsigned int) neighbors.size());
+        _myownMqtt->publish("meshmon/gateway/direct_neighbors", string(buf), true);
+    }
+
+    ChannelHealthStat health;
+    if (_db->getChannelHealth(dayAgo, health)) {
+        snprintf(buf, sizeof(buf), "%u", (unsigned int) health.duplicatePackets);
+        _myownMqtt->publish("meshmon/gateway/duplicate_packets", string(buf), true);
+    }
+
+    size_t dbBytes = _db->getDbFileSize();
+    float dbMb = ((float) dbBytes) / (1024.0f * 1024.0f);
+    snprintf(buf, sizeof(buf), "%.2f", dbMb);
+    _myownMqtt->publish("meshmon/gateway/db_size_mb", string(buf), true);
 }
 
 /*

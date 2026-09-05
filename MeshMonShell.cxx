@@ -22,6 +22,7 @@ MeshMonShell::MeshMonShell(shared_ptr<MeshClient> client)
 {
     _help_list.push_back("calib");
     _help_list.push_back("chatbot");
+    _help_list.push_back("db");
 }
 
 MeshMonShell::~MeshMonShell()
@@ -29,9 +30,16 @@ MeshMonShell::~MeshMonShell()
 
 }
 
+void MeshMonShell::setDb(shared_ptr<MeshMonDb> db)
+{
+    _db = db;
+}
+
 shared_ptr<MeshShell> MeshMonShell::newInstance(void)
 {
-    return make_shared<MeshMonShell>();
+    shared_ptr<MeshMonShell> shell = make_shared<MeshMonShell>();
+    shell->setDb(_db);
+    return shell;
 }
 
 void MeshMonShell::printStatusHelp(void)
@@ -123,6 +131,9 @@ int MeshMonShell::unknown_command(int argc, char **argv)
     }
     if ((argc > 0) && (strcmp(argv[0], "chatbot") == 0)) {
         return chatbot(argc, argv);
+    }
+    if ((argc > 0) && (strcmp(argv[0], "db") == 0)) {
+        return db(argc, argv);
     }
 
     return MeshShell::unknown_command(argc, argv);
@@ -1573,6 +1584,457 @@ int MeshMonShell::chatbot(int argc, char **argv)
     }
 
     this->printf("Unknown chatbot subcommand '%s'. Type 'chatbot help' for usage.\n", argv[1]);
+    return -1;
+}
+
+void MeshMonShell::printDbHelp(void)
+{
+    this->printf("Usage:\n");
+    this->printf("  db summary [hours]           - Traffic volume, bytes, and link stats\n");
+    this->printf("  db toptalkers [limit] [hours]- Top active nodes by packets and airtime\n");
+    this->printf("  db neighbors [hours]         - Direct RF neighbors with SNR/RSSI stats\n");
+    this->printf("  db storm [limit] [hours]     - Duplicate packet floods and echo runs\n");
+    this->printf("  db asymmetry [hours]         - Bidirectional SNR with direct neighbors\n");
+    this->printf("  db spof [limit] [hours]      - Critical single-point-of-failure relays\n");
+    this->printf("  db drift [hours]             - Radio clock drift relative to NTP\n");
+    this->printf("  db hops [hours]              - Hop count distribution histogram\n");
+    this->printf("  db apps [hours]              - Traffic breakdown by portnum / app\n");
+    this->printf("  db node <node> [hours]       - Node timeline, RF stats, and battery\n");
+    this->printf("  db fading <node> [hours]     - Hourly SNR/RSSI trends for link fading\n");
+    this->printf("  db health [hours]            - Channel utilization, TX airtime, dupes\n");
+    this->printf("  db query <SQL>               - Execute a custom read-only SQL query\n");
+    this->printf("  db help                      - Show this help message\n");
+    this->printf("Note: default [hours] is 24. [hours]=0 selects all historical data.\n");
+}
+
+int MeshMonShell::db(int argc, char **argv)
+{
+    if (_db == NULL) {
+        this->printf("Database is not enabled or not open.\n");
+        return -1;
+    }
+
+    if ((argc <= 1) ||
+        (strcmp(argv[1], "help") == 0) ||
+        (strcmp(argv[1], "-h") == 0) ||
+        (strcmp(argv[1], "--help") == 0) ||
+        (strcmp(argv[1], "-help") == 0) ||
+        (strcmp(argv[1], "-?") == 0) ||
+        (strcmp(argv[1], "?") == 0)) {
+        printDbHelp();
+        return 0;
+    }
+
+    string subcmd = argv[1];
+
+    if (subcmd == "summary" || subcmd == "stats") {
+        int hours = 24;
+        if (argc >= 3) {
+            hours = atoi(argv[2]);
+        }
+        time_t since = (hours > 0) ? (time(NULL) - (hours * 3600)) : 0;
+        TrafficSummary s;
+        if (!_db->getTrafficSummary(since, s)) {
+            this->printf("Failed to query traffic summary.\n");
+            return -1;
+        }
+
+        this->printf("=== Packet Traffic Summary (Last %s) ===\n",
+                     hours > 0 ? (to_string(hours) + " hours").c_str() : "All time");
+        this->printf("Total Packets:     %u\n", s.totalPackets);
+        this->printf("Total Payload:     %llu bytes\n", (unsigned long long) s.totalBytes);
+        float bcastPct = s.totalPackets > 0 ? (s.broadcastPackets * 100.0f / s.totalPackets) : 0.0f;
+        float unicastPct = s.totalPackets > 0 ? (s.unicastPackets * 100.0f / s.totalPackets) : 0.0f;
+        float directPct = s.totalPackets > 0 ? (s.directPackets * 100.0f / s.totalPackets) : 0.0f;
+        float relayedPct = s.totalPackets > 0 ? (s.relayedPackets * 100.0f / s.totalPackets) : 0.0f;
+        this->printf("Broadcast / Uni:   %u (%.1f%%) / %u (%.1f%%)\n",
+                     s.broadcastPackets, bcastPct, s.unicastPackets, unicastPct);
+        this->printf("Direct / Relayed:  %u (%.1f%%) / %u (%.1f%%)\n",
+                     s.directPackets, directPct, s.relayedPackets, relayedPct);
+        this->printf("DB File Size:      %.2f MB\n",
+                     ((float) _db->getDbFileSize()) / (1024.0f * 1024.0f));
+        return 0;
+    }
+
+    if (subcmd == "toptalkers" || subcmd == "top") {
+        size_t limit = 10;
+        int hours = 24;
+        if (argc >= 3) {
+            limit = (size_t) max(1, atoi(argv[2]));
+        }
+        if (argc >= 4) {
+            hours = atoi(argv[3]);
+        }
+        time_t since = (hours > 0) ? (time(NULL) - (hours * 3600)) : 0;
+        vector<NodeTrafficStat> stats;
+        if (!_db->getTopTalkers(since, limit, stats)) {
+            this->printf("Failed to query top talkers.\n");
+            return -1;
+        }
+
+        this->printf("=== Top %zu Talkers (Last %s) ===\n",
+                     limit, hours > 0 ? (to_string(hours) + " hours").c_str() : "All time");
+        this->printf("%-10s %-16s %8s %10s %8s %8s %8s\n",
+                     "Node", "Name", "Packets", "Bytes", "AvgHops", "AvgSNR", "LastSeen");
+        for (size_t i = 0; i < stats.size(); i++) {
+            const NodeTrafficStat &s = stats[i];
+            string name = !s.shortName.empty() ? s.shortName : s.longName;
+            if (name.size() > 15) name = name.substr(0, 15);
+            this->printf("%-10s %-16s %8u %10llu %8.1f %+7.1fdB %8s\n",
+                         s.nodeHex.c_str(), name.c_str(), s.packetCount,
+                         (unsigned long long) s.totalBytes, s.avgHops, s.avgSnr,
+                         formatRelativeTime(s.lastSeen).c_str());
+        }
+        return 0;
+    }
+
+    if (subcmd == "neighbors" || subcmd == "direct") {
+        int hours = 24;
+        if (argc >= 3) {
+            hours = atoi(argv[2]);
+        }
+        time_t since = (hours > 0) ? (time(NULL) - (hours * 3600)) : 0;
+        vector<NeighborStat> stats;
+        if (!_db->getNeighborStats(since, stats)) {
+            this->printf("Failed to query neighbor statistics.\n");
+            return -1;
+        }
+
+        this->printf("=== Direct 0-Hop RF Neighbors (%zu found in last %s) ===\n",
+                     stats.size(), hours > 0 ? (to_string(hours) + " hours").c_str() : "All time");
+        this->printf("%-10s %-16s %8s %8s %8s %8s %8s\n",
+                     "Node", "Name", "Packets", "AvgSNR", "MinSNR", "MaxSNR", "LastSeen");
+        for (size_t i = 0; i < stats.size(); i++) {
+            const NeighborStat &s = stats[i];
+            string name = !s.shortName.empty() ? s.shortName : s.longName;
+            if (name.size() > 15) name = name.substr(0, 15);
+            this->printf("%-10s %-16s %8u %+7.1fdB %+7.1fdB %+7.1fdB %8s\n",
+                         s.nodeHex.c_str(), name.c_str(), s.packetCount,
+                         s.avgSnr, s.minSnr, s.maxSnr,
+                         formatRelativeTime(s.lastSeen).c_str());
+        }
+        return 0;
+    }
+
+    if (subcmd == "storm" || subcmd == "storms" || subcmd == "echo") {
+        size_t limit = 10;
+        int hours = 24;
+        if (argc >= 3) {
+            limit = (size_t) max(1, atoi(argv[2]));
+        }
+        if (argc >= 4) {
+            hours = atoi(argv[3]);
+        }
+        time_t since = (hours > 0) ? (time(NULL) - (hours * 3600)) : 0;
+        vector<EchoStormStat> stats;
+        if (!_db->getEchoStorms(since, limit, stats)) {
+            this->printf("Failed to query echo storm statistics.\n");
+            return -1;
+        }
+
+        this->printf("=== Duplicate Packet Floods & Echo Reverberation (Last %s) ===\n",
+                     hours > 0 ? (to_string(hours) + " hours").c_str() : "All time");
+        if (stats.empty()) {
+            this->printf("No duplicate packet storms detected in this period.\n");
+            return 0;
+        }
+        this->printf("%-12s %-10s %8s %10s %12s\n",
+                     "Packet ID", "From", "Echoes", "Hop Range", "Duration");
+        for (size_t i = 0; i < stats.size(); i++) {
+            const EchoStormStat &s = stats[i];
+            char pktBuf[16];
+            snprintf(pktBuf, sizeof(pktBuf), "!%08x", s.packetId);
+            char hopBuf[16];
+            snprintf(hopBuf, sizeof(hopBuf), "%u..%u hops", s.minHops, s.maxHops);
+            this->printf("%-12s %-10s %8u %10s %10us\n",
+                         pktBuf, s.fromHex.c_str(), s.echoCount,
+                         hopBuf, s.durationSec);
+        }
+        return 0;
+    }
+
+    if (subcmd == "asymmetry") {
+        int hours = 24;
+        if (argc >= 3) {
+            hours = atoi(argv[2]);
+        }
+        time_t since = (hours > 0) ? (time(NULL) - (hours * 3600)) : 0;
+        vector<LinkAsymmetryStat> stats;
+        if (!_db->getLinkAsymmetry(since, stats)) {
+            this->printf("Failed to query link asymmetry.\n");
+            return -1;
+        }
+
+        this->printf("=== Direct Link SNR Analysis & Noise Floor Insights (Last %s) ===\n",
+                     hours > 0 ? (to_string(hours) + " hours").c_str() : "All time");
+        this->printf("%-10s %-16s %8s %8s %8s\n",
+                     "Node", "Name", "Samples", "AvgSNR", "AvgRSSI");
+        for (size_t i = 0; i < stats.size(); i++) {
+            const LinkAsymmetryStat &s = stats[i];
+            string name = !s.shortName.empty() ? s.shortName : s.longName;
+            if (name.size() > 15) name = name.substr(0, 15);
+            this->printf("%-10s %-16s %8u %+7.1fdB %7.1fdBm\n",
+                         s.nodeHex.c_str(), name.c_str(), s.sampleCount,
+                         s.rxSnr, s.rxRssi);
+        }
+        return 0;
+    }
+
+    if (subcmd == "spof" || subcmd == "relays") {
+        size_t limit = 10;
+        int hours = 24;
+        if (argc >= 3) {
+            limit = (size_t) max(1, atoi(argv[2]));
+        }
+        if (argc >= 4) {
+            hours = atoi(argv[3]);
+        }
+        time_t since = (hours > 0) ? (time(NULL) - (hours * 3600)) : 0;
+        vector<CriticalRepeaterStat> stats;
+        if (!_db->getCriticalRepeaters(since, limit, stats)) {
+            this->printf("Failed to query critical repeaters.\n");
+            return -1;
+        }
+
+        this->printf("=== Critical Relay Nodes / SPOF Analysis (Last %s) ===\n",
+                     hours > 0 ? (to_string(hours) + " hours").c_str() : "All time");
+        if (stats.empty()) {
+            this->printf("No multi-hop relay nodes detected in this period.\n");
+            return 0;
+        }
+        this->printf("%-10s %-16s %12s %8s\n",
+                     "Node", "Name", "RelayedPkts", "AvgSNR");
+        for (size_t i = 0; i < stats.size(); i++) {
+            const CriticalRepeaterStat &s = stats[i];
+            string name = !s.shortName.empty() ? s.shortName : s.longName;
+            if (name.size() > 15) name = name.substr(0, 15);
+            this->printf("%-10s %-16s %12u %+7.1fdB\n",
+                         s.repeaterHex.c_str(), name.c_str(), s.relayCount, s.avgSnr);
+        }
+        return 0;
+    }
+
+    if (subcmd == "drift") {
+        int hours = 24;
+        if (argc >= 3) {
+            hours = atoi(argv[2]);
+        }
+        time_t since = (hours > 0) ? (time(NULL) - (hours * 3600)) : 0;
+        vector<ClockDriftStat> stats;
+        if (!_db->getClockDrift(since, stats)) {
+            this->printf("Failed to query clock drift statistics.\n");
+            return -1;
+        }
+
+        this->printf("=== Remote Node Clock Drift vs NTP Ground Truth (Last %s) ===\n",
+                     hours > 0 ? (to_string(hours) + " hours").c_str() : "All time");
+        if (stats.empty()) {
+            this->printf("No remote node timestamp packets recorded.\n");
+            return 0;
+        }
+        this->printf("%-10s %-16s %8s %10s %10s %10s\n",
+                     "Node", "Name", "Samples", "AvgSkew", "MinSkew", "MaxSkew");
+        for (size_t i = 0; i < stats.size(); i++) {
+            const ClockDriftStat &s = stats[i];
+            string name = !s.shortName.empty() ? s.shortName : s.longName;
+            if (name.size() > 15) name = name.substr(0, 15);
+            this->printf("%-10s %-16s %8u %+9ds %+9ds %+9ds\n",
+                         s.nodeHex.c_str(), name.c_str(), s.sampleCount,
+                         s.avgSkewSec, s.minSkewSec, s.maxSkewSec);
+        }
+        return 0;
+    }
+
+    if (subcmd == "hops") {
+        int hours = 24;
+        if (argc >= 3) {
+            hours = atoi(argv[2]);
+        }
+        time_t since = (hours > 0) ? (time(NULL) - (hours * 3600)) : 0;
+        vector<HopStat> stats;
+        if (!_db->getHopDistribution(since, stats)) {
+            this->printf("Failed to query hop distribution.\n");
+            return -1;
+        }
+
+        this->printf("=== Hop Count Distribution (Last %s) ===\n",
+                     hours > 0 ? (to_string(hours) + " hours").c_str() : "All time");
+        this->printf("%-6s %10s %10s\n", "Hops", "Packets", "Percentage");
+        for (size_t i = 0; i < stats.size(); i++) {
+            this->printf("%-6d %10u %9.1f%%\n",
+                         stats[i].hops, stats[i].packetCount, stats[i].pctShare);
+        }
+        return 0;
+    }
+
+    if (subcmd == "apps") {
+        int hours = 24;
+        if (argc >= 3) {
+            hours = atoi(argv[2]);
+        }
+        time_t since = (hours > 0) ? (time(NULL) - (hours * 3600)) : 0;
+        vector<AppStat> stats;
+        if (!_db->getPortnumDistribution(since, stats)) {
+            this->printf("Failed to query application distribution.\n");
+            return -1;
+        }
+
+        this->printf("=== Application / PortNum Traffic Composition (Last %s) ===\n",
+                     hours > 0 ? (to_string(hours) + " hours").c_str() : "All time");
+        this->printf("%-32s %10s %12s %8s\n", "Application", "Packets", "Bytes", "Share");
+        for (size_t i = 0; i < stats.size(); i++) {
+            this->printf("%-32s %10u %12llu %7.1f%%\n",
+                         stats[i].appName.c_str(), stats[i].packetCount,
+                         (unsigned long long) stats[i].totalBytes, stats[i].pctShare);
+        }
+        return 0;
+    }
+
+    if (subcmd == "node") {
+        if (argc < 3) {
+            this->printf("Usage: db node <node> [hours]\n");
+            return -1;
+        }
+        uint32_t nodeId = resolveNode(argv[2]);
+        if (nodeId == 0) {
+            this->printf("Cannot resolve node '%s'\n", argv[2]);
+            return -1;
+        }
+        int hours = 24;
+        if (argc >= 4) {
+            hours = atoi(argv[3]);
+        }
+        time_t since = (hours > 0) ? (time(NULL) - (hours * 3600)) : 0;
+        NodeDetail d;
+        if (!_db->getNodeDetail(nodeId, since, d)) {
+            this->printf("Failed to query node detail.\n");
+            return -1;
+        }
+
+        this->printf("=== Node Profile: %s (%s) ===\n",
+                     d.nodeHex.c_str(), !d.longName.empty() ? d.longName.c_str() : "unknown");
+        this->printf("Short Name:     %s\n", !d.shortName.empty() ? d.shortName.c_str() : "none");
+        this->printf("First Seen:     %s ago\n", formatRelativeTime(d.firstSeen).c_str());
+        this->printf("Last Seen:      %s ago\n", formatRelativeTime(d.lastSeen).c_str());
+        this->printf("Packets (%s):   %u\n",
+                     hours > 0 ? (to_string(hours) + "h").c_str() : "all", d.totalPackets);
+        if (d.totalPackets > 0) {
+            this->printf("SNR (Avg/Min/Max): %+0.1f / %+0.1f / %+0.1f dB\n",
+                         d.avgSnr, d.minSnr, d.maxSnr);
+            this->printf("Average RSSI:   %0.1f dBm\n", d.avgRssi);
+            this->printf("Last Hop Count: %d hops\n", d.lastHops);
+        }
+        if (d.hasTelemetry) {
+            this->printf("Battery / Volt: %d%% / %.2fV\n", d.lastBattery, d.lastVoltage);
+            this->printf("Channel / Air:  %.1f%% / %.1f%%\n", d.lastChannelUtil, d.lastAirUtilTx);
+        }
+        if (d.hasPosition) {
+            this->printf("Last Position:  %.6f, %.6f (alt %dm)\n",
+                         d.lastLat, d.lastLon, d.lastAlt);
+        }
+        return 0;
+    }
+
+    if (subcmd == "fading") {
+        if (argc < 3) {
+            this->printf("Usage: db fading <node> [hours]\n");
+            return -1;
+        }
+        uint32_t nodeId = resolveNode(argv[2]);
+        if (nodeId == 0) {
+            this->printf("Cannot resolve node '%s'\n", argv[2]);
+            return -1;
+        }
+        int hours = 24;
+        if (argc >= 4) {
+            hours = atoi(argv[3]);
+        }
+        time_t since = (hours > 0) ? (time(NULL) - (hours * 3600)) : 0;
+        vector<LinkFadingPoint> points;
+        if (!_db->getLinkFading(nodeId, since, points)) {
+            this->printf("Failed to query link fading data.\n");
+            return -1;
+        }
+
+        this->printf("=== Hourly Link Quality / Fading Curve for !%08x ===\n", nodeId);
+        if (points.empty()) {
+            this->printf("No packet records found for this node in the specified timeframe.\n");
+            return 0;
+        }
+        this->printf("%-20s %8s %8s %8s %8s %8s\n",
+                     "Time (UTC)", "Packets", "AvgSNR", "MinSNR", "MaxSNR", "AvgRSSI");
+        for (size_t i = 0; i < points.size(); i++) {
+            const LinkFadingPoint &p = points[i];
+            struct tm tm;
+            char timeBuf[32];
+            gmtime_r(&p.timestamp, &tm);
+            strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:00", &tm);
+            this->printf("%-20s %8u %+7.1fdB %+7.1fdB %+7.1fdB %7.1fdBm\n",
+                         timeBuf, p.count, p.avgSnr, p.minSnr, p.maxSnr, p.avgRssi);
+        }
+        return 0;
+    }
+
+    if (subcmd == "health") {
+        int hours = 24;
+        if (argc >= 3) {
+            hours = atoi(argv[2]);
+        }
+        time_t since = (hours > 0) ? (time(NULL) - (hours * 3600)) : 0;
+        ChannelHealthStat h;
+        if (!_db->getChannelHealth(since, h)) {
+            this->printf("Failed to query channel health.\n");
+            return -1;
+        }
+
+        this->printf("=== Mesh & RF Channel Health Statistics (Last %s) ===\n",
+                     hours > 0 ? (to_string(hours) + " hours").c_str() : "All time");
+        this->printf("Avg Channel Utilization: %.1f%% (Peak: %.1f%%)\n",
+                     h.avgChannelUtil, h.maxChannelUtil);
+        this->printf("Avg Node TX Airtime:     %.1f%% (Peak: %.1f%%)\n",
+                     h.avgAirUtilTx, h.maxAirUtilTx);
+        this->printf("Total Packets Received:  %u\n", h.totalPackets);
+        float dupePct = h.totalPackets > 0 ? (h.duplicatePackets * 100.0f / h.totalPackets) : 0.0f;
+        this->printf("Duplicate Echo Packets:  %u (%.1f%%)\n",
+                     h.duplicatePackets, dupePct);
+        return 0;
+    }
+
+    if (subcmd == "query" || subcmd == "sql") {
+        if (argc < 3) {
+            this->printf("Usage: db query <SQL statement>\n");
+            return -1;
+        }
+
+        string sql;
+        for (int i = 2; i < argc; i++) {
+            if (i > 2) sql += " ";
+            sql += argv[i];
+        }
+
+        QueryResult r;
+        if (!_db->executeRawQuery(sql, r)) {
+            this->printf("SQL Error: %s\n", r.error.c_str());
+            return -1;
+        }
+
+        for (size_t c = 0; c < r.columns.size(); c++) {
+            if (c > 0) this->printf(" | ");
+            this->printf("%s", r.columns[c].c_str());
+        }
+        this->printf("\n");
+        for (size_t row = 0; row < r.rows.size(); row++) {
+            for (size_t col = 0; col < r.rows[row].size(); col++) {
+                if (col > 0) this->printf(" | ");
+                this->printf("%s", r.rows[row][col].c_str());
+            }
+            this->printf("\n");
+        }
+        this->printf("(%zu rows returned)\n", r.rows.size());
+        return 0;
+    }
+
+    this->printf("Unknown db subcommand '%s'. Type 'db help' for usage.\n", argv[1]);
     return -1;
 }
 
