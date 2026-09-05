@@ -29,8 +29,7 @@ if (NOT CURL_FOUND)
       /usr/include
       /usr/include/${CMAKE_LIBRARY_ARCHITECTURE}
       /usr/local/include
-      /usr/local/include/${CMAKE_LIBRARY_ARCHITECTURE}
-      /home/samurai/work/rabbit/build/aarch64/librealsense/third-party/libcurl/include)
+      /usr/local/include/${CMAKE_LIBRARY_ARCHITECTURE})
   find_library(CURL_LIBRARY NAMES curl libcurl libcurl.so.4
     PATHS
       /usr/lib/${CMAKE_LIBRARY_ARCHITECTURE}
