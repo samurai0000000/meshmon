@@ -76,14 +76,14 @@ Restart `meshmon`. Within seconds, Home Assistant will discover the gateway and 
 
 ### A. MeshMon Gateway Health & Physics (`meshmon_gateway`)
 
-| Sensor Entity Name | Unique ID | State Topic | Unit | Device Class |
-| :--- | :--- | :--- | :---: | :---: |
-| **Gateway Total Packets** | `meshmon_gateway_packets` | `meshmon/gateway/total_packets` | pkts | — |
-| **Gateway Active Nodes (24h)** | `meshmon_gateway_active_nodes` | `meshmon/gateway/active_nodes_24h` | nodes | — |
-| **Gateway Average SNR (1h)** | `meshmon_gateway_avg_snr` | `meshmon/gateway/avg_snr_1h` | dB | signal_strength |
-| **Gateway Direct Neighbors** | `meshmon_gateway_direct_neighbors` | `meshmon/gateway/direct_neighbors` | nodes | — |
-| **Gateway Duplicate Packets** | `meshmon_gateway_duplicate_packets` | `meshmon/gateway/duplicate_packets` | pkts | — |
-| **Gateway DB Size** | `meshmon_gateway_db_size` | `meshmon/gateway/db_size_mb` | MB | data_size |
+| Sensor Entity Name | Unique ID | Registered Entity ID | State Topic | Unit | Device Class |
+| :--- | :--- | :--- | :--- | :---: | :---: |
+| **Gateway Total Packets** | `meshmon_gateway_packets` | `sensor.meshmon_gateway_gateway_total_packets` | `meshmon/gateway/total_packets` | pkts | — |
+| **Gateway Active Nodes (24h)** | `meshmon_gateway_active_nodes` | `sensor.meshmon_gateway_gateway_active_nodes_24h` | `meshmon/gateway/active_nodes_24h` | nodes | — |
+| **Gateway Average SNR (1h)** | `meshmon_gateway_avg_snr` | `sensor.meshmon_gateway_gateway_average_snr_1h` | `meshmon/gateway/avg_snr_1h` | dB | signal_strength |
+| **Gateway Direct Neighbors** | `meshmon_gateway_direct_neighbors` | `sensor.meshmon_gateway_gateway_direct_neighbors` | `meshmon/gateway/direct_neighbors` | nodes | — |
+| **Gateway Duplicate Packets** | `meshmon_gateway_duplicate_packets` | `sensor.meshmon_gateway_gateway_duplicate_packets` | `meshmon/gateway/duplicate_packets` | pkts | — |
+| **Gateway DB Size** | `meshmon_gateway_db_size` | `sensor.meshmon_gateway_gateway_db_size` | `meshmon/gateway/db_size_mb` | MB | data_size |
 
 ---
 
@@ -112,15 +112,14 @@ Add these custom cards to your Home Assistant dashboard for real-time mesh monit
 ```yaml
 type: vertical-stack
 cards:
-  - type: custom:mushroom-title-card
-    title: Meshtastic Network Health
-    subtitle: Monitored by MeshMon Gateway
+  - type: heading
+    heading: Meshtastic Network Health
   - type: grid
     columns: 3
     square: false
     cards:
       - type: gauge
-        entity: sensor.gateway_average_snr_1h
+        entity: sensor.meshmon_gateway_gateway_average_snr_1h
         min: -15
         max: 15
         name: Avg SNR (1h)
@@ -130,65 +129,65 @@ cards:
           yellow: -5
           red: -15
       - type: gauge
-        entity: sensor.gateway_active_nodes_24h
+        entity: sensor.meshmon_gateway_gateway_active_nodes_24h
         min: 0
         max: 50
         name: Active Nodes
       - type: gauge
-        entity: sensor.gateway_direct_neighbors
+        entity: sensor.meshmon_gateway_gateway_direct_neighbors
         min: 0
         max: 20
         name: 0-Hop Neighbors
   - type: entities
+    title: Gateway Lifetime Stats
     entities:
-      - entity: sensor.gateway_total_packets
+      - entity: sensor.meshmon_gateway_gateway_total_packets
         name: Lifetime Packets Logged
-      - entity: sensor.gateway_duplicate_packets
+      - entity: sensor.meshmon_gateway_gateway_duplicate_packets
         name: Duplicate Packet Storms (24h)
-      - entity: sensor.gateway_db_size
+      - entity: sensor.meshmon_gateway_gateway_db_size
         name: SQLite Database Size
 ```
 
 ---
 
 ### Card 2: Environmental & Power Telemetry Grid
+*(Replace example entity IDs with your discovered station names or node hex IDs)*
 ```yaml
 type: vertical-stack
 cards:
-  - type: custom:mushroom-title-card
-    title: Remote Station Telemetry
+  - type: heading
+    heading: Remote Station Telemetry
   - type: grid
     columns: 2
     square: false
     cards:
       - type: sensor
-        entity: sensor.meshmon_2bf941d4_temperature
+        entity: sensor.station_alpha_temperature
         name: Station Temperature
         graph: line
       - type: sensor
-        entity: sensor.meshmon_2bf941d4_humidity
+        entity: sensor.station_alpha_humidity
         name: Station Humidity
         graph: line
       - type: sensor
-        entity: sensor.meshmon_2bf941d4_battery
-        name: Station Battery %
+        entity: sensor.repeater_roof_battery
+        name: Repeater Battery %
         graph: line
       - type: sensor
-        entity: sensor.meshmon_2bf941d4_voltage
-        name: Station Battery Voltage
+        entity: sensor.repeater_roof_voltage
+        name: Repeater Voltage
         graph: line
 ```
 
 ---
 
-### Card 3: RF Link Quality & Weather Fading History
+### Card 3: RF Link Quality & Signal History
 ```yaml
 type: history-graph
 title: RF Propagation History
 hours_to_show: 48
 entities:
-  - entity: sensor.gateway_average_snr_1h
+  - entity: sensor.meshmon_gateway_gateway_average_snr_1h
     name: Gateway Average SNR (dB)
-  - entity: sensor.meshmon_2bf941d4_voltage
-    name: Node Voltage (V)
 ```
