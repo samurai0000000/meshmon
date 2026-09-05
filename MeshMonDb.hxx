@@ -169,6 +169,82 @@ struct ChannelHealthStat {
     uint32_t uptimeSeconds;
 };
 
+struct AutomationEvent {
+    int64_t id;
+    time_t meshmonTime;
+    uint32_t nodeId;
+    string nodeHex;
+    string deviceType;
+    string direction;
+    string subsystem;
+    string commandName;
+    string actionParam;
+    string status;
+    string initiator;
+    int32_t rttMs;
+};
+
+struct LatencyTrendPoint {
+    time_t timestamp;
+    float avgRtt;
+    uint32_t minRtt;
+    uint32_t maxRtt;
+    uint32_t count;
+};
+
+struct PumpAnalytics {
+    uint32_t fishRunSec;
+    float fishDutyPct;
+    uint32_t upRunCount;
+    uint32_t upRunSec;
+    uint32_t upCutoffTriggers;
+    uint32_t moistureEvents;
+    float avgMoisture;
+    uint32_t totalCommands;
+    uint32_t ackedCommands;
+
+    PumpAnalytics()
+        : fishRunSec(0), fishDutyPct(0.0f), upRunCount(0), upRunSec(0),
+          upCutoffTriggers(0), moistureEvents(0), avgMoisture(0.0f),
+          totalCommands(0), ackedCommands(0) {}
+};
+
+struct RoofAnalytics {
+    uint32_t amplifyRunSec;
+    float amplifyDutyPct;
+    uint32_t wifiReports;
+    float avgWifiRssi;
+    float minWifiRssi;
+    float maxWifiRssi;
+    float avgCpuTemp;
+    float maxCpuTemp;
+    uint32_t resetEvents;
+    uint32_t totalCommands;
+
+    RoofAnalytics()
+        : amplifyRunSec(0), amplifyDutyPct(0.0f), wifiReports(0),
+          avgWifiRssi(0.0f), minWifiRssi(0.0f), maxWifiRssi(0.0f),
+          avgCpuTemp(0.0f), maxCpuTemp(0.0f), resetEvents(0),
+          totalCommands(0) {}
+};
+
+struct RoomAnalytics {
+    uint32_t acRunSec;
+    float acDutyPct;
+    float avgAcTargetTemp;
+    uint32_t tvRunSec;
+    float tvDutyPct;
+    uint32_t tvChanChanges;
+    float avgBoardTemp;
+    float maxBoardTemp;
+    uint32_t totalCommands;
+
+    RoomAnalytics()
+        : acRunSec(0), acDutyPct(0.0f), avgAcTargetTemp(0.0f),
+          tvRunSec(0), tvDutyPct(0.0f), tvChanChanges(0),
+          avgBoardTemp(0.0f), maxBoardTemp(0.0f), totalCommands(0) {}
+};
+
 struct QueryResult {
     vector<string> columns;
     vector<vector<string>> rows;
@@ -223,6 +299,11 @@ public:
     void enqueueTraceRoute(const meshtastic_MeshPacket &packet,
                            const meshtastic_RouteDiscovery &routeDiscovery,
                            time_t meshmonTime);
+    void enqueueAutomationEvent(time_t meshmonTime, uint32_t nodeId,
+                                const string &deviceType, const string &direction,
+                                const string &subsystem, const string &commandName,
+                                const string &actionParam, const string &status,
+                                const string &initiator, int32_t rttMs = 0);
 
     // Maintenance
     size_t pruneOlderThan(time_t thresholdTime);
@@ -247,6 +328,14 @@ public:
     bool getLinkFading(uint32_t nodeId, time_t since, vector<LinkFadingPoint> &points);
     bool getChannelHealth(time_t since, ChannelHealthStat &health);
 
+    // Automation Queries
+    bool getPumpAnalytics(uint32_t nodeId, time_t since, PumpAnalytics &analytics);
+    bool getRoofAnalytics(uint32_t nodeId, time_t since, RoofAnalytics &analytics);
+    bool getRoomAnalytics(uint32_t nodeId, time_t since, RoomAnalytics &analytics);
+    bool getAutomationHistory(size_t limit, vector<AutomationEvent> &events);
+    bool getLatencyTrend(uint32_t nodeId, time_t since, vector<LatencyTrendPoint> &points);
+    bool getAutomationEventCount(time_t since, uint32_t &count);
+
     // Raw SQL Execution
     bool executeRawQuery(const string &sql, QueryResult &result);
 
@@ -264,7 +353,8 @@ private:
         EV_LOCAL_STATS,
         EV_POSITION,
         EV_TEXT_MESSAGE,
-        EV_TRACEROUTE
+        EV_TRACEROUTE,
+        EV_AUTOMATION_EVENT
     };
 
     struct DbEvent {
@@ -327,6 +417,16 @@ private:
         uint32_t routeCount;
         vector<uint32_t> routeNodes;
         vector<float> routeSnrs;
+
+        // Automation Event
+        string deviceType;
+        string direction;
+        string subsystem;
+        string commandName;
+        string actionParam;
+        string status;
+        string initiator;
+        int32_t rttMs;
     };
 
     bool initSchema(void);

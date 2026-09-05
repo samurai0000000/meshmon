@@ -210,11 +210,20 @@ void MqttClient::onConnect(struct mosquitto *mosq, void *obj, int rc)
 
     mqtt->_connected.store(true);
 
-    rc = mosquitto_subscribe(mosq, NULL, mqtt->_topic.c_str(), 1);
-    if (rc != MOSQ_ERR_SUCCESS) {
-        cerr << "mosquitto: " << mosquitto_strerror(rc) << endl;
-        mosquitto_disconnect(mosq);
-        return;
+    if (!mqtt->_topic.empty()) {
+        rc = mosquitto_subscribe(mosq, NULL, mqtt->_topic.c_str(), 1);
+        if (rc != MOSQ_ERR_SUCCESS) {
+            cerr << "mosquitto: " << mosquitto_strerror(rc) << endl;
+            mosquitto_disconnect(mosq);
+            return;
+        }
+    }
+
+    {
+        lock_guard<mutex> lock(mqtt->_mutex);
+        for (size_t i = 0; i < mqtt->_extraSubscriptions.size(); i++) {
+            mosquitto_subscribe(mosq, NULL, mqtt->_extraSubscriptions[i].c_str(), 1);
+        }
     }
 }
 
@@ -255,6 +264,28 @@ void MqttClient::onSubscribe(struct mosquitto *mosq, void *obj,
     }
 }
 
+void MqttClient::onMessage(struct mosquitto *mosq, void *obj,
+                          const struct mosquitto_message *message)
+{
+    (void)(mosq);
+    MqttClient *mqtt = (MqttClient *) obj;
+    if (mqtt != NULL && message != NULL && message->topic != NULL) {
+        string topic(message->topic);
+        string payload;
+        if (message->payload != NULL && message->payloadlen > 0) {
+            payload.assign((const char *) message->payload, message->payloadlen);
+        }
+        MessageCallback cb;
+        {
+            lock_guard<mutex> lock(mqtt->_mutex);
+            cb = mqtt->_messageCallback;
+        }
+        if (cb) {
+            cb(topic, payload);
+        }
+    }
+}
+
 void MqttClient::thread_function(MqttClient *mqtt)
 {
     mqtt->run();
@@ -284,6 +315,7 @@ void MqttClient::run(void)
     mosquitto_disconnect_callback_set(_mosq, onDisconnect);
     mosquitto_publish_callback_set(_mosq, onPublish);
     mosquitto_subscribe_callback_set(_mosq, onSubscribe);
+    mosquitto_message_callback_set(_mosq, onMessage);
 
     if (_tls) {
         ret = mosquitto_int_option(_mosq, MOSQ_OPT_TLS_USE_OS_CERTS, 1);
@@ -418,6 +450,21 @@ done:
     _isRunning.store(false);
 
     return;
+}
+
+void MqttClient::setMessageCallback(MessageCallback cb)
+{
+    lock_guard<mutex> lock(_mutex);
+    _messageCallback = cb;
+}
+
+void MqttClient::subscribe(const string &topic)
+{
+    lock_guard<mutex> lock(_mutex);
+    _extraSubscriptions.push_back(topic);
+    if (_mosq != NULL && _connected.load()) {
+        mosquitto_subscribe(_mosq, NULL, topic.c_str(), 1);
+    }
 }
 
 /*

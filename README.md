@@ -25,6 +25,7 @@
 - **HomeChat Protocol Extensions**: Respond to on-air natural language sensor and RF queries (`traffic?`, `storm?`, `spof?`, `asymmetry?`, `health?`) and forward conversational queries to Gemini AI.
 - **Master Clock Broadcast**: Synchronize remote mesh nodes with authoritative host wall-clock time broadcasts.
 - **Home Assistant MQTT Integration**: Native MQTT Auto-Discovery publishing gateway status, packet rates, node counts, and diagnostic telemetry directly into Home Assistant without manual configuration.
+- **HomeMesh Device Automation & Control**: Ingests, tracks, logs, and exposes telemetry and bidirectional controls for smart mesh nodes (`meshpump`, `meshroof`, `meshroom`) into Home Assistant via MQTT Auto-Discovery.
 
 ---
 
@@ -36,6 +37,7 @@ The `doc/` directory contains in-depth documentation covering all subsystems of 
 | :--- | :--- |
 | [**`doc/PacketLoggingDB.md`**](doc/PacketLoggingDB.md) | Complete SQLite packet logging architecture, table schema, background threading model, CLI `db` commands, and analytical SQL queries for deep RF telemetry. |
 | [**`doc/HomeAssistantIntegration.md`**](doc/HomeAssistantIntegration.md) | Step-by-step Home Assistant setup guide, MQTT Auto-Discovery sensor specifications, state JSON schemas, and ready-to-use Lovelace dashboard YAML cards. |
+| [**`doc/HomeMeshAutomation.md`**](doc/HomeMeshAutomation.md) | Architectural specification for HomeMesh device discovery, SQLite audit logging (`automation_events`), anti-spoofing mate verification, dynamic role migration, and bidirectional Home Assistant controls. |
 | [**`doc/HomeChat-meshmon.md`**](doc/HomeChat-meshmon.md) | On-air `HomeChat` protocol specifications, master time synchronization broadcasts, Gemini AI chatbot gateway, and natural RF query syntax. |
 
 ---

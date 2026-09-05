@@ -35,11 +35,17 @@ protected:
     virtual int calib(int argc, char **argv);
     virtual int chatbot(int argc, char **argv);
     virtual int db(int argc, char **argv);
+    virtual int robot(int argc, char **argv);
 
 private:
 
     void printDbHelp(void);
+    void printDbAutoHelp(void);
+    int dbAuto(int argc, char **argv);
     void printChatbotHelp(void);
+    void printRobotHelp(void);
+    void printFleetRobotStatus(void);
+    void printNodeRobotStatus(uint32_t nodeId);
     void printCurve(const char *name, const CalibrationCurve &curve,
                     const char *unit);
     void printNode(const string &nodeKey, const NodeCalibration &nodeCal);

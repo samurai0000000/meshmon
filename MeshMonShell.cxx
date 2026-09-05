@@ -23,6 +23,7 @@ MeshMonShell::MeshMonShell(shared_ptr<MeshClient> client)
     _help_list.push_back("calib");
     _help_list.push_back("chatbot");
     _help_list.push_back("db");
+    _help_list.push_back("robot");
 }
 
 MeshMonShell::~MeshMonShell()
@@ -134,6 +135,9 @@ int MeshMonShell::unknown_command(int argc, char **argv)
     }
     if ((argc > 0) && (strcmp(argv[0], "db") == 0)) {
         return db(argc, argv);
+    }
+    if ((argc > 0) && (strcmp(argv[0], "robot") == 0)) {
+        return robot(argc, argv);
     }
 
     return MeshShell::unknown_command(argc, argv);
@@ -1602,6 +1606,7 @@ void MeshMonShell::printDbHelp(void)
     this->printf("  db node <node> [hours]       - Node timeline, RF stats, and battery\n");
     this->printf("  db fading <node> [hours]     - Hourly SNR/RSSI trends for link fading\n");
     this->printf("  db health [hours]            - Channel utilization, TX airtime, dupes\n");
+    this->printf("  db auto [subcmd]             - HomeMesh automation analytics & history\n");
     this->printf("  db query <SQL>               - Execute a custom read-only SQL query\n");
     this->printf("  db help                      - Show this help message\n");
     this->printf("Note: default [hours] is 24. [hours]=0 selects all historical data.\n");
@@ -1626,6 +1631,10 @@ int MeshMonShell::db(int argc, char **argv)
     }
 
     string subcmd = argv[1];
+
+    if (subcmd == "auto" || subcmd == "automation" || subcmd == "robot") {
+        return dbAuto(argc - 1, argv + 1);
+    }
 
     if (subcmd == "summary" || subcmd == "stats") {
         int hours = 24;
@@ -2038,6 +2047,363 @@ int MeshMonShell::db(int argc, char **argv)
 
     this->printf("Unknown db subcommand '%s'. Type 'db help' for usage.\n", argv[1]);
     return -1;
+}
+
+void MeshMonShell::printDbAutoHelp(void)
+{
+    this->printf("Usage:\n");
+    this->printf("  db auto pump [hours]         - Fish/Upper pump runtimes, duty, moisture\n");
+    this->printf("  db auto roof [hours]         - RF PA runtime, WiFi metrics, CPU temp\n");
+    this->printf("  db auto room [node] [hours]  - AC/TV operational hours, board temp\n");
+    this->printf("  db auto latency [node] [hrs] - Response latency (RTT) trend & stats\n");
+    this->printf("  db auto history [limit]      - Recent automation commands audit trail\n");
+    this->printf("  db auto help                 - Show this help message\n");
+}
+
+int MeshMonShell::dbAuto(int argc, char **argv)
+{
+    if (_db == NULL) {
+        this->printf("Database is not enabled or not open.\n");
+        return -1;
+    }
+
+    if ((argc <= 1) ||
+        (strcmp(argv[1], "help") == 0) ||
+        (strcmp(argv[1], "-h") == 0) ||
+        (strcmp(argv[1], "--help") == 0) ||
+        (strcmp(argv[1], "?") == 0)) {
+        printDbAutoHelp();
+        return 0;
+    }
+
+    string subcmd = argv[1];
+
+    if (subcmd == "pump" || subcmd == "meshpump") {
+        int hours = 24;
+        if (argc >= 3) hours = atoi(argv[2]);
+        time_t since = (hours > 0) ? (time(NULL) - (hours * 3600)) : 0;
+        PumpAnalytics a;
+        if (!_db->getPumpAnalytics(0, since, a)) {
+            this->printf("Failed to query meshpump analytics.\n");
+            return -1;
+        }
+
+        this->printf("=== MeshPump Automation Analytics (Last %s) ===\n",
+                     hours > 0 ? (to_string(hours) + " hours").c_str() : "All time");
+        this->printf("Fish Tank Pump Runtime:  %u sec (%.1f%% duty cycle)\n", a.fishRunSec, a.fishDutyPct);
+        this->printf("Upper Pump Runs:         %u cycles\n", a.upRunCount);
+        this->printf("Upper Pump Runtime:      %u sec\n", a.upRunSec);
+        this->printf("Cutoff Auto-Triggers:    %u times\n", a.upCutoffTriggers);
+        this->printf("Soil Moisture Reports:   %u events (avg %.1f%%)\n", a.moistureEvents, a.avgMoisture);
+        this->printf("Total Commands / ACKs:   %u / %u\n", a.totalCommands, a.ackedCommands);
+        return 0;
+    }
+
+    if (subcmd == "roof" || subcmd == "meshroof") {
+        int hours = 24;
+        if (argc >= 3) hours = atoi(argv[2]);
+        time_t since = (hours > 0) ? (time(NULL) - (hours * 3600)) : 0;
+        RoofAnalytics a;
+        if (!_db->getRoofAnalytics(0, since, a)) {
+            this->printf("Failed to query meshroof analytics.\n");
+            return -1;
+        }
+
+        this->printf("=== MeshRoof Automation Analytics (Last %s) ===\n",
+                     hours > 0 ? (to_string(hours) + " hours").c_str() : "All time");
+        this->printf("RF Power Amp Runtime:    %u sec (%.1f%% active)\n", a.amplifyRunSec, a.amplifyDutyPct);
+        this->printf("WiFi Reports / RSSI:     %u events (avg %.1f dBm, min %.1f, max %.1f)\n",
+                     a.wifiReports, a.avgWifiRssi, a.minWifiRssi, a.maxWifiRssi);
+        this->printf("ESP32 CPU Temperature:   avg %.1f C (max %.1f C)\n", a.avgCpuTemp, a.maxCpuTemp);
+        this->printf("Reset / Reboot Events:   %u events\n", a.resetEvents);
+        this->printf("Total Commands Sent:     %u\n", a.totalCommands);
+        return 0;
+    }
+
+    if (subcmd == "room" || subcmd == "meshroom") {
+        uint32_t targetNode = 0;
+        int hours = 24;
+        if (argc == 3) {
+            if (isdigit(argv[2][0])) {
+                hours = atoi(argv[2]);
+            } else {
+                targetNode = resolveNode(argv[2]);
+            }
+        } else if (argc >= 4) {
+            targetNode = resolveNode(argv[2]);
+            hours = atoi(argv[3]);
+        }
+
+        time_t since = (hours > 0) ? (time(NULL) - (hours * 3600)) : 0;
+        RoomAnalytics a;
+        if (!_db->getRoomAnalytics(targetNode, since, a)) {
+            this->printf("Failed to query meshroom analytics.\n");
+            return -1;
+        }
+
+        this->printf("=== MeshRoom Automation Analytics (Last %s) ===\n",
+                     hours > 0 ? (to_string(hours) + " hours").c_str() : "All time");
+        this->printf("AC Active Runtime:       %u sec (%.1f%% duty)\n", a.acRunSec, a.acDutyPct);
+        this->printf("AC Target Temp:          avg %.1f C\n", a.avgAcTargetTemp);
+        this->printf("TV Active Runtime:       %u sec (%.1f%% active)\n", a.tvRunSec, a.tvDutyPct);
+        this->printf("TV Channel Changes:      %u times\n", a.tvChanChanges);
+        this->printf("RP2040 Board Temp:       avg %.1f C (max %.1f C)\n", a.avgBoardTemp, a.maxBoardTemp);
+        this->printf("Total Commands Sent:     %u\n", a.totalCommands);
+        return 0;
+    }
+
+    if (subcmd == "latency" || subcmd == "rtt") {
+        uint32_t targetNode = 0;
+        int hours = 24;
+        if (argc == 3) {
+            if (isdigit(argv[2][0])) {
+                hours = atoi(argv[2]);
+            } else {
+                targetNode = resolveNode(argv[2]);
+            }
+        } else if (argc >= 4) {
+            targetNode = resolveNode(argv[2]);
+            hours = atoi(argv[3]);
+        }
+
+        time_t since = (hours > 0) ? (time(NULL) - (hours * 3600)) : 0;
+        vector<LatencyTrendPoint> points;
+        if (!_db->getLatencyTrend(targetNode, since, points)) {
+            this->printf("Failed to query latency trend.\n");
+            return -1;
+        }
+
+        if (points.empty()) {
+            this->printf("No latency / RTT samples recorded for the specified period.\n");
+            return 0;
+        }
+
+        this->printf("=== Automation Response Latency (RTT) Trend (Last %s) ===\n",
+                     hours > 0 ? (to_string(hours) + " hours").c_str() : "All time");
+        this->printf("%-16s | %-8s | %-8s | %-8s | %-6s\n",
+                     "Time (Local)", "Avg RTT", "Min RTT", "Max RTT", "Count");
+        this->printf("-----------------+----------+----------+----------+-------\n");
+
+        for (size_t i = 0; i < points.size(); i++) {
+            const LatencyTrendPoint &pt = points[i];
+            char timeBuf[32];
+            struct tm tm;
+            localtime_r(&pt.timestamp, &tm);
+            strftime(timeBuf, sizeof(timeBuf), "%m-%d %H:%M", &tm);
+
+            char avgBuf[16], minBuf[16], maxBuf[16];
+            snprintf(avgBuf, sizeof(avgBuf), "%.1f ms", pt.avgRtt);
+            snprintf(minBuf, sizeof(minBuf), "%u ms", pt.minRtt);
+            snprintf(maxBuf, sizeof(maxBuf), "%u ms", pt.maxRtt);
+
+            this->printf("%-16s | %-8s | %-8s | %-8s | %-6u\n",
+                         timeBuf, avgBuf, minBuf, maxBuf, pt.count);
+        }
+        return 0;
+    }
+
+    if (subcmd == "history") {
+        size_t limit = 20;
+        if (argc >= 3) limit = (size_t) atoi(argv[2]);
+        vector<AutomationEvent> events;
+        if (!_db->getAutomationHistory(limit, events)) {
+            this->printf("Failed to query automation history.\n");
+            return -1;
+        }
+
+        this->printf("=== Recent Automation Commands & Events (Last %zu) ===\n", events.size());
+        this->printf("%-8s | %-9s | %-8s | %-4s | %-16s | %-10s | %-5s\n",
+                     "Time", "Node", "App", "Dir", "Command", "Param", "Stat");
+        this->printf("---------+-----------+----------+------+------------------+------------+------\n");
+
+        for (size_t i = 0; i < events.size(); i++) {
+            const AutomationEvent &e = events[i];
+            char timeBuf[32];
+            struct tm tm;
+            localtime_r(&e.meshmonTime, &tm);
+            strftime(timeBuf, sizeof(timeBuf), "%H:%M:%S", &tm);
+
+            string dirShort = (e.direction == "TX_CMD") ? "TX" : (e.direction == "RX_STATE" ? "RX" : e.direction.substr(0, 4));
+            string statShort = (e.status == "EXECUTED") ? "OK" : (e.status == "FAILED" ? "FAIL" : e.status.substr(0, 5));
+
+            this->printf("%-8s | %-9s | %-8s | %-4s | %-16s | %-10s | %-5s\n",
+                         timeBuf, e.nodeHex.c_str(), e.deviceType.substr(0, 8).c_str(),
+                         dirShort.c_str(), e.commandName.substr(0, 16).c_str(),
+                         e.actionParam.substr(0, 10).c_str(), statShort.c_str());
+        }
+        return 0;
+    }
+
+    this->printf("Unknown db auto subcommand '%s'. Type 'db auto help' for usage.\n", argv[1]);
+    return -1;
+}
+
+void MeshMonShell::printRobotHelp(void)
+{
+    this->printf("Usage:\n");
+    this->printf("  robot                    - Show live HomeMesh automation fleet status table\n");
+    this->printf("  robot <node>             - Show detailed operational status for a specific node\n");
+    this->printf("  robot help               - Show this help message\n");
+}
+
+int MeshMonShell::robot(int argc, char **argv)
+{
+    if ((argc >= 2) &&
+        ((strcmp(argv[1], "help") == 0) ||
+         (strcmp(argv[1], "-h") == 0) ||
+         (strcmp(argv[1], "--help") == 0) ||
+         (strcmp(argv[1], "?") == 0))) {
+        printRobotHelp();
+        return 0;
+    }
+
+    if (argc <= 1) {
+        printFleetRobotStatus();
+        return 0;
+    }
+
+    string nodeArg;
+    for (int i = 1; i < argc; i++) {
+        if (i > 1) nodeArg += " ";
+        nodeArg += argv[i];
+    }
+
+    uint32_t nodeId = resolveNode(nodeArg);
+    if (nodeId == 0xffffffffU) {
+        this->printf("Node '%s' not found.\n", nodeArg.c_str());
+        return -1;
+    }
+
+    printNodeRobotStatus(nodeId);
+    return 0;
+}
+
+void MeshMonShell::printFleetRobotStatus(void)
+{
+    shared_ptr<MeshMon> meshmon = dynamic_pointer_cast<MeshMon>(_client);
+    if (meshmon == NULL) {
+        this->printf("MeshMon core is not available.\n");
+        return;
+    }
+
+    map<uint32_t, AutomationNode> nodes = meshmon->getAutomationNodes();
+    if (nodes.empty()) {
+        this->printf("No HomeMesh automation nodes discovered yet.\n");
+        return;
+    }
+
+    this->printf("=== HomeMesh Smart Automation Fleet (%zu Nodes) ===\n", nodes.size());
+    this->printf("%-9s | %-8s | %-8s | %-4s | %-7s | %-20s | %-6s\n",
+                 "Node", "Name", "App", "Stat", "Uptime", "State / Telemetry", "Seen");
+    this->printf("----------+----------+----------+------+---------+----------------------+--------\n");
+
+    for (map<uint32_t, AutomationNode>::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        const AutomationNode &n = it->second;
+        string statusStr = n.online ? "ON" : "OFF";
+        string upStr = (n.uptimeSec > 0) ? (to_string(n.uptimeSec / 3600) + "h " + to_string((n.uptimeSec % 3600) / 60) + "m") : "-";
+        string stateSummary = "-";
+
+        if (n.deviceType == "meshpump") {
+            stateSummary = "Fish:" + string(n.fishPumpState ? "ON" : "OFF") +
+                           " Up:" + string(n.upPumpState ? "ON" : "OFF");
+            if (n.soilMoisture > 0.0f) {
+                char buf[16];
+                snprintf(buf, sizeof(buf), " M:%.0f%%", n.soilMoisture);
+                stateSummary += buf;
+            }
+        } else if (n.deviceType == "meshroof") {
+            stateSummary = "Amp:" + string(n.amplifyState ? "ON" : "OFF");
+            if (n.cpuTempC > 0.0f) {
+                char buf[16];
+                snprintf(buf, sizeof(buf), " CPU:%.1fC", n.cpuTempC);
+                stateSummary += buf;
+            }
+        } else if (n.deviceType == "meshroom") {
+            stateSummary = "AC:" + string(n.acPower ? "ON" : "OFF");
+            if (n.acPower) {
+                char buf[16];
+                snprintf(buf, sizeof(buf), "(%.0fC)", n.acTargetTemp);
+                stateSummary += buf;
+            }
+            stateSummary += " TV:" + string(n.tvPower ? "ON" : "OFF");
+        }
+
+        string lastSeenStr = formatRelativeTime(n.lastSeen);
+
+        this->printf("%-9s | %-8s | %-8s | %-4s | %-7s | %-20s | %-6s\n",
+                     n.nodeHex.c_str(), n.shortName.substr(0, 8).c_str(),
+                     n.deviceType.empty() ? "-" : n.deviceType.substr(0, 8).c_str(),
+                     statusStr.c_str(), upStr.substr(0, 7).c_str(),
+                     stateSummary.substr(0, 20).c_str(), lastSeenStr.substr(0, 6).c_str());
+    }
+}
+
+void MeshMonShell::printNodeRobotStatus(uint32_t nodeId)
+{
+    shared_ptr<MeshMon> meshmon = dynamic_pointer_cast<MeshMon>(_client);
+    if (meshmon == NULL) {
+        this->printf("MeshMon core is not available.\n");
+        return;
+    }
+
+    AutomationNode node;
+    if (!meshmon->getAutomationNode(nodeId, node)) {
+        this->printf("Node !%08x is not registered as a HomeMesh automation device.\n", nodeId);
+        return;
+    }
+
+    this->printf("=== HomeMesh Node Status: %s (!%08x) ===\n",
+                 node.shortName.empty() ? node.nodeHex.c_str() : node.shortName.c_str(),
+                 nodeId);
+    this->printf("  Device Type:     %s\n", node.deviceType.empty() ? "unknown" : node.deviceType.c_str());
+    this->printf("  Firmware:        %s (HW: %s)\n",
+                 node.version.empty() ? "-" : node.version.c_str(),
+                 node.hardware.empty() ? "-" : node.hardware.c_str());
+    if (!node.capabilities.empty()) {
+        this->printf("  Capabilities:    %s\n", node.capabilities.c_str());
+    }
+    this->printf("  Liveness:        %s (Last seen: %s)\n",
+                 node.online ? "ONLINE" : "OFFLINE", formatRelativeTime(node.lastSeen).c_str());
+    this->printf("  Uptime:          %u seconds (%u reboot count)\n", node.uptimeSec, node.rebootCount);
+    if (node.lastRttMs > 0 || node.avgRttMs > 0) {
+        this->printf("  Response RTT:    %u ms (Avg: %u ms, %u samples)\n",
+                     node.lastRttMs, node.avgRttMs, node.rttSampleCount);
+    }
+    this->printf("  HA Discovered:   %s\n", node.haDiscovered ? "Yes" : "No");
+
+    if (node.deviceType == "meshpump") {
+        this->printf("  MeshPump States:\n");
+        this->printf("    Fish Tank Pump:     %s\n", node.fishPumpState ? "ON" : "OFF");
+        this->printf("    Upper Plant Pump:   %s (Cutoff: %u sec)\n", node.upPumpState ? "ON" : "OFF", node.upPumpCutoffSec);
+        this->printf("    Soil Moisture:      %.1f %%\n", node.soilMoisture);
+        this->printf("    Water Reservoir:    %s\n", node.reservoirEmpty ? "EMPTY (Warning)" : "OK");
+        if (!node.ledMessage.empty()) {
+            this->printf("    LED Display:        '%s'\n", node.ledMessage.c_str());
+        }
+    } else if (node.deviceType == "meshroof") {
+        this->printf("  MeshRoof States:\n");
+        this->printf("    RF Power Amplifier: %s\n", node.amplifyState ? "ON" : "OFF");
+        if (!node.wifiStatus.empty()) {
+            this->printf("    WiFi Status:        %s\n", node.wifiStatus.c_str());
+        }
+        if (!node.ipAddress.empty()) {
+            this->printf("    IP Address:         %s\n", node.ipAddress.c_str());
+        }
+        if (node.cpuTempC > 0.0f) {
+            this->printf("    ESP32 CPU Temp:     %.1f C\n", node.cpuTempC);
+        }
+        this->printf("    Reset Count:        %u\n", node.resetCount);
+    } else if (node.deviceType == "meshroom") {
+        this->printf("  MeshRoom States:\n");
+        this->printf("    AC Power:           %s\n", node.acPower ? "ON" : "OFF");
+        this->printf("    AC Mode / Target:   %s, %.1f C\n", node.acMode.c_str(), node.acTargetTemp);
+        this->printf("    AC Fan / Vane:      %s, %s\n", node.acFan.c_str(), node.acVane.c_str());
+        this->printf("    TV Power / Volume:  %s, Vol %d, Chan %d\n", node.tvPower ? "ON" : "OFF", node.tvVolume, node.tvChannel);
+        this->printf("    TV Mute / Input:    %s, %s\n", node.tvMute ? "MUTED" : "UNMUTED", node.tvInput.c_str());
+        if (node.boardTempC > 0.0f) {
+            this->printf("    RP2040 Board Temp:  %.1f C\n", node.boardTempC);
+        }
+    }
 }
 
 /*

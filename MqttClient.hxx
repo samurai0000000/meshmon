@@ -13,16 +13,21 @@
 #include <mutex>
 #include <queue>
 #include <string>
+#include <vector>
+#include <functional>
 #include <thread>
 #include <libmeshtastic.h>
 
 using namespace std;
 
 struct mosquitto;
+struct mosquitto_message;
 
 class MqttClient {
 
 public:
+
+    typedef function<void(const string &topic, const string &payload)> MessageCallback;
 
     MqttClient();
     MqttClient(const string &server, uint16_t port,
@@ -44,6 +49,9 @@ public:
     bool publish(const meshtastic_MeshPacket &p);
     bool publish(const string &topic, const string &payload, bool retain);
 
+    void setMessageCallback(MessageCallback cb);
+    void subscribe(const string &topic);
+
 private:
 
     struct TextPublish {
@@ -57,6 +65,8 @@ private:
     static void onPublish(struct mosquitto *mosq, void *obj, int mid);
     static void onSubscribe(struct mosquitto *mosq, void *obj,
                             int mid, int qos_count, const int *granted_qos);
+    static void onMessage(struct mosquitto *mosq, void *obj,
+                          const struct mosquitto_message *message);
 
     static void thread_function(MqttClient *mqtt);
     void run(void);
@@ -87,6 +97,9 @@ private:
     queue<TextPublish> _textQueue;
     atomic<unsigned int> _published;
     atomic<unsigned int> _publishConfirmed;
+
+    MessageCallback _messageCallback;
+    vector<string> _extraSubscriptions;
 
 };
 

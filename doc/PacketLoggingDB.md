@@ -152,6 +152,24 @@ CREATE TABLE IF NOT EXISTS traceroutes (
     route_snrs TEXT NOT NULL,              -- Comma-separated SNR values
     FOREIGN KEY(from_node) REFERENCES nodes(node_id)
 );
+
+-- 7. HomeMesh Automation & Robot Command Audit Log
+CREATE TABLE IF NOT EXISTS automation_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    meshmon_time INTEGER NOT NULL,         -- Host arrival epoch timestamp (seconds)
+    node_id INTEGER NOT NULL,              -- Meshtastic node integer ID (e.g. 0x2bf941d4)
+    node_hex TEXT NOT NULL,                -- Node hex string (e.g. "!2bf941d4")
+    device_type TEXT NOT NULL,             -- 'meshpump', 'meshroof', 'meshroom'
+    direction TEXT NOT NULL,               -- 'TX_CMD' (MeshMon->Node) or 'RX_STATE' (Node->MeshMon)
+    subsystem TEXT NOT NULL,               -- 'pump', 'led', 'amplify', 'wifi', 'ac', 'tv', 'env', 'system'
+    command_name TEXT NOT NULL,            -- e.g. 'PUMP_FISH_ON', 'AC_TEMP', 'BOOT_UP', 'UPTIME', 'DEVICE_TYPE_MIGRATION'
+    action_param TEXT,                     -- e.g. '24C', 'cutoff=30s', 'uptime=14d', 'meshroom -> meshroof'
+    status TEXT NOT NULL,                  -- 'EXECUTED', 'ACKED', 'TIMEOUT', 'FAILED'
+    initiator TEXT NOT NULL                -- 'HOMEASSISTANT', 'SHELL', 'SCHEDULE', 'RF'
+);
+CREATE INDEX IF NOT EXISTS idx_auto_events_node ON automation_events(node_id, meshmon_time);
+CREATE INDEX IF NOT EXISTS idx_auto_events_dev ON automation_events(device_type, meshmon_time);
+CREATE INDEX IF NOT EXISTS idx_auto_events_sub ON automation_events(subsystem, meshmon_time);
 ```
 
 ---

@@ -14,8 +14,74 @@
 #include <Calibration.hxx>
 #include <MeshMonDb.hxx>
 #include <map>
+#include <chrono>
 
 using namespace std;
+
+struct AutomationNode {
+    uint32_t nodeId;
+    string nodeHex;
+    string shortName;
+    string longName;
+    string deviceType;       // "meshpump", "meshroof", "meshroom"
+    string version;
+    string hardware;
+    string capabilities;
+    time_t firstSeen;
+    time_t lastSeen;
+    uint32_t uptimeSec;
+    time_t lastUptimeReportTime;
+    uint32_t rebootCount;
+    bool online;
+    bool haDiscovered;
+
+    // Response Latency (RTT) tracking
+    uint32_t lastRttMs;
+    uint32_t avgRttMs;
+    uint32_t rttSampleCount;
+
+    // meshpump states
+    bool fishPumpState;
+    bool upPumpState;
+    uint32_t upPumpCutoffSec;
+    float soilMoisture;
+    bool reservoirEmpty;
+    string ledMessage;
+    uint32_t ledScrollDelay;
+
+    // meshroof states
+    bool amplifyState;
+    string wifiStatus;
+    int wifiRssi;
+    string ipAddress;
+    float cpuTempC;
+    uint32_t resetCount;
+
+    // meshroom states
+    bool acPower;
+    float acTargetTemp;
+    string acMode;
+    string acFan;
+    string acVane;
+    bool tvPower;
+    int tvVolume;
+    int tvChannel;
+    bool tvMute;
+    string tvInput;
+    float boardTempC;
+    float roomTempC;
+
+    AutomationNode() :
+        nodeId(0), firstSeen(0), lastSeen(0), uptimeSec(0),
+        lastUptimeReportTime(0), rebootCount(0), online(false), haDiscovered(false),
+        lastRttMs(0), avgRttMs(0), rttSampleCount(0),
+        fishPumpState(false), upPumpState(false), upPumpCutoffSec(0),
+        soilMoisture(0.0f), reservoirEmpty(false), ledScrollDelay(0),
+        amplifyState(false), wifiRssi(0), cpuTempC(0.0f), resetCount(0),
+        acPower(false), acTargetTemp(24.0f), acMode("off"), acFan("auto"), acVane("auto"),
+        tvPower(false), tvVolume(20), tvChannel(1), tvMute(false), tvInput("HDMI1"),
+        boardTempC(0.0f), roomTempC(0.0f) {}
+};
 
 class MqttClient;
 
@@ -36,6 +102,12 @@ public:
 
     float getCpuTempC(void);
     bool isSensorForwardAllowed(uint32_t nodeId) const;
+
+    // HomeMesh Automation Fleet Access
+    map<uint32_t, AutomationNode> getAutomationNodes(void) const;
+    bool getAutomationNode(uint32_t nodeId, AutomationNode &node) const;
+    bool sendAutomationCommand(uint32_t nodeId, const string &cmd,
+                               const string &initiator = "SHELL");
 
 protected:
 
@@ -103,6 +175,27 @@ protected:
     void syncRadioClock(void);
     void publishGatewayStatsToMqtt(void);
 
+    // HomeMesh Automation Handling
+    void processAutomationMessage(const meshtastic_MeshPacket &packet,
+                                  const string &message);
+    void parseRollcallResponse(const meshtastic_MeshPacket &packet,
+                               const string &text, uint32_t rttMs = 0);
+    void parseBootupMessage(const meshtastic_MeshPacket &packet,
+                            const string &text, uint32_t rttMs = 0);
+    void parseUptimeMessage(const meshtastic_MeshPacket &packet,
+                            const string &text, uint32_t rttMs = 0);
+    void parseMeshPumpStatus(const meshtastic_MeshPacket &packet,
+                             const string &text, uint32_t rttMs = 0);
+    void parseMeshRoofStatus(const meshtastic_MeshPacket &packet,
+                             const string &text, uint32_t rttMs = 0);
+    void parseMeshRoomStatus(const meshtastic_MeshPacket &packet,
+                             const string &text, uint32_t rttMs = 0);
+    void publishAutomationDiscovery(AutomationNode &node);
+    void revokeAutomationDiscovery(uint32_t nodeId, const string &oldDeviceType);
+    void publishAutomationState(const AutomationNode &node);
+    void handleMqttCommand(const string &topic, const string &payload);
+    void checkAutomationWatchdog(void);
+
 public:
 
     inline const shared_ptr<MqttClient> meshtasticMqtt(void) const {
@@ -148,6 +241,15 @@ private:
     map<uint32_t, unsigned int> _haPowerMetrics;
     map<uint32_t, string> _haDeviceNames;
     map<uint32_t, unsigned int> _haDeviceMetrics;
+
+    mutable mutex _autoNodesMutex;
+    map<uint32_t, AutomationNode> _autoNodes;
+
+    struct PendingCommand {
+        string command;
+        chrono::steady_clock::time_point txTime;
+    };
+    map<uint32_t, PendingCommand> _pendingCommands;
 
 };
 

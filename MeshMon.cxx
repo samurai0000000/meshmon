@@ -256,6 +256,9 @@ void MeshMon::setOwnMqtt(const string &server, uint16_t port,
 
     _myownMqtt = make_shared<MqttClient>(server, port, user, password,
                                          topic, tls);
+    _myownMqtt->setMessageCallback(bind(&MeshMon::handleMqttCommand, this,
+                                        placeholders::_1, placeholders::_2));
+    _myownMqtt->subscribe("meshmon/cmd/#");
     _myownMqtt->start();
 }
 
@@ -416,6 +419,15 @@ void MeshMon::gotPacket(const meshtastic_MeshPacket &packet)
         _db->enqueuePacket(packet, meshmonTime);
     }
 
+    if (packet.from != 0 && isSensorForwardAllowed(packet.from)) {
+        lock_guard<mutex> lock(_autoNodesMutex);
+        map<uint32_t, AutomationNode>::iterator it = _autoNodes.find(packet.from);
+        if (it != _autoNodes.end()) {
+            it->second.lastSeen = meshmonTime;
+            it->second.online = true;
+        }
+    }
+
     MeshClient::gotPacket(packet);
 }
 
@@ -425,6 +437,8 @@ void MeshMon::gotTextMessage(const meshtastic_MeshPacket &packet,
     if (_db != NULL) {
         _db->enqueueTextMessage(packet, message, time(NULL));
     }
+
+    processAutomationMessage(packet, message);
 
     bool result = false;
 
@@ -588,6 +602,170 @@ static string haDiscoveryJson(const string &name,
        << "}"
        << "}";
 
+    return os.str();
+}
+
+static string haSwitchDiscoveryJson(const string &name,
+                                    const string &uniqueId,
+                                    const string &stateTopic,
+                                    const string &commandTopic,
+                                    const string &identifier,
+                                    const string &deviceName)
+{
+    ostringstream os;
+    os << "{"
+       << "\"name\":\"" << jsonEscape(name) << "\","
+       << "\"unique_id\":\"" << jsonEscape(uniqueId) << "\","
+       << "\"state_topic\":\"" << jsonEscape(stateTopic) << "\","
+       << "\"command_topic\":\"" << jsonEscape(commandTopic) << "\","
+       << "\"payload_on\":\"ON\","
+       << "\"payload_off\":\"OFF\","
+       << "\"state_on\":\"ON\","
+       << "\"state_off\":\"OFF\","
+       << "\"device\":{"
+       << "\"identifiers\":[\"" << jsonEscape(identifier) << "\"],"
+       << "\"name\":\"" << jsonEscape(deviceName) << "\","
+       << "\"manufacturer\":\"Meshtastic\""
+       << "}"
+       << "}";
+    return os.str();
+}
+
+static string haButtonDiscoveryJson(const string &name,
+                                    const string &uniqueId,
+                                    const string &commandTopic,
+                                    const string &payloadPress,
+                                    const string &identifier,
+                                    const string &deviceName)
+{
+    ostringstream os;
+    os << "{"
+       << "\"name\":\"" << jsonEscape(name) << "\","
+       << "\"unique_id\":\"" << jsonEscape(uniqueId) << "\","
+       << "\"command_topic\":\"" << jsonEscape(commandTopic) << "\","
+       << "\"payload_press\":\"" << jsonEscape(payloadPress) << "\","
+       << "\"device\":{"
+       << "\"identifiers\":[\"" << jsonEscape(identifier) << "\"],"
+       << "\"name\":\"" << jsonEscape(deviceName) << "\","
+       << "\"manufacturer\":\"Meshtastic\""
+       << "}"
+       << "}";
+    return os.str();
+}
+
+static string haNumberDiscoveryJson(const string &name,
+                                    const string &uniqueId,
+                                    const string &stateTopic,
+                                    const string &commandTopic,
+                                    int minVal, int maxVal, int step,
+                                    const string &unit,
+                                    const string &identifier,
+                                    const string &deviceName)
+{
+    ostringstream os;
+    os << "{"
+       << "\"name\":\"" << jsonEscape(name) << "\","
+       << "\"unique_id\":\"" << jsonEscape(uniqueId) << "\","
+       << "\"state_topic\":\"" << jsonEscape(stateTopic) << "\","
+       << "\"command_topic\":\"" << jsonEscape(commandTopic) << "\","
+       << "\"min\":" << minVal << ","
+       << "\"max\":" << maxVal << ","
+       << "\"step\":" << step << ",";
+    if (!unit.empty()) {
+        os << "\"unit_of_measurement\":\"" << jsonEscape(unit) << "\",";
+    }
+    os << "\"device\":{"
+       << "\"identifiers\":[\"" << jsonEscape(identifier) << "\"],"
+       << "\"name\":\"" << jsonEscape(deviceName) << "\","
+       << "\"manufacturer\":\"Meshtastic\""
+       << "}"
+       << "}";
+    return os.str();
+}
+
+static string haTextDiscoveryJson(const string &name,
+                                  const string &uniqueId,
+                                  const string &stateTopic,
+                                  const string &commandTopic,
+                                  const string &identifier,
+                                  const string &deviceName)
+{
+    ostringstream os;
+    os << "{"
+       << "\"name\":\"" << jsonEscape(name) << "\","
+       << "\"unique_id\":\"" << jsonEscape(uniqueId) << "\","
+       << "\"state_topic\":\"" << jsonEscape(stateTopic) << "\","
+       << "\"command_topic\":\"" << jsonEscape(commandTopic) << "\","
+       << "\"device\":{"
+       << "\"identifiers\":[\"" << jsonEscape(identifier) << "\"],"
+       << "\"name\":\"" << jsonEscape(deviceName) << "\","
+       << "\"manufacturer\":\"Meshtastic\""
+       << "}"
+       << "}";
+    return os.str();
+}
+
+static string haBinarySensorDiscoveryJson(const string &name,
+                                          const string &uniqueId,
+                                          const string &stateTopic,
+                                          const string &deviceClass,
+                                          const string &identifier,
+                                          const string &deviceName)
+{
+    ostringstream os;
+    os << "{"
+       << "\"name\":\"" << jsonEscape(name) << "\","
+       << "\"unique_id\":\"" << jsonEscape(uniqueId) << "\","
+       << "\"state_topic\":\"" << jsonEscape(stateTopic) << "\",";
+    if (!deviceClass.empty()) {
+        os << "\"device_class\":\"" << jsonEscape(deviceClass) << "\",";
+    }
+    os << "\"payload_on\":\"ON\","
+       << "\"payload_off\":\"OFF\","
+       << "\"device\":{"
+       << "\"identifiers\":[\"" << jsonEscape(identifier) << "\"],"
+       << "\"name\":\"" << jsonEscape(deviceName) << "\","
+       << "\"manufacturer\":\"Meshtastic\""
+       << "}"
+       << "}";
+    return os.str();
+}
+
+static string haClimateDiscoveryJson(const string &name,
+                                     const string &uniqueId,
+                                     const string &modeStateTopic,
+                                     const string &modeCmdTopic,
+                                     const string &tempStateTopic,
+                                     const string &tempCmdTopic,
+                                     const string &fanStateTopic,
+                                     const string &fanCmdTopic,
+                                     const string &currentTempTopic,
+                                     const string &identifier,
+                                     const string &deviceName)
+{
+    ostringstream os;
+    os << "{"
+       << "\"name\":\"" << jsonEscape(name) << "\","
+       << "\"unique_id\":\"" << jsonEscape(uniqueId) << "\","
+       << "\"mode_state_topic\":\"" << jsonEscape(modeStateTopic) << "\","
+       << "\"mode_command_topic\":\"" << jsonEscape(modeCmdTopic) << "\","
+       << "\"temperature_state_topic\":\"" << jsonEscape(tempStateTopic) << "\","
+       << "\"temperature_command_topic\":\"" << jsonEscape(tempCmdTopic) << "\","
+       << "\"fan_mode_state_topic\":\"" << jsonEscape(fanStateTopic) << "\","
+       << "\"fan_mode_command_topic\":\"" << jsonEscape(fanCmdTopic) << "\","
+       << "\"current_temperature_topic\":\"" << jsonEscape(currentTempTopic) << "\","
+       << "\"min_temp\":16,"
+       << "\"max_temp\":30,"
+       << "\"temp_step\":1,"
+       << "\"temperature_unit\":\"C\","
+       << "\"modes\":[\"off\",\"cool\",\"heat\",\"dry\",\"fan_only\",\"auto\"],"
+       << "\"fan_modes\":[\"auto\",\"quiet\",\"low\",\"medium\",\"high\",\"max\"],"
+       << "\"device\":{"
+       << "\"identifiers\":[\"" << jsonEscape(identifier) << "\"],"
+       << "\"name\":\"" << jsonEscape(deviceName) << "\","
+       << "\"manufacturer\":\"Meshtastic\""
+       << "}"
+       << "}";
     return os.str();
 }
 
@@ -1205,6 +1383,7 @@ void MeshMon::crontab(const struct tm *now)
     MeshClient::crontab(now);
 
     publishGatewayStatsToMqtt();
+    checkAutomationWatchdog();
 
     if (now != NULL && now->tm_min == 0) {
         syncRadioClock();
@@ -1787,6 +1966,30 @@ void MeshMon::publishGatewayStatsToMqtt(void)
                             "meshmon/gateway/db_size_mb", "data_size", "MB",
                             "meshmon_gateway", "MeshMon Gateway"),
             true);
+        _myownMqtt->publish(
+            "homeassistant/sensor/meshmon_gateway_auto_nodes_total/config",
+            haDiscoveryJson("Automation Total Nodes", "meshmon_gateway_auto_nodes_total",
+                            "meshmon/gateway/auto_nodes_total", "", "nodes",
+                            "meshmon_gateway", "MeshMon Gateway"),
+            true);
+        _myownMqtt->publish(
+            "homeassistant/sensor/meshmon_gateway_auto_nodes_online/config",
+            haDiscoveryJson("Automation Online Nodes", "meshmon_gateway_auto_nodes_online",
+                            "meshmon/gateway/auto_nodes_online", "", "nodes",
+                            "meshmon_gateway", "MeshMon Gateway"),
+            true);
+        _myownMqtt->publish(
+            "homeassistant/sensor/meshmon_gateway_auto_avg_rtt/config",
+            haDiscoveryJson("Automation Fleet Avg RTT", "meshmon_gateway_auto_avg_rtt",
+                            "meshmon/gateway/auto_avg_rtt", "duration", "ms",
+                            "meshmon_gateway", "MeshMon Gateway"),
+            true);
+        _myownMqtt->publish(
+            "homeassistant/sensor/meshmon_gateway_auto_events_24h/config",
+            haDiscoveryJson("Automation Events (24h)", "meshmon_gateway_auto_events_24h",
+                            "meshmon/gateway/auto_events_24h", "", "events",
+                            "meshmon_gateway", "MeshMon Gateway"),
+            true);
         _haGatewayDiscovered = true;
     }
 
@@ -1895,6 +2098,899 @@ void MeshMon::publishGatewayStatsToMqtt(void)
     float dbMb = ((float) dbBytes) / (1024.0f * 1024.0f);
     snprintf(buf, sizeof(buf), "%.2f", dbMb);
     _myownMqtt->publish("meshmon/gateway/db_size_mb", string(buf), true);
+
+    // Gateway HomeMesh Automation Rollup Metrics
+    uint32_t autoTotal = 0;
+    uint32_t autoOnline = 0;
+    uint64_t sumRtt = 0;
+    uint32_t rttCount = 0;
+    {
+        lock_guard<mutex> lock(_autoNodesMutex);
+        autoTotal = (uint32_t) _autoNodes.size();
+        for (map<uint32_t, AutomationNode>::const_iterator it = _autoNodes.begin(); it != _autoNodes.end(); ++it) {
+            if (it->second.online) {
+                autoOnline++;
+            }
+            if (it->second.avgRttMs > 0) {
+                sumRtt += it->second.avgRttMs;
+                rttCount++;
+            }
+        }
+    }
+
+    snprintf(buf, sizeof(buf), "%u", autoTotal);
+    _myownMqtt->publish("meshmon/gateway/auto_nodes_total", string(buf), true);
+    snprintf(buf, sizeof(buf), "%u", autoOnline);
+    _myownMqtt->publish("meshmon/gateway/auto_nodes_online", string(buf), true);
+
+    if (rttCount > 0) {
+        uint32_t avgRtt = (uint32_t)(sumRtt / rttCount);
+        snprintf(buf, sizeof(buf), "%u", avgRtt);
+        _myownMqtt->publish("meshmon/gateway/auto_avg_rtt", string(buf), true);
+    } else {
+        _myownMqtt->publish("meshmon/gateway/auto_avg_rtt", "0", true);
+    }
+
+    uint32_t autoEvents24h = 0;
+    if (_db->getAutomationEventCount(dayAgo, autoEvents24h)) {
+        snprintf(buf, sizeof(buf), "%u", autoEvents24h);
+        _myownMqtt->publish("meshmon/gateway/auto_events_24h", string(buf), true);
+    }
+}
+
+map<uint32_t, AutomationNode> MeshMon::getAutomationNodes(void) const
+{
+    lock_guard<mutex> lock(_autoNodesMutex);
+    return _autoNodes;
+}
+
+bool MeshMon::getAutomationNode(uint32_t nodeId, AutomationNode &node) const
+{
+    lock_guard<mutex> lock(_autoNodesMutex);
+    map<uint32_t, AutomationNode>::const_iterator it = _autoNodes.find(nodeId);
+    if (it == _autoNodes.end()) {
+        return false;
+    }
+    node = it->second;
+    return true;
+}
+
+bool MeshMon::sendAutomationCommand(uint32_t nodeId, const string &cmd,
+                                    const string &initiator)
+{
+    if (nodeId == 0) {
+        return false;
+    }
+
+    int robotChan = getRobotChannel();
+    uint8_t chan = (robotChan >= 0) ? (uint8_t) robotChan : 0;
+
+    {
+        lock_guard<mutex> lock(_autoNodesMutex);
+        PendingCommand pc;
+        pc.command = cmd;
+        pc.txTime = chrono::steady_clock::now();
+        _pendingCommands[nodeId] = pc;
+    }
+
+    bool sent = textMessage(nodeId, chan, cmd);
+    if (_db != NULL) {
+        string devType = "";
+        {
+            lock_guard<mutex> lock(_autoNodesMutex);
+            if (_autoNodes.find(nodeId) != _autoNodes.end()) {
+                devType = _autoNodes[nodeId].deviceType;
+            }
+        }
+        _db->enqueueAutomationEvent(time(NULL), nodeId, devType, "TX_CMD",
+                                    "command", cmd, "", sent ? "EXECUTED" : "FAILED",
+                                    initiator);
+    }
+    return sent;
+}
+
+void MeshMon::processAutomationMessage(const meshtastic_MeshPacket &packet,
+                                      const string &message)
+{
+    if (packet.from == 0 || packet.from == whoami()) {
+        return;
+    }
+
+    if (!isSensorForwardAllowed(packet.from)) {
+        return;
+    }
+
+    string text = message;
+    trimWhitespace(text);
+    if (text.empty()) {
+        return;
+    }
+
+    uint32_t rttMs = 0;
+    {
+        lock_guard<mutex> lock(_autoNodesMutex);
+        auto it = _pendingCommands.find(packet.from);
+        if (it != _pendingCommands.end()) {
+            auto elapsed = chrono::duration_cast<chrono::milliseconds>(chrono::steady_clock::now() - it->second.txTime).count();
+            if (elapsed > 0 && elapsed < 60000) {
+                rttMs = (uint32_t) elapsed;
+            }
+            _pendingCommands.erase(it);
+        }
+    }
+
+    time_t now = time(NULL);
+    {
+        lock_guard<mutex> lock(_autoNodesMutex);
+        AutomationNode &node = _autoNodes[packet.from];
+        node.nodeId = packet.from;
+        node.nodeHex = nodeHexId(packet.from);
+        node.shortName = SimpleClient::lookupShortName(packet.from, true);
+        node.longName = SimpleClient::lookupLongName(packet.from, true);
+        node.lastSeen = now;
+        if (node.firstSeen == 0) {
+            node.firstSeen = now;
+        }
+        node.online = true;
+        if (rttMs > 0) {
+            node.lastRttMs = rttMs;
+            node.rttSampleCount++;
+            if (node.avgRttMs == 0) {
+                node.avgRttMs = rttMs;
+            } else {
+                node.avgRttMs = (uint32_t)(node.avgRttMs * 0.75f + rttMs * 0.25f);
+            }
+        }
+    }
+
+    if (rttMs > 0 && _myownMqtt != NULL) {
+        string id = nodeHexId(packet.from);
+        char rttBuf[32];
+        snprintf(rttBuf, sizeof(rttBuf), "%u", rttMs);
+        _myownMqtt->publish("meshmon/" + id + "/rtt", string(rttBuf), true);
+    }
+
+    string lower = text;
+    toLowercase(lower);
+
+    if (lower.find("boot-up:") == 0 || lower.find("boot-up ") == 0) {
+        parseBootupMessage(packet, text, rttMs);
+    } else if (lower.find("uptime:") == 0 || lower.find("uptime ") == 0) {
+        parseUptimeMessage(packet, text, rttMs);
+    } else if (lower.find("rollcall:") == 0) {
+        parseRollcallResponse(packet, text, rttMs);
+    } else {
+        string devType;
+        {
+            lock_guard<mutex> lock(_autoNodesMutex);
+            devType = _autoNodes[packet.from].deviceType;
+        }
+
+        if (devType == "meshpump" || lower.find("fish") != string::npos ||
+            lower.find("pump") != string::npos || lower.find("soil") != string::npos ||
+            lower.find("water") != string::npos) {
+            parseMeshPumpStatus(packet, text, rttMs);
+        } else if (devType == "meshroof" || lower.find("amplify") != string::npos ||
+                   lower.find("wifi") != string::npos || lower.find("net:") != string::npos ||
+                   lower.find("reset") != string::npos) {
+            parseMeshRoofStatus(packet, text, rttMs);
+        } else if (devType == "meshroom" || lower.find("ac:") != string::npos ||
+                   lower.find("tv:") != string::npos || lower.find("ac ") != string::npos ||
+                   lower.find("tv ") != string::npos) {
+            parseMeshRoomStatus(packet, text, rttMs);
+        }
+    }
+}
+
+void MeshMon::parseBootupMessage(const meshtastic_MeshPacket &packet,
+                                 const string &text, uint32_t rttMs)
+{
+    time_t now = time(NULL);
+    string shortName;
+    size_t colon = text.find(':');
+    if (colon != string::npos) {
+        shortName = text.substr(colon + 1);
+        trimWhitespace(shortName);
+    }
+
+    {
+        lock_guard<mutex> lock(_autoNodesMutex);
+        AutomationNode &node = _autoNodes[packet.from];
+        if (!shortName.empty()) {
+            node.shortName = shortName;
+        }
+        node.online = true;
+        node.lastSeen = now;
+        node.rebootCount++;
+        node.uptimeSec = 0;
+    }
+
+    if (_db != NULL) {
+        string devType;
+        {
+            lock_guard<mutex> lock(_autoNodesMutex);
+            devType = _autoNodes[packet.from].deviceType;
+        }
+        _db->enqueueAutomationEvent(now, packet.from, devType, "RX_STATE",
+                                    "system", "BOOT_UP", shortName, "EXECUTED", "RF", rttMs);
+    }
+
+    // Auto-discover capabilities via targeted rollcall
+    char hexId[16];
+    snprintf(hexId, sizeof(hexId), "!%08x", packet.from);
+    string rollcallCmd = "rollcall " + string(hexId);
+    sendAutomationCommand(packet.from, rollcallCmd, "SYSTEM");
+}
+
+void MeshMon::parseUptimeMessage(const meshtastic_MeshPacket &packet,
+                                 const string &text, uint32_t rttMs)
+{
+    time_t now = time(NULL);
+    string upStr = text;
+    size_t colon = text.find(':');
+    if (colon != string::npos) {
+        upStr = text.substr(colon + 1);
+        trimWhitespace(upStr);
+    }
+
+    uint32_t days = 0, hours = 0, mins = 0, secs = 0;
+    uint32_t totalSec = 0;
+
+    // Support formats: "1d 2h 3m 4s", "02:03:04", "12345s", "12345"
+    if (sscanf(upStr.c_str(), "%ud %uh %um %us", &days, &hours, &mins, &secs) >= 1 ||
+        sscanf(upStr.c_str(), "%ud %uh %um", &days, &hours, &mins) >= 1 ||
+        sscanf(upStr.c_str(), "%uh %um %us", &hours, &mins, &secs) >= 1 ||
+        sscanf(upStr.c_str(), "%um %us", &mins, &secs) >= 1 ||
+        sscanf(upStr.c_str(), "%u:%u:%u", &hours, &mins, &secs) == 3) {
+        totalSec = days * 86400 + hours * 3600 + mins * 60 + secs;
+    } else {
+        uint32_t val = 0;
+        if (sscanf(upStr.c_str(), "%u", &val) == 1) {
+            totalSec = val;
+        }
+    }
+
+    bool silentReboot = false;
+    {
+        lock_guard<mutex> lock(_autoNodesMutex);
+        AutomationNode &node = _autoNodes[packet.from];
+        if (node.uptimeSec > 0 && totalSec > 0 && totalSec < node.uptimeSec) {
+            silentReboot = true;
+            node.rebootCount++;
+        }
+        node.uptimeSec = totalSec;
+        node.lastUptimeReportTime = now;
+        node.lastSeen = now;
+        node.online = true;
+    }
+
+    if (_db != NULL) {
+        string devType;
+        {
+            lock_guard<mutex> lock(_autoNodesMutex);
+            devType = _autoNodes[packet.from].deviceType;
+        }
+        _db->enqueueAutomationEvent(now, packet.from, devType, "RX_STATE",
+                                    "system", silentReboot ? "REBOOT_DETECTED" : "UPTIME",
+                                    upStr, "EXECUTED", "RF", rttMs);
+    }
+
+    if (_myownMqtt != NULL) {
+        string id = nodeHexId(packet.from);
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%u", totalSec);
+        _myownMqtt->publish("meshmon/" + id + "/uptime", string(buf), true);
+    }
+}
+
+void MeshMon::parseRollcallResponse(const meshtastic_MeshPacket &packet,
+                                    const string &text, uint32_t rttMs)
+{
+    // Format: "rollcall: app=meshpump ver=2.1.2 hw=linux caps=pump_fish,pump_up,led,env"
+    time_t now = time(NULL);
+    string payload = text;
+    size_t colon = text.find(':');
+    if (colon != string::npos) {
+        payload = text.substr(colon + 1);
+        trimWhitespace(payload);
+    }
+
+    string app, ver, hw, caps;
+    istringstream iss(payload);
+    string token;
+    while (iss >> token) {
+        size_t eq = token.find('=');
+        if (eq != string::npos) {
+            string key = token.substr(0, eq);
+            string val = token.substr(eq + 1);
+            if (key == "app") app = val;
+            else if (key == "ver") ver = val;
+            else if (key == "hw") hw = val;
+            else if (key == "caps") caps = val;
+        }
+    }
+
+    if (app.empty()) {
+        return;
+    }
+
+    string oldType;
+    bool typeChanged = false;
+    AutomationNode nodeCopy;
+
+    {
+        lock_guard<mutex> lock(_autoNodesMutex);
+        AutomationNode &node = _autoNodes[packet.from];
+        oldType = node.deviceType;
+        if (!oldType.empty() && oldType != app) {
+            typeChanged = true;
+        }
+        node.deviceType = app;
+        node.version = ver;
+        node.hardware = hw;
+        node.capabilities = caps;
+        node.online = true;
+        node.lastSeen = now;
+        nodeCopy = node;
+    }
+
+    if (typeChanged && _myownMqtt != NULL) {
+        revokeAutomationDiscovery(packet.from, oldType);
+    }
+
+    if (_myownMqtt != NULL) {
+        publishAutomationDiscovery(nodeCopy);
+        publishAutomationState(nodeCopy);
+    }
+
+    if (_db != NULL) {
+        if (typeChanged) {
+            _db->enqueueAutomationEvent(now, packet.from, app, "RX_STATE",
+                                        "system", "DEVICE_TYPE_MIGRATION",
+                                        oldType + " -> " + app, "EXECUTED", "RF", rttMs);
+        }
+        _db->enqueueAutomationEvent(now, packet.from, app, "RX_STATE",
+                                    "system", "ROLLCALL", payload, "EXECUTED", "RF", rttMs);
+    }
+}
+
+void MeshMon::parseMeshPumpStatus(const meshtastic_MeshPacket &packet,
+                                  const string &text, uint32_t rttMs)
+{
+    time_t now = time(NULL);
+    string lower = text;
+    toLowercase(lower);
+    bool stateUpdated = false;
+    AutomationNode nodeCopy;
+
+    {
+        lock_guard<mutex> lock(_autoNodesMutex);
+        AutomationNode &node = _autoNodes[packet.from];
+        if (node.deviceType.empty()) node.deviceType = "meshpump";
+        node.lastSeen = now;
+        node.online = true;
+
+        if (lower.find("fish is on") != string::npos || lower.find("fish on") != string::npos) {
+            node.fishPumpState = true;
+            stateUpdated = true;
+            if (_db != NULL) _db->enqueueAutomationEvent(now, packet.from, "meshpump", "RX_STATE", "pump", "PUMP_FISH_ON", "ON", "EXECUTED", "RF", rttMs);
+        } else if (lower.find("fish is off") != string::npos || lower.find("fish off") != string::npos) {
+            node.fishPumpState = false;
+            stateUpdated = true;
+            if (_db != NULL) _db->enqueueAutomationEvent(now, packet.from, "meshpump", "RX_STATE", "pump", "PUMP_FISH_OFF", "OFF", "EXECUTED", "RF", rttMs);
+        }
+
+        if (lower.find("up is on") != string::npos || lower.find("up on") != string::npos || lower.find("pump is on") != string::npos) {
+            node.upPumpState = true;
+            stateUpdated = true;
+            if (_db != NULL) _db->enqueueAutomationEvent(now, packet.from, "meshpump", "RX_STATE", "pump", "PUMP_UP_ON", "ON", "EXECUTED", "RF", rttMs);
+        } else if (lower.find("up is off") != string::npos || lower.find("up off") != string::npos || lower.find("pump is off") != string::npos) {
+            node.upPumpState = false;
+            stateUpdated = true;
+            if (_db != NULL) _db->enqueueAutomationEvent(now, packet.from, "meshpump", "RX_STATE", "pump", "PUMP_UP_OFF", "OFF", "EXECUTED", "RF", rttMs);
+        }
+
+        if (lower.find("soil") != string::npos) {
+            float m = 0.0f;
+            if (sscanf(text.c_str(), "%*s %*s %f", &m) == 1 || sscanf(text.c_str(), "%*s %f", &m) == 1) {
+                node.soilMoisture = m;
+                stateUpdated = true;
+                if (_db != NULL) _db->enqueueAutomationEvent(now, packet.from, "meshpump", "RX_STATE", "env", "SOIL_MOISTURE", to_string(m), "EXECUTED", "RF", rttMs);
+            }
+        }
+
+        if (lower.find("water empty") != string::npos || lower.find("reservoir empty") != string::npos) {
+            node.reservoirEmpty = true;
+            stateUpdated = true;
+            if (_db != NULL) _db->enqueueAutomationEvent(now, packet.from, "meshpump", "RX_STATE", "env", "RESERVOIR_EMPTY", "EMPTY", "EXECUTED", "RF", rttMs);
+        } else if (lower.find("water ok") != string::npos || lower.find("reservoir ok") != string::npos) {
+            node.reservoirEmpty = false;
+            stateUpdated = true;
+            if (_db != NULL) _db->enqueueAutomationEvent(now, packet.from, "meshpump", "RX_STATE", "env", "RESERVOIR_OK", "OK", "EXECUTED", "RF", rttMs);
+        }
+
+        nodeCopy = node;
+    }
+
+    if (stateUpdated && _myownMqtt != NULL) {
+        publishAutomationState(nodeCopy);
+    }
+}
+
+void MeshMon::parseMeshRoofStatus(const meshtastic_MeshPacket &packet,
+                                  const string &text, uint32_t rttMs)
+{
+    time_t now = time(NULL);
+    string lower = text;
+    toLowercase(lower);
+    bool stateUpdated = false;
+    AutomationNode nodeCopy;
+
+    {
+        lock_guard<mutex> lock(_autoNodesMutex);
+        AutomationNode &node = _autoNodes[packet.from];
+        if (node.deviceType.empty()) node.deviceType = "meshroof";
+        node.lastSeen = now;
+        node.online = true;
+
+        if (lower.find("amplify is on") != string::npos || lower.find("amplify: on") != string::npos || lower.find("amplify on") != string::npos) {
+            node.amplifyState = true;
+            stateUpdated = true;
+            if (_db != NULL) _db->enqueueAutomationEvent(now, packet.from, "meshroof", "RX_STATE", "amplify", "AMPLIFY_ON", "ON", "EXECUTED", "RF", rttMs);
+        } else if (lower.find("amplify is off") != string::npos || lower.find("amplify: off") != string::npos || lower.find("amplify off") != string::npos) {
+            node.amplifyState = false;
+            stateUpdated = true;
+            if (_db != NULL) _db->enqueueAutomationEvent(now, packet.from, "meshroof", "RX_STATE", "amplify", "AMPLIFY_OFF", "OFF", "EXECUTED", "RF", rttMs);
+        }
+
+        if (lower.find("wifi") != string::npos) {
+            node.wifiStatus = text;
+            stateUpdated = true;
+            if (_db != NULL) _db->enqueueAutomationEvent(now, packet.from, "meshroof", "RX_STATE", "wifi", "WIFI_STATUS", text, "EXECUTED", "RF", rttMs);
+        }
+
+        if (lower.find("net:") != string::npos || lower.find("ip=") != string::npos) {
+            node.ipAddress = text;
+            stateUpdated = true;
+            if (_db != NULL) _db->enqueueAutomationEvent(now, packet.from, "meshroof", "RX_STATE", "net", "IP_STATUS", text, "EXECUTED", "RF", rttMs);
+        }
+
+        if (lower.find("reset") != string::npos) {
+            node.resetCount++;
+            stateUpdated = true;
+            if (_db != NULL) _db->enqueueAutomationEvent(now, packet.from, "meshroof", "RX_STATE", "system", "RESET", text, "EXECUTED", "RF", rttMs);
+        }
+
+        nodeCopy = node;
+    }
+
+    if (stateUpdated && _myownMqtt != NULL) {
+        publishAutomationState(nodeCopy);
+    }
+}
+
+void MeshMon::parseMeshRoomStatus(const meshtastic_MeshPacket &packet,
+                                  const string &text, uint32_t rttMs)
+{
+    time_t now = time(NULL);
+    string lower = text;
+    toLowercase(lower);
+    bool stateUpdated = false;
+    AutomationNode nodeCopy;
+
+    {
+        lock_guard<mutex> lock(_autoNodesMutex);
+        AutomationNode &node = _autoNodes[packet.from];
+        if (node.deviceType.empty()) node.deviceType = "meshroom";
+        node.lastSeen = now;
+        node.online = true;
+
+        if (lower.find("ac:") != string::npos || lower.find("ac ") != string::npos) {
+            stateUpdated = true;
+            if (lower.find("power=on") != string::npos || lower.find("ac is on") != string::npos) {
+                node.acPower = true;
+            } else if (lower.find("power=off") != string::npos || lower.find("ac is off") != string::npos) {
+                node.acPower = false;
+            }
+
+            float temp = 0.0f;
+            if (sscanf(lower.c_str(), "%*s temp=%f", &temp) == 1 || sscanf(lower.c_str(), "%*s %f", &temp) == 1) {
+                if (temp >= 16.0f && temp <= 30.0f) node.acTargetTemp = temp;
+            }
+            if (_db != NULL) _db->enqueueAutomationEvent(now, packet.from, "meshroom", "RX_STATE", "ac", "AC_STATE", text, "EXECUTED", "RF", rttMs);
+        }
+
+        if (lower.find("tv:") != string::npos || lower.find("tv ") != string::npos) {
+            stateUpdated = true;
+            if (lower.find("power=on") != string::npos || lower.find("tv is on") != string::npos) {
+                node.tvPower = true;
+            } else if (lower.find("power=off") != string::npos || lower.find("tv is off") != string::npos) {
+                node.tvPower = false;
+            }
+
+            int vol = 0;
+            if (sscanf(lower.c_str(), "%*s vol=%d", &vol) == 1) {
+                node.tvVolume = vol;
+            }
+            if (_db != NULL) _db->enqueueAutomationEvent(now, packet.from, "meshroom", "RX_STATE", "tv", "TV_STATE", text, "EXECUTED", "RF", rttMs);
+        }
+
+        nodeCopy = node;
+    }
+
+    if (stateUpdated && _myownMqtt != NULL) {
+        publishAutomationState(nodeCopy);
+    }
+}
+
+void MeshMon::publishAutomationDiscovery(AutomationNode &node)
+{
+    if (_myownMqtt == NULL) {
+        return;
+    }
+
+    string id = node.nodeHex;
+    string identifier = node.shortName.empty() ? id : node.shortName;
+    string deviceName = node.longName.empty() ? (string("!") + id) : node.longName;
+
+    // Common Uptime Sensor
+    _myownMqtt->publish(
+        "homeassistant/sensor/meshmon_" + id + "_uptime/config",
+        haDiscoveryJson("Uptime", "meshmon_" + id + "_uptime",
+                        "meshmon/" + id + "/uptime", "duration", "s",
+                        identifier, deviceName),
+        true);
+
+    // Common Response Latency (RTT) Sensor
+    _myownMqtt->publish(
+        "homeassistant/sensor/meshmon_" + id + "_rtt/config",
+        haDiscoveryJson("Response Latency", "meshmon_" + id + "_rtt",
+                        "meshmon/" + id + "/rtt", "duration", "ms",
+                        identifier, deviceName),
+        true);
+
+    if (node.deviceType == "meshpump") {
+        _myownMqtt->publish(
+            "homeassistant/switch/meshmon_" + id + "_pump_fish/config",
+            haSwitchDiscoveryJson("Fish Pump", "meshmon_" + id + "_pump_fish",
+                                  "meshmon/" + id + "/pump_fish/state",
+                                  "meshmon/cmd/" + id + "/pump_fish",
+                                  identifier, deviceName),
+            true);
+
+        _myownMqtt->publish(
+            "homeassistant/switch/meshmon_" + id + "_pump_up/config",
+            haSwitchDiscoveryJson("Upper Pump", "meshmon_" + id + "_pump_up",
+                                  "meshmon/" + id + "/pump_up/state",
+                                  "meshmon/cmd/" + id + "/pump_up",
+                                  identifier, deviceName),
+            true);
+
+        _myownMqtt->publish(
+            "homeassistant/number/meshmon_" + id + "_pump_up_cutoff/config",
+            haNumberDiscoveryJson("Upper Pump Cutoff", "meshmon_" + id + "_pump_up_cutoff",
+                                  "meshmon/" + id + "/pump_up_cutoff/state",
+                                  "meshmon/cmd/" + id + "/pump_up_cutoff",
+                                  5, 300, 5, "s",
+                                  identifier, deviceName),
+            true);
+
+        _myownMqtt->publish(
+            "homeassistant/sensor/meshmon_" + id + "_soil_moisture/config",
+            haDiscoveryJson("Soil Moisture", "meshmon_" + id + "_soil_moisture",
+                            "meshmon/" + id + "/soil_moisture", "humidity", "%",
+                            identifier, deviceName),
+            true);
+
+        _myownMqtt->publish(
+            "homeassistant/binary_sensor/meshmon_" + id + "_reservoir_empty/config",
+            haBinarySensorDiscoveryJson("Reservoir Empty", "meshmon_" + id + "_reservoir_empty",
+                                        "meshmon/" + id + "/reservoir_empty", "problem",
+                                        identifier, deviceName),
+            true);
+
+        _myownMqtt->publish(
+            "homeassistant/text/meshmon_" + id + "_led_message/config",
+            haTextDiscoveryJson("LED Matrix Message", "meshmon_" + id + "_led_message",
+                                "meshmon/" + id + "/led_message/state",
+                                "meshmon/cmd/" + id + "/led",
+                                identifier, deviceName),
+            true);
+    } else if (node.deviceType == "meshroof") {
+        _myownMqtt->publish(
+            "homeassistant/switch/meshmon_" + id + "_amplify/config",
+            haSwitchDiscoveryJson("RF Power Amplifier", "meshmon_" + id + "_amplify",
+                                  "meshmon/" + id + "/amplify/state",
+                                  "meshmon/cmd/" + id + "/amplify",
+                                  identifier, deviceName),
+            true);
+
+        _myownMqtt->publish(
+            "homeassistant/button/meshmon_" + id + "_buzzer/config",
+            haButtonDiscoveryJson("Sound Buzzer", "meshmon_" + id + "_buzzer",
+                                  "meshmon/cmd/" + id + "/buzz", "PRESS",
+                                  identifier, deviceName),
+            true);
+
+        _myownMqtt->publish(
+            "homeassistant/text/meshmon_" + id + "_morse/config",
+            haTextDiscoveryJson("Morse Code Transmitter", "meshmon_" + id + "_morse",
+                                "meshmon/" + id + "/morse/state",
+                                "meshmon/cmd/" + id + "/morse",
+                                identifier, deviceName),
+            true);
+
+        _myownMqtt->publish(
+            "homeassistant/sensor/meshmon_" + id + "_cpu_temp/config",
+            haDiscoveryJson("ESP32 CPU Temperature", "meshmon_" + id + "_cpu_temp",
+                            "meshmon/" + id + "/cpu_temp", "temperature", "\u00b0C",
+                            identifier, deviceName),
+            true);
+    } else if (node.deviceType == "meshroom") {
+        _myownMqtt->publish(
+            "homeassistant/climate/meshmon_" + id + "_ac/config",
+            haClimateDiscoveryJson("Room AC", "meshmon_" + id + "_ac",
+                                   "meshmon/" + id + "/ac/mode/state",
+                                   "meshmon/cmd/" + id + "/ac_mode",
+                                   "meshmon/" + id + "/ac/temp/state",
+                                   "meshmon/cmd/" + id + "/ac_temp",
+                                   "meshmon/" + id + "/ac/fan/state",
+                                   "meshmon/cmd/" + id + "/ac_fan",
+                                   "meshmon/" + id + "/temperature",
+                                   identifier, deviceName),
+            true);
+
+        _myownMqtt->publish(
+            "homeassistant/switch/meshmon_" + id + "_ac_power/config",
+            haSwitchDiscoveryJson("AC Power", "meshmon_" + id + "_ac_power",
+                                  "meshmon/" + id + "/ac/power/state",
+                                  "meshmon/cmd/" + id + "/ac_power",
+                                  identifier, deviceName),
+            true);
+
+        _myownMqtt->publish(
+            "homeassistant/button/meshmon_" + id + "_ac_blast/config",
+            haButtonDiscoveryJson("AC IR Force Blast", "meshmon_" + id + "_ac_blast",
+                                  "meshmon/cmd/" + id + "/ac_blast", "PRESS",
+                                  identifier, deviceName),
+            true);
+
+        _myownMqtt->publish(
+            "homeassistant/switch/meshmon_" + id + "_tv_power/config",
+            haSwitchDiscoveryJson("TV Power", "meshmon_" + id + "_tv_power",
+                                  "meshmon/" + id + "/tv/power/state",
+                                  "meshmon/cmd/" + id + "/tv_power",
+                                  identifier, deviceName),
+            true);
+
+        _myownMqtt->publish(
+            "homeassistant/switch/meshmon_" + id + "_tv_mute/config",
+            haSwitchDiscoveryJson("TV Mute", "meshmon_" + id + "_tv_mute",
+                                  "meshmon/" + id + "/tv/mute/state",
+                                  "meshmon/cmd/" + id + "/tv_mute",
+                                  identifier, deviceName),
+            true);
+
+        _myownMqtt->publish(
+            "homeassistant/number/meshmon_" + id + "_tv_volume/config",
+            haNumberDiscoveryJson("TV Volume", "meshmon_" + id + "_tv_volume",
+                                  "meshmon/" + id + "/tv/volume/state",
+                                  "meshmon/cmd/" + id + "/tv_vol",
+                                  0, 100, 1, "",
+                                  identifier, deviceName),
+            true);
+
+        _myownMqtt->publish(
+            "homeassistant/number/meshmon_" + id + "_tv_channel/config",
+            haNumberDiscoveryJson("TV Channel", "meshmon_" + id + "_tv_channel",
+                                  "meshmon/" + id + "/tv/channel/state",
+                                  "meshmon/cmd/" + id + "/tv_chan",
+                                  1, 999, 1, "",
+                                  identifier, deviceName),
+            true);
+
+        _myownMqtt->publish(
+            "homeassistant/button/meshmon_" + id + "_tv_input/config",
+            haButtonDiscoveryJson("TV Input Next", "meshmon_" + id + "_tv_input",
+                                  "meshmon/cmd/" + id + "/tv_input", "PRESS",
+                                  identifier, deviceName),
+            true);
+
+        _myownMqtt->publish(
+            "homeassistant/sensor/meshmon_" + id + "_board_temp/config",
+            haDiscoveryJson("RP2040 Board Temperature", "meshmon_" + id + "_board_temp",
+                            "meshmon/" + id + "/board_temp", "temperature", "\u00b0C",
+                            identifier, deviceName),
+            true);
+    }
+
+    node.haDiscovered = true;
+}
+
+void MeshMon::revokeAutomationDiscovery(uint32_t nodeId, const string &oldDeviceType)
+{
+    if (_myownMqtt == NULL || oldDeviceType.empty()) {
+        return;
+    }
+
+    string id = nodeHexId(nodeId);
+    vector<string> topics;
+
+    if (oldDeviceType == "meshpump") {
+        topics.push_back("homeassistant/switch/meshmon_" + id + "_pump_fish/config");
+        topics.push_back("homeassistant/switch/meshmon_" + id + "_pump_up/config");
+        topics.push_back("homeassistant/number/meshmon_" + id + "_pump_up_cutoff/config");
+        topics.push_back("homeassistant/sensor/meshmon_" + id + "_soil_moisture/config");
+        topics.push_back("homeassistant/binary_sensor/meshmon_" + id + "_reservoir_empty/config");
+        topics.push_back("homeassistant/text/meshmon_" + id + "_led_message/config");
+    } else if (oldDeviceType == "meshroof") {
+        topics.push_back("homeassistant/switch/meshmon_" + id + "_amplify/config");
+        topics.push_back("homeassistant/button/meshmon_" + id + "_buzzer/config");
+        topics.push_back("homeassistant/text/meshmon_" + id + "_morse/config");
+        topics.push_back("homeassistant/sensor/meshmon_" + id + "_cpu_temp/config");
+    } else if (oldDeviceType == "meshroom") {
+        topics.push_back("homeassistant/climate/meshmon_" + id + "_ac/config");
+        topics.push_back("homeassistant/switch/meshmon_" + id + "_ac_power/config");
+        topics.push_back("homeassistant/button/meshmon_" + id + "_ac_blast/config");
+        topics.push_back("homeassistant/switch/meshmon_" + id + "_tv_power/config");
+        topics.push_back("homeassistant/switch/meshmon_" + id + "_tv_mute/config");
+        topics.push_back("homeassistant/number/meshmon_" + id + "_tv_volume/config");
+        topics.push_back("homeassistant/number/meshmon_" + id + "_tv_channel/config");
+        topics.push_back("homeassistant/button/meshmon_" + id + "_tv_input/config");
+        topics.push_back("homeassistant/sensor/meshmon_" + id + "_board_temp/config");
+    }
+
+    for (size_t i = 0; i < topics.size(); i++) {
+        _myownMqtt->publish(topics[i], "", true);
+    }
+}
+
+void MeshMon::publishAutomationState(const AutomationNode &node)
+{
+    if (_myownMqtt == NULL) {
+        return;
+    }
+
+    string id = node.nodeHex;
+
+    if (node.deviceType == "meshpump") {
+        _myownMqtt->publish("meshmon/" + id + "/pump_fish/state", node.fishPumpState ? "ON" : "OFF", true);
+        _myownMqtt->publish("meshmon/" + id + "/pump_up/state", node.upPumpState ? "ON" : "OFF", true);
+        _myownMqtt->publish("meshmon/" + id + "/reservoir_empty", node.reservoirEmpty ? "ON" : "OFF", true);
+        if (node.soilMoisture > 0.0f) {
+            char buf[32];
+            snprintf(buf, sizeof(buf), "%.1f", node.soilMoisture);
+            _myownMqtt->publish("meshmon/" + id + "/soil_moisture", string(buf), true);
+        }
+    } else if (node.deviceType == "meshroof") {
+        _myownMqtt->publish("meshmon/" + id + "/amplify/state", node.amplifyState ? "ON" : "OFF", true);
+        if (node.cpuTempC > 0.0f) {
+            char buf[32];
+            snprintf(buf, sizeof(buf), "%.1f", node.cpuTempC);
+            _myownMqtt->publish("meshmon/" + id + "/cpu_temp", string(buf), true);
+        }
+    } else if (node.deviceType == "meshroom") {
+        _myownMqtt->publish("meshmon/" + id + "/ac/power/state", node.acPower ? "ON" : "OFF", true);
+        _myownMqtt->publish("meshmon/" + id + "/ac/mode/state", node.acPower ? node.acMode : "off", true);
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%.1f", node.acTargetTemp);
+        _myownMqtt->publish("meshmon/" + id + "/ac/temp/state", string(buf), true);
+        _myownMqtt->publish("meshmon/" + id + "/ac/fan/state", node.acFan, true);
+
+        _myownMqtt->publish("meshmon/" + id + "/tv/power/state", node.tvPower ? "ON" : "OFF", true);
+        _myownMqtt->publish("meshmon/" + id + "/tv/mute/state", node.tvMute ? "ON" : "OFF", true);
+        snprintf(buf, sizeof(buf), "%d", node.tvVolume);
+        _myownMqtt->publish("meshmon/" + id + "/tv/volume/state", string(buf), true);
+        snprintf(buf, sizeof(buf), "%d", node.tvChannel);
+        _myownMqtt->publish("meshmon/" + id + "/tv/channel/state", string(buf), true);
+
+        if (node.boardTempC > 0.0f) {
+            snprintf(buf, sizeof(buf), "%.1f", node.boardTempC);
+            _myownMqtt->publish("meshmon/" + id + "/board_temp", string(buf), true);
+        }
+    }
+
+    if (node.lastRttMs > 0) {
+        char rttBuf[32];
+        snprintf(rttBuf, sizeof(rttBuf), "%u", node.lastRttMs);
+        _myownMqtt->publish("meshmon/" + id + "/rtt", string(rttBuf), true);
+    }
+}
+
+void MeshMon::handleMqttCommand(const string &topic, const string &payload)
+{
+    // Topic pattern: meshmon/cmd/<node>/<action>
+    const string prefix = "meshmon/cmd/";
+    if (topic.find(prefix) != 0) {
+        return;
+    }
+
+    string sub = topic.substr(prefix.size());
+    size_t slash = sub.find('/');
+    if (slash == string::npos) {
+        return;
+    }
+
+    string nodeStr = sub.substr(0, slash);
+    string action = sub.substr(slash + 1);
+
+    uint32_t targetNodeId = 0;
+    if (!nodeStr.empty() && nodeStr[0] == '!') {
+        sscanf(nodeStr.c_str() + 1, "%x", &targetNodeId);
+    } else {
+        sscanf(nodeStr.c_str(), "%x", &targetNodeId);
+    }
+
+    if (targetNodeId == 0) {
+        // Try to lookup by short name
+        lock_guard<mutex> lock(_autoNodesMutex);
+        for (map<uint32_t, AutomationNode>::const_iterator it = _autoNodes.begin(); it != _autoNodes.end(); ++it) {
+            if (it->second.shortName == nodeStr) {
+                targetNodeId = it->first;
+                break;
+            }
+        }
+    }
+
+    if (targetNodeId == 0) {
+        return;
+    }
+
+    string textCmd;
+    if (action == "pump_fish") {
+        textCmd = (payload == "ON" || payload == "1") ? "fish on" : "fish off";
+    } else if (action == "pump_up") {
+        textCmd = (payload == "ON" || payload == "1") ? "up on" : "up off";
+    } else if (action == "pump_up_cutoff") {
+        textCmd = "up cutoff " + payload;
+    } else if (action == "amplify") {
+        textCmd = (payload == "ON" || payload == "1") ? "amplify on" : "amplify off";
+    } else if (action == "buzz" || action == "buzzer") {
+        textCmd = "buzz";
+    } else if (action == "morse") {
+        textCmd = "morse " + payload;
+    } else if (action == "led") {
+        textCmd = "led " + payload;
+    } else if (action == "ac_power") {
+        textCmd = (payload == "ON" || payload == "1") ? "ac on" : "ac off";
+    } else if (action == "ac_blast") {
+        textCmd = "ac blast";
+    } else if (action == "ac_temp" || action == "ac_temperature") {
+        textCmd = "ac temp " + payload;
+    } else if (action == "ac_mode") {
+        textCmd = "ac mode " + payload;
+    } else if (action == "ac_fan") {
+        textCmd = "ac fan " + payload;
+    } else if (action == "tv_power") {
+        textCmd = (payload == "ON" || payload == "1") ? "tv on" : "tv off";
+    } else if (action == "tv_mute") {
+        textCmd = (payload == "ON" || payload == "1") ? "tv mute on" : "tv mute off";
+    } else if (action == "tv_vol" || action == "tv_volume") {
+        textCmd = "tv vol " + payload;
+    } else if (action == "tv_chan" || action == "tv_channel") {
+        textCmd = "tv chan " + payload;
+    } else if (action == "tv_input") {
+        textCmd = "tv input " + payload;
+    } else {
+        textCmd = action + " " + payload;
+    }
+
+    sendAutomationCommand(targetNodeId, textCmd, "HOMEASSISTANT");
+}
+
+void MeshMon::checkAutomationWatchdog(void)
+{
+    time_t now = time(NULL);
+    lock_guard<mutex> lock(_autoNodesMutex);
+    for (map<uint32_t, AutomationNode>::iterator it = _autoNodes.begin(); it != _autoNodes.end(); ++it) {
+        AutomationNode &node = it->second;
+        if (node.online && (now - node.lastSeen > 5400)) { // 90 minutes (allows 1 missed hourly heartbeat)
+            node.online = false;
+            if (_myownMqtt != NULL) {
+                _myownMqtt->publish("meshmon/" + node.nodeHex + "/availability", "offline", true);
+            }
+        }
+    }
 }
 
 /*

@@ -353,7 +353,24 @@ bool MeshMonDb::initSchema(void)
         "  route_nodes TEXT NOT NULL,"
         "  route_snrs TEXT NOT NULL,"
         "  FOREIGN KEY(from_node) REFERENCES nodes(node_id)"
-        ");";
+        ");"
+        "CREATE TABLE IF NOT EXISTS automation_events ("
+        "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  meshmon_time INTEGER NOT NULL,"
+        "  node_id INTEGER NOT NULL,"
+        "  node_hex TEXT NOT NULL,"
+        "  device_type TEXT NOT NULL,"
+        "  direction TEXT NOT NULL,"
+        "  subsystem TEXT NOT NULL,"
+        "  command_name TEXT NOT NULL,"
+        "  action_param TEXT,"
+        "  status TEXT NOT NULL,"
+        "  initiator TEXT NOT NULL,"
+        "  rtt_ms INTEGER DEFAULT 0"
+        ");"
+        "CREATE INDEX IF NOT EXISTS idx_auto_events_node ON automation_events(node_id, meshmon_time);"
+        "CREATE INDEX IF NOT EXISTS idx_auto_events_dev ON automation_events(device_type, meshmon_time);"
+        "CREATE INDEX IF NOT EXISTS idx_auto_events_sub ON automation_events(subsystem, meshmon_time);";
 
     char *err = NULL;
     int rc = sqlite3_exec(_db, ddl, NULL, NULL, &err);
@@ -364,6 +381,9 @@ bool MeshMonDb::initSchema(void)
         }
         return false;
     }
+
+    // Migration for existing tables: ensure rtt_ms column exists
+    sqlite3_exec(_db, "ALTER TABLE automation_events ADD COLUMN rtt_ms INTEGER DEFAULT 0;", NULL, NULL, NULL);
 
     return true;
 }
@@ -625,6 +645,32 @@ void MeshMonDb::enqueueTraceRoute(const meshtastic_MeshPacket &packet,
     _queueCv.notify_one();
 }
 
+void MeshMonDb::enqueueAutomationEvent(time_t meshmonTime, uint32_t nodeId,
+                                       const string &deviceType, const string &direction,
+                                       const string &subsystem, const string &commandName,
+                                       const string &actionParam, const string &status,
+                                       const string &initiator, int32_t rttMs)
+{
+    DbEvent ev;
+    ev.type = EV_AUTOMATION_EVENT;
+    ev.meshmonTime = meshmonTime;
+    ev.fromNode = nodeId;
+    ev.deviceType = deviceType;
+    ev.direction = direction;
+    ev.subsystem = subsystem;
+    ev.commandName = commandName;
+    ev.actionParam = actionParam;
+    ev.status = status;
+    ev.initiator = initiator;
+    ev.rttMs = rttMs;
+
+    {
+        lock_guard<mutex> lock(_queueMutex);
+        _queue.push(ev);
+    }
+    _queueCv.notify_one();
+}
+
 void MeshMonDb::workerLoop(void)
 {
     while (!_stopRequested) {
@@ -856,6 +902,36 @@ void MeshMonDb::processEvent(const DbEvent &ev)
         }
     }
         break;
+
+    case EV_AUTOMATION_EVENT:
+    {
+        const char *autoSql =
+            "INSERT INTO automation_events (meshmon_time, node_id, node_hex, device_type, "
+            "direction, subsystem, command_name, action_param, status, initiator, rtt_ms) "
+            "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11);";
+        if (sqlite3_prepare_v2(_db, autoSql, -1, &stmt, NULL) == SQLITE_OK) {
+            string hexId = formatNodeHex(ev.fromNode);
+            sqlite3_bind_int64(stmt, 1, ev.meshmonTime);
+            sqlite3_bind_int64(stmt, 2, ev.fromNode);
+            sqlite3_bind_text(stmt, 3, hexId.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 4, ev.deviceType.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 5, ev.direction.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 6, ev.subsystem.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 7, ev.commandName.c_str(), -1, SQLITE_TRANSIENT);
+            if (!ev.actionParam.empty()) {
+                sqlite3_bind_text(stmt, 8, ev.actionParam.c_str(), -1, SQLITE_TRANSIENT);
+            } else {
+                sqlite3_bind_null(stmt, 8);
+            }
+            sqlite3_bind_text(stmt, 9, ev.status.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 10, ev.initiator.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int(stmt, 11, ev.rttMs);
+            sqlite3_step(stmt);
+            sqlite3_finalize(stmt);
+            stmt = NULL;
+        }
+    }
+        break;
     }
 }
 
@@ -874,6 +950,7 @@ size_t MeshMonDb::pruneOlderThan(time_t thresholdTime)
         "DELETE FROM positions WHERE meshmon_time < ?1;",
         "DELETE FROM text_messages WHERE meshmon_time < ?1;",
         "DELETE FROM traceroutes WHERE meshmon_time < ?1;",
+        "DELETE FROM automation_events WHERE meshmon_time < ?1;",
         NULL
     };
 
@@ -1649,6 +1726,425 @@ bool MeshMonDb::getChannelHealth(time_t since, ChannelHealthStat &health)
         if (sqlite3_step(stmt) == SQLITE_ROW) {
             health.totalPackets = (uint32_t) sqlite3_column_int64(stmt, 0);
             health.duplicatePackets = (uint32_t) sqlite3_column_int64(stmt, 1);
+        }
+        sqlite3_finalize(stmt);
+        stmt = NULL;
+    }
+
+    return true;
+}
+
+bool MeshMonDb::getPumpAnalytics(uint32_t nodeId, time_t since, PumpAnalytics &analytics)
+{
+    lock_guard<mutex> lock(_dbMutex);
+    if (_db == NULL) {
+        return false;
+    }
+
+    analytics = PumpAnalytics();
+
+    string sql =
+        "SELECT command_name, action_param, status, direction, meshmon_time "
+        "FROM automation_events WHERE device_type = 'meshpump' AND meshmon_time >= ?1";
+    if (nodeId != 0) {
+        sql += " AND node_id = ?2";
+    }
+    sql += " ORDER BY meshmon_time ASC;";
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(_db, sql.c_str(), -1, &stmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(stmt, 1, since);
+        if (nodeId != 0) {
+            sqlite3_bind_int64(stmt, 2, nodeId);
+        }
+
+        time_t fishOnTime = 0;
+        time_t upOnTime = 0;
+        float totalMoisture = 0.0f;
+
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            string cmd = (const char *) sqlite3_column_text(stmt, 0);
+            const char *paramStr = (const char *) sqlite3_column_text(stmt, 1);
+            string param = paramStr ? paramStr : "";
+            string status = (const char *) sqlite3_column_text(stmt, 2);
+            string dir = (const char *) sqlite3_column_text(stmt, 3);
+            time_t t = (time_t) sqlite3_column_int64(stmt, 4);
+
+            if (dir == "TX_CMD") {
+                analytics.totalCommands++;
+                if (status == "ACKED" || status == "EXECUTED") {
+                    analytics.ackedCommands++;
+                }
+            }
+
+            if (cmd == "PUMP_FISH_ON") {
+                if (fishOnTime == 0) fishOnTime = t;
+            } else if (cmd == "PUMP_FISH_OFF") {
+                if (fishOnTime > 0 && t >= fishOnTime) {
+                    analytics.fishRunSec += (uint32_t)(t - fishOnTime);
+                    fishOnTime = 0;
+                }
+            } else if (cmd == "PUMP_UP_ON") {
+                analytics.upRunCount++;
+                if (upOnTime == 0) upOnTime = t;
+            } else if (cmd == "PUMP_UP_OFF") {
+                if (upOnTime > 0 && t >= upOnTime) {
+                    analytics.upRunSec += (uint32_t)(t - upOnTime);
+                    upOnTime = 0;
+                }
+                if (param.find("cutoff") != string::npos) {
+                    analytics.upCutoffTriggers++;
+                }
+            } else if (cmd == "SOIL_MOISTURE") {
+                float m = 0.0f;
+                if (sscanf(param.c_str(), "%f", &m) == 1) {
+                    analytics.moistureEvents++;
+                    totalMoisture += m;
+                }
+            }
+        }
+
+        time_t now = time(NULL);
+        if (fishOnTime > 0 && now >= fishOnTime) {
+            analytics.fishRunSec += (uint32_t)(now - fishOnTime);
+        }
+        if (upOnTime > 0 && now >= upOnTime) {
+            analytics.upRunSec += (uint32_t)(now - upOnTime);
+        }
+
+        time_t windowSec = now > since ? (now - since) : 1;
+        if (windowSec > 0) {
+            analytics.fishDutyPct = ((float) analytics.fishRunSec * 100.0f) / (float) windowSec;
+            if (analytics.fishDutyPct > 100.0f) analytics.fishDutyPct = 100.0f;
+        }
+
+        if (analytics.moistureEvents > 0) {
+            analytics.avgMoisture = totalMoisture / (float) analytics.moistureEvents;
+        }
+
+        sqlite3_finalize(stmt);
+        stmt = NULL;
+    }
+
+    return true;
+}
+
+bool MeshMonDb::getRoofAnalytics(uint32_t nodeId, time_t since, RoofAnalytics &analytics)
+{
+    lock_guard<mutex> lock(_dbMutex);
+    if (_db == NULL) {
+        return false;
+    }
+
+    analytics = RoofAnalytics();
+
+    string sql =
+        "SELECT command_name, action_param, status, direction, meshmon_time "
+        "FROM automation_events WHERE device_type = 'meshroof' AND meshmon_time >= ?1";
+    if (nodeId != 0) {
+        sql += " AND node_id = ?2";
+    }
+    sql += " ORDER BY meshmon_time ASC;";
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(_db, sql.c_str(), -1, &stmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(stmt, 1, since);
+        if (nodeId != 0) {
+            sqlite3_bind_int64(stmt, 2, nodeId);
+        }
+
+        time_t ampOnTime = 0;
+        float totalWifiRssi = 0.0f;
+        float minWifi = 0.0f, maxWifi = -999.0f;
+        float totalCpuTemp = 0.0f, maxCpu = -999.0f;
+        uint32_t tempReports = 0;
+
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            string cmd = (const char *) sqlite3_column_text(stmt, 0);
+            const char *paramStr = (const char *) sqlite3_column_text(stmt, 1);
+            string param = paramStr ? paramStr : "";
+            string dir = (const char *) sqlite3_column_text(stmt, 3);
+            time_t t = (time_t) sqlite3_column_int64(stmt, 4);
+
+            if (dir == "TX_CMD") {
+                analytics.totalCommands++;
+            }
+
+            if (cmd == "AMPLIFY_ON") {
+                if (ampOnTime == 0) ampOnTime = t;
+            } else if (cmd == "AMPLIFY_OFF") {
+                if (ampOnTime > 0 && t >= ampOnTime) {
+                    analytics.amplifyRunSec += (uint32_t)(t - ampOnTime);
+                    ampOnTime = 0;
+                }
+            } else if (cmd == "WIFI_STATUS" || cmd == "WIFI") {
+                float rssi = 0.0f;
+                if (sscanf(param.c_str(), "%f", &rssi) == 1 || sscanf(param.c_str(), "rssi=%f", &rssi) == 1) {
+                    analytics.wifiReports++;
+                    totalWifiRssi += rssi;
+                    if (analytics.wifiReports == 1 || rssi < minWifi) minWifi = rssi;
+                    if (analytics.wifiReports == 1 || rssi > maxWifi) maxWifi = rssi;
+                }
+            } else if (cmd == "CPU_TEMP") {
+                float temp = 0.0f;
+                if (sscanf(param.c_str(), "%f", &temp) == 1) {
+                    tempReports++;
+                    totalCpuTemp += temp;
+                    if (temp > maxCpu) maxCpu = temp;
+                }
+            } else if (cmd == "RESET" || cmd == "BOOT_UP") {
+                analytics.resetEvents++;
+            }
+        }
+
+        time_t now = time(NULL);
+        if (ampOnTime > 0 && now >= ampOnTime) {
+            analytics.amplifyRunSec += (uint32_t)(now - ampOnTime);
+        }
+
+        time_t windowSec = now > since ? (now - since) : 1;
+        if (windowSec > 0) {
+            analytics.amplifyDutyPct = ((float) analytics.amplifyRunSec * 100.0f) / (float) windowSec;
+            if (analytics.amplifyDutyPct > 100.0f) analytics.amplifyDutyPct = 100.0f;
+        }
+
+        if (analytics.wifiReports > 0) {
+            analytics.avgWifiRssi = totalWifiRssi / (float) analytics.wifiReports;
+            analytics.minWifiRssi = minWifi;
+            analytics.maxWifiRssi = maxWifi;
+        }
+
+        if (tempReports > 0) {
+            analytics.avgCpuTemp = totalCpuTemp / (float) tempReports;
+            analytics.maxCpuTemp = maxCpu;
+        }
+
+        sqlite3_finalize(stmt);
+        stmt = NULL;
+    }
+
+    return true;
+}
+
+bool MeshMonDb::getRoomAnalytics(uint32_t nodeId, time_t since, RoomAnalytics &analytics)
+{
+    lock_guard<mutex> lock(_dbMutex);
+    if (_db == NULL) {
+        return false;
+    }
+
+    analytics = RoomAnalytics();
+
+    string sql =
+        "SELECT command_name, action_param, status, direction, meshmon_time "
+        "FROM automation_events WHERE device_type = 'meshroom' AND meshmon_time >= ?1";
+    if (nodeId != 0) {
+        sql += " AND node_id = ?2";
+    }
+    sql += " ORDER BY meshmon_time ASC;";
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(_db, sql.c_str(), -1, &stmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(stmt, 1, since);
+        if (nodeId != 0) {
+            sqlite3_bind_int64(stmt, 2, nodeId);
+        }
+
+        time_t acOnTime = 0;
+        time_t tvOnTime = 0;
+        float totalAcTarget = 0.0f;
+        uint32_t acTargetReports = 0;
+        float totalBoardTemp = 0.0f;
+        float maxBoard = -999.0f;
+        uint32_t tempReports = 0;
+
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            string cmd = (const char *) sqlite3_column_text(stmt, 0);
+            const char *paramStr = (const char *) sqlite3_column_text(stmt, 1);
+            string param = paramStr ? paramStr : "";
+            string dir = (const char *) sqlite3_column_text(stmt, 3);
+            time_t t = (time_t) sqlite3_column_int64(stmt, 4);
+
+            if (dir == "TX_CMD") {
+                analytics.totalCommands++;
+            }
+
+            if (cmd == "AC_ON" || cmd == "AC_POWER_ON") {
+                if (acOnTime == 0) acOnTime = t;
+            } else if (cmd == "AC_OFF" || cmd == "AC_POWER_OFF") {
+                if (acOnTime > 0 && t >= acOnTime) {
+                    analytics.acRunSec += (uint32_t)(t - acOnTime);
+                    acOnTime = 0;
+                }
+            } else if (cmd == "AC_TEMP" || cmd == "AC_CLIMATE") {
+                float target = 0.0f;
+                if (sscanf(param.c_str(), "%f", &target) == 1 || sscanf(param.c_str(), "temp=%f", &target) == 1) {
+                    acTargetReports++;
+                    totalAcTarget += target;
+                }
+            } else if (cmd == "TV_ON" || cmd == "TV_POWER_ON") {
+                if (tvOnTime == 0) tvOnTime = t;
+            } else if (cmd == "TV_OFF" || cmd == "TV_POWER_OFF") {
+                if (tvOnTime > 0 && t >= tvOnTime) {
+                    analytics.tvRunSec += (uint32_t)(t - tvOnTime);
+                    tvOnTime = 0;
+                }
+            } else if (cmd == "TV_CHAN") {
+                analytics.tvChanChanges++;
+            } else if (cmd == "BOARD_TEMP" || cmd == "ROOM_TEMP") {
+                float temp = 0.0f;
+                if (sscanf(param.c_str(), "%f", &temp) == 1) {
+                    tempReports++;
+                    totalBoardTemp += temp;
+                    if (temp > maxBoard) maxBoard = temp;
+                }
+            }
+        }
+
+        time_t now = time(NULL);
+        if (acOnTime > 0 && now >= acOnTime) {
+            analytics.acRunSec += (uint32_t)(now - acOnTime);
+        }
+        if (tvOnTime > 0 && now >= tvOnTime) {
+            analytics.tvRunSec += (uint32_t)(now - tvOnTime);
+        }
+
+        time_t windowSec = now > since ? (now - since) : 1;
+        if (windowSec > 0) {
+            analytics.acDutyPct = ((float) analytics.acRunSec * 100.0f) / (float) windowSec;
+            if (analytics.acDutyPct > 100.0f) analytics.acDutyPct = 100.0f;
+            analytics.tvDutyPct = ((float) analytics.tvRunSec * 100.0f) / (float) windowSec;
+            if (analytics.tvDutyPct > 100.0f) analytics.tvDutyPct = 100.0f;
+        }
+
+        if (acTargetReports > 0) {
+            analytics.avgAcTargetTemp = totalAcTarget / (float) acTargetReports;
+        }
+        if (tempReports > 0) {
+            analytics.avgBoardTemp = totalBoardTemp / (float) tempReports;
+            analytics.maxBoardTemp = maxBoard;
+        }
+
+        sqlite3_finalize(stmt);
+        stmt = NULL;
+    }
+
+    return true;
+}
+
+bool MeshMonDb::getAutomationHistory(size_t limit, vector<AutomationEvent> &events)
+{
+    lock_guard<mutex> lock(_dbMutex);
+    if (_db == NULL) {
+        return false;
+    }
+
+    events.clear();
+
+    const char *sql =
+        "SELECT id, meshmon_time, node_id, node_hex, device_type, direction, "
+        "subsystem, command_name, action_param, status, initiator, coalesce(rtt_ms, 0) "
+        "FROM automation_events ORDER BY meshmon_time DESC, id DESC LIMIT ?1;";
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(_db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(stmt, 1, (sqlite3_int64) limit);
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            AutomationEvent ev;
+            ev.id = sqlite3_column_int64(stmt, 0);
+            ev.meshmonTime = (time_t) sqlite3_column_int64(stmt, 1);
+            ev.nodeId = (uint32_t) sqlite3_column_int64(stmt, 2);
+            const char *hex = (const char *) sqlite3_column_text(stmt, 3);
+            ev.nodeHex = hex ? hex : "";
+            const char *dev = (const char *) sqlite3_column_text(stmt, 4);
+            ev.deviceType = dev ? dev : "";
+            const char *dir = (const char *) sqlite3_column_text(stmt, 5);
+            ev.direction = dir ? dir : "";
+            const char *sub = (const char *) sqlite3_column_text(stmt, 6);
+            ev.subsystem = sub ? sub : "";
+            const char *cmd = (const char *) sqlite3_column_text(stmt, 7);
+            ev.commandName = cmd ? cmd : "";
+            const char *param = (const char *) sqlite3_column_text(stmt, 8);
+            ev.actionParam = param ? param : "";
+            const char *st = (const char *) sqlite3_column_text(stmt, 9);
+            ev.status = st ? st : "";
+            const char *init = (const char *) sqlite3_column_text(stmt, 10);
+            ev.initiator = init ? init : "";
+            ev.rttMs = sqlite3_column_int(stmt, 11);
+
+            events.push_back(ev);
+        }
+        sqlite3_finalize(stmt);
+        stmt = NULL;
+    }
+
+    return true;
+}
+
+bool MeshMonDb::getLatencyTrend(uint32_t nodeId, time_t since, vector<LatencyTrendPoint> &points)
+{
+    lock_guard<mutex> lock(_dbMutex);
+    if (_db == NULL) {
+        return false;
+    }
+
+    points.clear();
+
+    string sql;
+    if (nodeId == 0) {
+        sql =
+            "SELECT (meshmon_time / 3600) * 3600 AS bucket, "
+            "avg(rtt_ms), min(rtt_ms), max(rtt_ms), count(*) "
+            "FROM automation_events "
+            "WHERE meshmon_time >= ?1 AND rtt_ms > 0 "
+            "GROUP BY bucket ORDER BY bucket ASC;";
+    } else {
+        sql =
+            "SELECT (meshmon_time / 3600) * 3600 AS bucket, "
+            "avg(rtt_ms), min(rtt_ms), max(rtt_ms), count(*) "
+            "FROM automation_events "
+            "WHERE node_id = ?1 AND meshmon_time >= ?2 AND rtt_ms > 0 "
+            "GROUP BY bucket ORDER BY bucket ASC;";
+    }
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(_db, sql.c_str(), -1, &stmt, NULL) == SQLITE_OK) {
+        if (nodeId == 0) {
+            sqlite3_bind_int64(stmt, 1, (sqlite3_int64) since);
+        } else {
+            sqlite3_bind_int64(stmt, 1, (sqlite3_int64) nodeId);
+            sqlite3_bind_int64(stmt, 2, (sqlite3_int64) since);
+        }
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            LatencyTrendPoint pt;
+            pt.timestamp = (time_t) sqlite3_column_int64(stmt, 0);
+            pt.avgRtt = (float) sqlite3_column_double(stmt, 1);
+            pt.minRtt = (uint32_t) sqlite3_column_int(stmt, 2);
+            pt.maxRtt = (uint32_t) sqlite3_column_int(stmt, 3);
+            pt.count = (uint32_t) sqlite3_column_int(stmt, 4);
+            points.push_back(pt);
+        }
+        sqlite3_finalize(stmt);
+        stmt = NULL;
+    }
+
+    return true;
+}
+
+bool MeshMonDb::getAutomationEventCount(time_t since, uint32_t &count)
+{
+    lock_guard<mutex> lock(_dbMutex);
+    if (_db == NULL) {
+        return false;
+    }
+
+    count = 0;
+    const char *sql = "SELECT count(*) FROM automation_events WHERE meshmon_time >= ?1;";
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(_db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(stmt, 1, (sqlite3_int64) since);
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            count = (uint32_t) sqlite3_column_int64(stmt, 0);
         }
         sqlite3_finalize(stmt);
         stmt = NULL;
