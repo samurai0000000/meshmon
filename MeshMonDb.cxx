@@ -195,6 +195,69 @@ uint64_t MeshMonDb::getTotalPacketCount(void)
     return count;
 }
 
+uint32_t MeshMonDb::getTotalNodeCount(void)
+{
+    lock_guard<mutex> lock(_dbMutex);
+    if (_db == NULL) {
+        return 0;
+    }
+
+    const char *sql = "SELECT count(*) FROM nodes;";
+    sqlite3_stmt *stmt = NULL;
+    uint32_t count = 0;
+
+    if (sqlite3_prepare_v2(_db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            count = (uint32_t) sqlite3_column_int64(stmt, 0);
+        }
+        sqlite3_finalize(stmt);
+    }
+
+    return count;
+}
+
+uint64_t MeshMonDb::getTotalPayloadBytes(void)
+{
+    lock_guard<mutex> lock(_dbMutex);
+    if (_db == NULL) {
+        return 0;
+    }
+
+    const char *sql = "SELECT coalesce(sum(payload_size), 0) FROM packets;";
+    sqlite3_stmt *stmt = NULL;
+    uint64_t bytes = 0;
+
+    if (sqlite3_prepare_v2(_db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            bytes = (uint64_t) sqlite3_column_int64(stmt, 0);
+        }
+        sqlite3_finalize(stmt);
+    }
+
+    return bytes;
+}
+
+uint64_t MeshMonDb::getTotalTextMessageCount(void)
+{
+    lock_guard<mutex> lock(_dbMutex);
+    if (_db == NULL) {
+        return 0;
+    }
+
+    const char *sql = "SELECT count(*) FROM messages;";
+    sqlite3_stmt *stmt = NULL;
+    uint64_t count = 0;
+
+    if (sqlite3_prepare_v2(_db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            count = (uint64_t) sqlite3_column_int64(stmt, 0);
+        }
+        sqlite3_finalize(stmt);
+    }
+
+    return count;
+}
+
 bool MeshMonDb::initSchema(void)
 {
     if (_db == NULL) {
@@ -877,6 +940,220 @@ bool MeshMonDb::getTrafficSummary(time_t since, TrafficSummary &summary)
     }
 
     return true;
+}
+
+bool MeshMonDb::getTrafficRatios(time_t since, float &directPct, float &bcastPct, float &avgHops)
+{
+    lock_guard<mutex> lock(_dbMutex);
+    if (_db == NULL) {
+        return false;
+    }
+
+    directPct = 0.0f;
+    bcastPct = 0.0f;
+    avgHops = 0.0f;
+
+    const char *sql =
+        "SELECT count(*), "
+        "coalesce(sum(CASE WHEN hops = 0 THEN 1 ELSE 0 END), 0), "
+        "coalesce(sum(CASE WHEN to_node = 4294967295 THEN 1 ELSE 0 END), 0), "
+        "coalesce(avg(hops), 0.0) "
+        "FROM packets WHERE meshmon_time >= ?1;";
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(_db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(stmt, 1, since);
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            uint64_t total = (uint64_t) sqlite3_column_int64(stmt, 0);
+            uint64_t direct = (uint64_t) sqlite3_column_int64(stmt, 1);
+            uint64_t bcast = (uint64_t) sqlite3_column_int64(stmt, 2);
+            avgHops = (float) sqlite3_column_double(stmt, 3);
+            if (total > 0) {
+                directPct = (float) (direct * 100.0 / total);
+                bcastPct = (float) (bcast * 100.0 / total);
+            }
+        }
+        sqlite3_finalize(stmt);
+        return true;
+    }
+
+    return false;
+}
+
+bool MeshMonDb::getTopTalkerSummary(time_t since, string &topNode, uint32_t &topPackets)
+{
+    lock_guard<mutex> lock(_dbMutex);
+    if (_db == NULL) {
+        return false;
+    }
+
+    topNode.clear();
+    topPackets = 0;
+
+    const char *sql =
+        "SELECT p.from_node, coalesce(n.short_name, ''), coalesce(n.long_name, ''), count(*) AS cnt "
+        "FROM packets p LEFT JOIN nodes n ON p.from_node = n.node_id "
+        "WHERE p.meshmon_time >= ?1 "
+        "GROUP BY p.from_node "
+        "ORDER BY cnt DESC LIMIT 1;";
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(_db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(stmt, 1, since);
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            uint32_t nodeId = (uint32_t) sqlite3_column_int64(stmt, 0);
+            string sName = (const char *) sqlite3_column_text(stmt, 1);
+            string lName = (const char *) sqlite3_column_text(stmt, 2);
+            topPackets = (uint32_t) sqlite3_column_int64(stmt, 3);
+            if (!sName.empty()) {
+                topNode = sName;
+            } else if (!lName.empty()) {
+                topNode = lName;
+            } else {
+                topNode = formatNodeHex(nodeId);
+            }
+        }
+        sqlite3_finalize(stmt);
+        return true;
+    }
+
+    return false;
+}
+
+bool MeshMonDb::getBestNeighborSummary(time_t since, string &bestNeighbor, float &bestSnr)
+{
+    lock_guard<mutex> lock(_dbMutex);
+    if (_db == NULL) {
+        return false;
+    }
+
+    bestNeighbor.clear();
+    bestSnr = -999.0f;
+
+    const char *sql =
+        "SELECT p.from_node, coalesce(n.short_name, ''), coalesce(n.long_name, ''), avg(p.rx_snr) AS snr "
+        "FROM packets p LEFT JOIN nodes n ON p.from_node = n.node_id "
+        "WHERE p.meshmon_time >= ?1 AND p.hops = 0 "
+        "GROUP BY p.from_node "
+        "ORDER BY snr DESC LIMIT 1;";
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(_db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(stmt, 1, since);
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            uint32_t nodeId = (uint32_t) sqlite3_column_int64(stmt, 0);
+            string sName = (const char *) sqlite3_column_text(stmt, 1);
+            string lName = (const char *) sqlite3_column_text(stmt, 2);
+            bestSnr = (float) sqlite3_column_double(stmt, 3);
+            if (!sName.empty()) {
+                bestNeighbor = sName;
+            } else if (!lName.empty()) {
+                bestNeighbor = lName;
+            } else {
+                bestNeighbor = formatNodeHex(nodeId);
+            }
+        }
+        sqlite3_finalize(stmt);
+        return true;
+    }
+
+    return false;
+}
+
+bool MeshMonDb::getMaxEchoMultiplier(time_t since, uint32_t &maxMultiplier)
+{
+    lock_guard<mutex> lock(_dbMutex);
+    if (_db == NULL) {
+        return false;
+    }
+
+    maxMultiplier = 1;
+
+    const char *sql =
+        "SELECT count(*) AS echo_cnt "
+        "FROM packets "
+        "WHERE meshmon_time >= ?1 "
+        "GROUP BY packet_id, from_node "
+        "ORDER BY echo_cnt DESC LIMIT 1;";
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(_db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(stmt, 1, since);
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            maxMultiplier = (uint32_t) sqlite3_column_int64(stmt, 0);
+        }
+        sqlite3_finalize(stmt);
+        return true;
+    }
+
+    return false;
+}
+
+bool MeshMonDb::getCriticalRelaySummary(time_t since, string &topRelay, uint32_t &relayedCount)
+{
+    lock_guard<mutex> lock(_dbMutex);
+    if (_db == NULL) {
+        return false;
+    }
+
+    topRelay.clear();
+    relayedCount = 0;
+
+    const char *sql =
+        "SELECT p.from_node, coalesce(n.short_name, ''), coalesce(n.long_name, ''), count(*) AS cnt "
+        "FROM packets p LEFT JOIN nodes n ON p.from_node = n.node_id "
+        "WHERE p.meshmon_time >= ?1 AND p.hops > 0 "
+        "GROUP BY p.from_node "
+        "ORDER BY cnt DESC LIMIT 1;";
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(_db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(stmt, 1, since);
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            uint32_t nodeId = (uint32_t) sqlite3_column_int64(stmt, 0);
+            string sName = (const char *) sqlite3_column_text(stmt, 1);
+            string lName = (const char *) sqlite3_column_text(stmt, 2);
+            relayedCount = (uint32_t) sqlite3_column_int64(stmt, 3);
+            if (!sName.empty()) {
+                topRelay = sName;
+            } else if (!lName.empty()) {
+                topRelay = lName;
+            } else {
+                topRelay = formatNodeHex(nodeId);
+            }
+        }
+        sqlite3_finalize(stmt);
+        return true;
+    }
+
+    return false;
+}
+
+bool MeshMonDb::getMaxClockDrift(time_t since, float &maxSkewSec)
+{
+    lock_guard<mutex> lock(_dbMutex);
+    if (_db == NULL) {
+        return false;
+    }
+
+    maxSkewSec = 0.0f;
+
+    const char *sql =
+        "SELECT max(abs(rx_time - meshmon_time)) "
+        "FROM packets "
+        "WHERE meshmon_time >= ?1 AND rx_time IS NOT NULL AND rx_time > 0;";
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(_db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+        sqlite3_bind_int64(stmt, 1, since);
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            maxSkewSec = (float) sqlite3_column_double(stmt, 0);
+        }
+        sqlite3_finalize(stmt);
+        return true;
+    }
+
+    return false;
 }
 
 bool MeshMonDb::getTopTalkers(time_t since, size_t limit, vector<NodeTrafficStat> &stats)

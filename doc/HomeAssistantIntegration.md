@@ -76,14 +76,28 @@ Restart `meshmon`. Within seconds, Home Assistant will discover the gateway and 
 
 ### A. MeshMon Gateway Health & Physics (`meshmon_gateway`)
 
-| Sensor Entity Name | Unique ID | Registered Entity ID | State Topic | Unit | Device Class |
-| :--- | :--- | :--- | :--- | :---: | :---: |
-| **Gateway Total Packets** | `meshmon_gateway_packets` | `sensor.meshmon_gateway_gateway_total_packets` | `meshmon/gateway/total_packets` | pkts | — |
-| **Gateway Active Nodes (24h)** | `meshmon_gateway_active_nodes` | `sensor.meshmon_gateway_gateway_active_nodes_24h` | `meshmon/gateway/active_nodes_24h` | nodes | — |
-| **Gateway Average SNR (1h)** | `meshmon_gateway_avg_snr` | `sensor.meshmon_gateway_gateway_average_snr_1h` | `meshmon/gateway/avg_snr_1h` | dB | signal_strength |
-| **Gateway Direct Neighbors** | `meshmon_gateway_direct_neighbors` | `sensor.meshmon_gateway_gateway_direct_neighbors` | `meshmon/gateway/direct_neighbors` | nodes | — |
-| **Gateway Duplicate Packets** | `meshmon_gateway_duplicate_packets` | `sensor.meshmon_gateway_gateway_duplicate_packets` | `meshmon/gateway/duplicate_packets` | pkts | — |
-| **Gateway DB Size** | `meshmon_gateway_db_size` | `sensor.meshmon_gateway_gateway_db_size` | `meshmon/gateway/db_size_mb` | MB | data_size |
+| Shell Command | Sensor Entity Name | Unique ID | Registered Entity ID | State Topic | Unit | Device Class |
+| :--- | :--- | :--- | :--- | :--- | :---: | :---: |
+| **db summary** | **Total Packets** | `meshmon_gateway_packets` | `sensor.meshmon_gateway_gateway_total_packets` | `meshmon/gateway/total_packets` | pkts | — |
+| **db summary** | **Total Nodes Seen** | `meshmon_gateway_total_nodes` | `sensor.meshmon_gateway_gateway_total_nodes` | `meshmon/gateway/total_nodes` | nodes | — |
+| **db summary** | **Total Airtime Data** | `meshmon_gateway_total_bytes` | `sensor.meshmon_gateway_gateway_total_airtime_data` | `meshmon/gateway/total_bytes_mb` | MB | `data_size` |
+| **db summary** | **Direct Ratio** | `meshmon_gateway_direct_ratio` | `sensor.meshmon_gateway_gateway_direct_ratio` | `meshmon/gateway/direct_ratio_pct` | % | — |
+| **db summary** | **Broadcast Ratio** | `meshmon_gateway_broadcast_ratio` | `sensor.meshmon_gateway_gateway_broadcast_ratio` | `meshmon/gateway/broadcast_ratio_pct` | % | — |
+| **db summary** | **Average Hops** | `meshmon_gateway_avg_hops` | `sensor.meshmon_gateway_gateway_average_hops` | `meshmon/gateway/avg_hops` | hops | — |
+| **db summary** | **Total Messages** | `meshmon_gateway_total_messages` | `sensor.meshmon_gateway_gateway_total_messages` | `meshmon/gateway/total_messages` | msgs | — |
+| **db summary** | **Active Nodes (24h)** | `meshmon_gateway_active_nodes` | `sensor.meshmon_gateway_gateway_active_nodes_24h` | `meshmon/gateway/active_nodes_24h` | nodes | — |
+| **db summary** | **DB Size** | `meshmon_gateway_db_size` | `sensor.meshmon_gateway_gateway_db_size` | `meshmon/gateway/db_size_mb` | MB | `data_size` |
+| **db neighbors** | **Average SNR (1h)** | `meshmon_gateway_avg_snr` | `sensor.meshmon_gateway_gateway_average_snr_1h` | `meshmon/gateway/avg_snr_1h` | dB | `signal_strength` |
+| **db neighbors** | **Direct Neighbors** | `meshmon_gateway_direct_neighbors` | `sensor.meshmon_gateway_gateway_direct_neighbors` | `meshmon/gateway/direct_neighbors` | nodes | — |
+| **db neighbors** | **Best Neighbor SNR** | `meshmon_gateway_best_neighbor_snr` | `sensor.meshmon_gateway_gateway_best_neighbor_snr` | `meshmon/gateway/best_neighbor_snr` | dB | `signal_strength` |
+| **db toptalkers**| **Top Talker** | `meshmon_gateway_top_talker` | `sensor.meshmon_gateway_gateway_top_talker` | `meshmon/gateway/top_talker` | — | — |
+| **db toptalkers**| **Top Talker Packets**| `meshmon_gateway_top_talker_packets`| `sensor.meshmon_gateway_gateway_top_talker_packets` | `meshmon/gateway/top_talker_packets`| pkts | — |
+| **db storm** | **Duplicate Packets (24h)**| `meshmon_gateway_duplicate_packets` | `sensor.meshmon_gateway_gateway_duplicate_packets` | `meshmon/gateway/duplicate_packets` | pkts | — |
+| **db storm** | **Max Echo Multiplier**| `meshmon_gateway_max_echo_mult` | `sensor.meshmon_gateway_gateway_max_echo_multiplier` | `meshmon/gateway/max_echo_mult` | x | — |
+| **db spof** | **Critical Relay** | `meshmon_gateway_critical_relay` | `sensor.meshmon_gateway_gateway_critical_relay` | `meshmon/gateway/critical_relay` | — | — |
+| **db drift** | **Max Clock Drift** | `meshmon_gateway_max_clock_drift` | `sensor.meshmon_gateway_gateway_max_clock_drift` | `meshmon/gateway/max_clock_drift_sec` | s | `duration` |
+| **db health** | **Avg Channel Util** | `meshmon_gateway_avg_channel_util` | `sensor.meshmon_gateway_gateway_avg_channel_util` | `meshmon/gateway/avg_channel_util` | % | — |
+| **db health** | **Duplicate Ratio** | `meshmon_gateway_duplicate_ratio` | `sensor.meshmon_gateway_gateway_duplicate_ratio` | `meshmon/gateway/duplicate_ratio_pct` | % | — |
 
 ---
 
@@ -104,7 +118,15 @@ Restart `meshmon`. Within seconds, Home Assistant will discover the gateway and 
 
 ---
 
-## 4. Sample Lovelace Dashboard Cards (YAML)
+## 4. Live Lovelace Dashboard Preview
+
+<p align="center">
+  <img src="homeassistant-dashboard.png" alt="Home Assistant MeshMon Dashboard" width="90%"/>
+</p>
+
+---
+
+## 5. Sample Lovelace Dashboard Cards (YAML)
 
 Add these custom cards to your Home Assistant dashboard for real-time mesh monitoring.
 
@@ -143,15 +165,50 @@ cards:
     entities:
       - entity: sensor.meshmon_gateway_gateway_total_packets
         name: Lifetime Packets Logged
+      - entity: sensor.meshmon_gateway_gateway_total_nodes
+        name: Total Unique Nodes Seen
+      - entity: sensor.meshmon_gateway_gateway_total_airtime_data
+        name: Total Airtime Data
+      - entity: sensor.meshmon_gateway_gateway_direct_ratio
+        name: Direct RF Traffic Ratio (0-Hop)
       - entity: sensor.meshmon_gateway_gateway_duplicate_packets
         name: Duplicate Packet Storms (24h)
+      - entity: sensor.meshmon_gateway_gateway_total_messages
+        name: Total Text Messages
       - entity: sensor.meshmon_gateway_gateway_db_size
         name: SQLite Database Size
 ```
 
 ---
 
-### Card 2: Environmental & Power Telemetry Grid
+### Card 2: Mesh Diagnostics & Topology Status
+```yaml
+type: entities
+title: Mesh Diagnostics & Routing (24h)
+entities:
+  - entity: sensor.meshmon_gateway_gateway_top_talker
+    name: #1 Top Talker Node
+  - entity: sensor.meshmon_gateway_gateway_top_talker_packets
+    name: Top Talker Packet Count
+  - entity: sensor.meshmon_gateway_gateway_best_neighbor_snr
+    name: Best Direct Neighbor SNR
+  - entity: sensor.meshmon_gateway_gateway_critical_relay
+    name: Critical Relay (SPOF)
+  - entity: sensor.meshmon_gateway_gateway_average_hops
+    name: Average Hop Distance
+  - entity: sensor.meshmon_gateway_gateway_max_echo_multiplier
+    name: Max Storm Multiplier
+  - entity: sensor.meshmon_gateway_gateway_max_clock_drift
+    name: Max Clock Drift Skew
+  - entity: sensor.meshmon_gateway_gateway_avg_channel_util
+    name: Average Channel Utilization
+  - entity: sensor.meshmon_gateway_gateway_duplicate_ratio
+    name: Duplicate Echo Percentage
+```
+
+---
+
+### Card 3: Environmental & Power Telemetry Grid
 *(Replace example entity IDs with your discovered station names or node hex IDs)*
 ```yaml
 type: vertical-stack
@@ -182,7 +239,7 @@ cards:
 
 ---
 
-### Card 3: RF Link Quality & Signal History
+### Card 4: RF Link Quality & Signal History
 ```yaml
 type: history-graph
 title: RF Propagation History

@@ -1670,37 +1670,121 @@ void MeshMon::publishGatewayStatsToMqtt(void)
         _myownMqtt->publish(
             "homeassistant/sensor/meshmon_gateway_packets/config",
             haDiscoveryJson("Gateway Total Packets", "meshmon_gateway_packets",
-                            "meshmon/gateway/total_packets", "", "",
+                            "meshmon/gateway/total_packets", "", "pkts",
+                            "meshmon_gateway", "MeshMon Gateway"),
+            true);
+        _myownMqtt->publish(
+            "homeassistant/sensor/meshmon_gateway_total_nodes/config",
+            haDiscoveryJson("Gateway Total Nodes", "meshmon_gateway_total_nodes",
+                            "meshmon/gateway/total_nodes", "", "nodes",
+                            "meshmon_gateway", "MeshMon Gateway"),
+            true);
+        _myownMqtt->publish(
+            "homeassistant/sensor/meshmon_gateway_total_bytes/config",
+            haDiscoveryJson("Gateway Total Airtime Data", "meshmon_gateway_total_bytes",
+                            "meshmon/gateway/total_bytes_mb", "data_size", "MB",
+                            "meshmon_gateway", "MeshMon Gateway"),
+            true);
+        _myownMqtt->publish(
+            "homeassistant/sensor/meshmon_gateway_direct_ratio/config",
+            haDiscoveryJson("Gateway Direct Ratio", "meshmon_gateway_direct_ratio",
+                            "meshmon/gateway/direct_ratio_pct", "", "%",
+                            "meshmon_gateway", "MeshMon Gateway"),
+            true);
+        _myownMqtt->publish(
+            "homeassistant/sensor/meshmon_gateway_broadcast_ratio/config",
+            haDiscoveryJson("Gateway Broadcast Ratio", "meshmon_gateway_broadcast_ratio",
+                            "meshmon/gateway/broadcast_ratio_pct", "", "%",
+                            "meshmon_gateway", "MeshMon Gateway"),
+            true);
+        _myownMqtt->publish(
+            "homeassistant/sensor/meshmon_gateway_avg_hops/config",
+            haDiscoveryJson("Gateway Average Hops", "meshmon_gateway_avg_hops",
+                            "meshmon/gateway/avg_hops", "", "hops",
+                            "meshmon_gateway", "MeshMon Gateway"),
+            true);
+        _myownMqtt->publish(
+            "homeassistant/sensor/meshmon_gateway_total_messages/config",
+            haDiscoveryJson("Gateway Total Messages", "meshmon_gateway_total_messages",
+                            "meshmon/gateway/total_messages", "", "msgs",
                             "meshmon_gateway", "MeshMon Gateway"),
             true);
         _myownMqtt->publish(
             "homeassistant/sensor/meshmon_gateway_active_nodes/config",
             haDiscoveryJson("Gateway Active Nodes (24h)", "meshmon_gateway_active_nodes",
-                            "meshmon/gateway/active_nodes_24h", "", "",
+                            "meshmon/gateway/active_nodes_24h", "", "nodes",
                             "meshmon_gateway", "MeshMon Gateway"),
             true);
         _myownMqtt->publish(
             "homeassistant/sensor/meshmon_gateway_avg_snr/config",
             haDiscoveryJson("Gateway Average SNR (1h)", "meshmon_gateway_avg_snr",
-                            "meshmon/gateway/avg_snr_1h", "", "dB",
+                            "meshmon/gateway/avg_snr_1h", "signal_strength", "dB",
                             "meshmon_gateway", "MeshMon Gateway"),
             true);
         _myownMqtt->publish(
             "homeassistant/sensor/meshmon_gateway_direct_neighbors/config",
             haDiscoveryJson("Gateway Direct Neighbors", "meshmon_gateway_direct_neighbors",
-                            "meshmon/gateway/direct_neighbors", "", "",
+                            "meshmon/gateway/direct_neighbors", "", "nodes",
+                            "meshmon_gateway", "MeshMon Gateway"),
+            true);
+        _myownMqtt->publish(
+            "homeassistant/sensor/meshmon_gateway_top_talker/config",
+            haDiscoveryJson("Gateway Top Talker", "meshmon_gateway_top_talker",
+                            "meshmon/gateway/top_talker", "", "",
+                            "meshmon_gateway", "MeshMon Gateway"),
+            true);
+        _myownMqtt->publish(
+            "homeassistant/sensor/meshmon_gateway_top_talker_packets/config",
+            haDiscoveryJson("Gateway Top Talker Packets", "meshmon_gateway_top_talker_packets",
+                            "meshmon/gateway/top_talker_packets", "", "pkts",
+                            "meshmon_gateway", "MeshMon Gateway"),
+            true);
+        _myownMqtt->publish(
+            "homeassistant/sensor/meshmon_gateway_best_neighbor_snr/config",
+            haDiscoveryJson("Gateway Best Neighbor SNR", "meshmon_gateway_best_neighbor_snr",
+                            "meshmon/gateway/best_neighbor_snr", "signal_strength", "dB",
                             "meshmon_gateway", "MeshMon Gateway"),
             true);
         _myownMqtt->publish(
             "homeassistant/sensor/meshmon_gateway_duplicate_packets/config",
             haDiscoveryJson("Gateway Duplicate Packets", "meshmon_gateway_duplicate_packets",
-                            "meshmon/gateway/duplicate_packets", "", "",
+                            "meshmon/gateway/duplicate_packets", "", "pkts",
+                            "meshmon_gateway", "MeshMon Gateway"),
+            true);
+        _myownMqtt->publish(
+            "homeassistant/sensor/meshmon_gateway_max_echo_mult/config",
+            haDiscoveryJson("Gateway Max Echo Multiplier", "meshmon_gateway_max_echo_mult",
+                            "meshmon/gateway/max_echo_mult", "", "x",
+                            "meshmon_gateway", "MeshMon Gateway"),
+            true);
+        _myownMqtt->publish(
+            "homeassistant/sensor/meshmon_gateway_critical_relay/config",
+            haDiscoveryJson("Gateway Critical Relay", "meshmon_gateway_critical_relay",
+                            "meshmon/gateway/critical_relay", "", "",
+                            "meshmon_gateway", "MeshMon Gateway"),
+            true);
+        _myownMqtt->publish(
+            "homeassistant/sensor/meshmon_gateway_max_clock_drift/config",
+            haDiscoveryJson("Gateway Max Clock Drift", "meshmon_gateway_max_clock_drift",
+                            "meshmon/gateway/max_clock_drift_sec", "duration", "s",
+                            "meshmon_gateway", "MeshMon Gateway"),
+            true);
+        _myownMqtt->publish(
+            "homeassistant/sensor/meshmon_gateway_avg_channel_util/config",
+            haDiscoveryJson("Gateway Avg Channel Util", "meshmon_gateway_avg_channel_util",
+                            "meshmon/gateway/avg_channel_util", "", "%",
+                            "meshmon_gateway", "MeshMon Gateway"),
+            true);
+        _myownMqtt->publish(
+            "homeassistant/sensor/meshmon_gateway_duplicate_ratio/config",
+            haDiscoveryJson("Gateway Duplicate Ratio", "meshmon_gateway_duplicate_ratio",
+                            "meshmon/gateway/duplicate_ratio_pct", "", "%",
                             "meshmon_gateway", "MeshMon Gateway"),
             true);
         _myownMqtt->publish(
             "homeassistant/sensor/meshmon_gateway_db_size/config",
             haDiscoveryJson("Gateway DB Size", "meshmon_gateway_db_size",
-                            "meshmon/gateway/db_size_mb", "", "MB",
+                            "meshmon/gateway/db_size_mb", "data_size", "MB",
                             "meshmon_gateway", "MeshMon Gateway"),
             true);
         _haGatewayDiscovered = true;
@@ -1709,11 +1793,34 @@ void MeshMon::publishGatewayStatsToMqtt(void)
     time_t now = time(NULL);
     time_t hourAgo = now - 3600;
     time_t dayAgo = now - 86400;
-    char buf[32];
+    char buf[64];
 
     uint64_t totalPkts = _db->getTotalPacketCount();
     snprintf(buf, sizeof(buf), "%llu", (unsigned long long) totalPkts);
     _myownMqtt->publish("meshmon/gateway/total_packets", string(buf), true);
+
+    uint32_t totalNodes = _db->getTotalNodeCount();
+    snprintf(buf, sizeof(buf), "%u", totalNodes);
+    _myownMqtt->publish("meshmon/gateway/total_nodes", string(buf), true);
+
+    uint64_t totalBytes = _db->getTotalPayloadBytes();
+    float totalMb = ((float) totalBytes) / (1024.0f * 1024.0f);
+    snprintf(buf, sizeof(buf), "%.2f", totalMb);
+    _myownMqtt->publish("meshmon/gateway/total_bytes_mb", string(buf), true);
+
+    uint64_t totalMessages = _db->getTotalTextMessageCount();
+    snprintf(buf, sizeof(buf), "%llu", (unsigned long long) totalMessages);
+    _myownMqtt->publish("meshmon/gateway/total_messages", string(buf), true);
+
+    float directPct = 0.0f, bcastPct = 0.0f, avgHops = 0.0f;
+    if (_db->getTrafficRatios(dayAgo, directPct, bcastPct, avgHops)) {
+        snprintf(buf, sizeof(buf), "%.1f", directPct);
+        _myownMqtt->publish("meshmon/gateway/direct_ratio_pct", string(buf), true);
+        snprintf(buf, sizeof(buf), "%.1f", bcastPct);
+        _myownMqtt->publish("meshmon/gateway/broadcast_ratio_pct", string(buf), true);
+        snprintf(buf, sizeof(buf), "%.2f", avgHops);
+        _myownMqtt->publish("meshmon/gateway/avg_hops", string(buf), true);
+    }
 
     TrafficSummary hourSum;
     if (_db->getTrafficSummary(hourAgo, hourSum)) {
@@ -1734,16 +1841,54 @@ void MeshMon::publishGatewayStatsToMqtt(void)
         _myownMqtt->publish("meshmon/gateway/active_nodes_24h", string(buf), true);
     }
 
+    string topTalkerNode;
+    uint32_t topTalkerPkts = 0;
+    if (_db->getTopTalkerSummary(dayAgo, topTalkerNode, topTalkerPkts) && !topTalkerNode.empty()) {
+        _myownMqtt->publish("meshmon/gateway/top_talker", topTalkerNode, true);
+        snprintf(buf, sizeof(buf), "%u", topTalkerPkts);
+        _myownMqtt->publish("meshmon/gateway/top_talker_packets", string(buf), true);
+    }
+
     vector<NeighborStat> neighbors;
     if (_db->getNeighborStats(dayAgo, neighbors)) {
         snprintf(buf, sizeof(buf), "%u", (unsigned int) neighbors.size());
         _myownMqtt->publish("meshmon/gateway/direct_neighbors", string(buf), true);
     }
 
+    string bestNeighborNode;
+    float bestNeighborSnr = -999.0f;
+    if (_db->getBestNeighborSummary(dayAgo, bestNeighborNode, bestNeighborSnr) && (bestNeighborSnr > -900.0f)) {
+        snprintf(buf, sizeof(buf), "%+.1f", bestNeighborSnr);
+        _myownMqtt->publish("meshmon/gateway/best_neighbor_snr", string(buf), true);
+    }
+
+    uint32_t maxEchoMult = 1;
+    if (_db->getMaxEchoMultiplier(dayAgo, maxEchoMult)) {
+        snprintf(buf, sizeof(buf), "%u", maxEchoMult);
+        _myownMqtt->publish("meshmon/gateway/max_echo_mult", string(buf), true);
+    }
+
+    string topRelayNode;
+    uint32_t topRelayPkts = 0;
+    if (_db->getCriticalRelaySummary(dayAgo, topRelayNode, topRelayPkts) && !topRelayNode.empty()) {
+        _myownMqtt->publish("meshmon/gateway/critical_relay", topRelayNode, true);
+    }
+
+    float maxClockDriftSec = 0.0f;
+    if (_db->getMaxClockDrift(dayAgo, maxClockDriftSec)) {
+        snprintf(buf, sizeof(buf), "%.0f", maxClockDriftSec);
+        _myownMqtt->publish("meshmon/gateway/max_clock_drift_sec", string(buf), true);
+    }
+
     ChannelHealthStat health;
     if (_db->getChannelHealth(dayAgo, health)) {
         snprintf(buf, sizeof(buf), "%u", (unsigned int) health.duplicatePackets);
         _myownMqtt->publish("meshmon/gateway/duplicate_packets", string(buf), true);
+        snprintf(buf, sizeof(buf), "%.1f", health.avgChannelUtil);
+        _myownMqtt->publish("meshmon/gateway/avg_channel_util", string(buf), true);
+        float dupeRatio = (health.totalPackets > 0) ? (health.duplicatePackets * 100.0f / health.totalPackets) : 0.0f;
+        snprintf(buf, sizeof(buf), "%.1f", dupeRatio);
+        _myownMqtt->publish("meshmon/gateway/duplicate_ratio_pct", string(buf), true);
     }
 
     size_t dbBytes = _db->getDbFileSize();

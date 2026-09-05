@@ -1643,6 +1643,8 @@ int MeshMonShell::db(int argc, char **argv)
                      hours > 0 ? (to_string(hours) + " hours").c_str() : "All time");
         this->printf("Total Packets:     %u\n", s.totalPackets);
         this->printf("Total Payload:     %llu bytes\n", (unsigned long long) s.totalBytes);
+        this->printf("Total Nodes:       %u (lifetime registered)\n", _db->getTotalNodeCount());
+        this->printf("Total Messages:    %llu text messages\n", (unsigned long long) _db->getTotalTextMessageCount());
         float bcastPct = s.totalPackets > 0 ? (s.broadcastPackets * 100.0f / s.totalPackets) : 0.0f;
         float unicastPct = s.totalPackets > 0 ? (s.unicastPackets * 100.0f / s.totalPackets) : 0.0f;
         float directPct = s.totalPackets > 0 ? (s.directPackets * 100.0f / s.totalPackets) : 0.0f;

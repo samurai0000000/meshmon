@@ -193,6 +193,9 @@ public:
     const string &getDbPath(void) const;
     size_t getDbFileSize(void) const;
     uint64_t getTotalPacketCount(void);
+    uint32_t getTotalNodeCount(void);
+    uint64_t getTotalPayloadBytes(void);
+    uint64_t getTotalTextMessageCount(void);
 
     // Non-blocking asynchronous ingestion methods (Host NTP timestamp ground truth)
     void enqueuePacket(const meshtastic_MeshPacket &packet, time_t meshmonTime);
@@ -226,12 +229,18 @@ public:
 
     // High-Level Analytical Queries
     bool getTrafficSummary(time_t since, TrafficSummary &summary);
+    bool getTrafficRatios(time_t since, float &directPct, float &bcastPct, float &avgHops);
     bool getTopTalkers(time_t since, size_t limit, vector<NodeTrafficStat> &stats);
+    bool getTopTalkerSummary(time_t since, string &topNode, uint32_t &topPackets);
     bool getNeighborStats(time_t since, vector<NeighborStat> &stats);
+    bool getBestNeighborSummary(time_t since, string &bestNeighbor, float &bestSnr);
     bool getEchoStorms(time_t since, size_t limit, vector<EchoStormStat> &stats);
+    bool getMaxEchoMultiplier(time_t since, uint32_t &maxMultiplier);
     bool getLinkAsymmetry(time_t since, vector<LinkAsymmetryStat> &stats);
     bool getCriticalRepeaters(time_t since, size_t limit, vector<CriticalRepeaterStat> &stats);
+    bool getCriticalRelaySummary(time_t since, string &topRelay, uint32_t &relayedCount);
     bool getClockDrift(time_t since, vector<ClockDriftStat> &stats);
+    bool getMaxClockDrift(time_t since, float &maxSkewSec);
     bool getHopDistribution(time_t since, vector<HopStat> &stats);
     bool getPortnumDistribution(time_t since, vector<AppStat> &stats);
     bool getNodeDetail(uint32_t nodeId, time_t since, NodeDetail &detail);
