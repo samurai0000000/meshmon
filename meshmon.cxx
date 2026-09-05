@@ -870,34 +870,6 @@ int main(int argc, char **argv)
         exit(EXIT_FAILURE);
     }
 
-    if (dbEnabled && !dbPath.empty()) {
-        g_db = make_shared<MeshMonDb>();
-        if (g_db->open(dbPath)) {
-            g_db->start();
-            if (dbRetentionDays > 0) {
-                time_t threshold = time(NULL) - (dbRetentionDays * 86400);
-                g_db->pruneOlderThan(threshold);
-            }
-        } else {
-            cerr << "Failed to open database at " << dbPath << endl;
-            g_db.reset();
-        }
-    }
-
-    ret = mosquitto_lib_init();
-    if (ret != MOSQ_ERR_SUCCESS) {
-        fprintf(stderr, "mosquitto_lib_init failed (%d)!\n", ret);
-        releasePidLock();
-        exit(EXIT_FAILURE);
-    }
-
-    ret = curl_global_init(CURL_GLOBAL_DEFAULT);
-    if (ret != CURLE_OK) {
-        fprintf(stderr, "curl_global_init failed (%d)!\n", ret);
-        releasePidLock();
-        exit(EXIT_FAILURE);
-    }
-
     if (daemon) {
         pid_t pid;
         int fdevnull;
@@ -932,6 +904,34 @@ int main(int argc, char **argv)
                 close(fdevnull);
             }
         }
+    }
+
+    if (dbEnabled && !dbPath.empty()) {
+        g_db = make_shared<MeshMonDb>();
+        if (g_db->open(dbPath)) {
+            g_db->start();
+            if (dbRetentionDays > 0) {
+                time_t threshold = time(NULL) - (dbRetentionDays * 86400);
+                g_db->pruneOlderThan(threshold);
+            }
+        } else {
+            cerr << "Failed to open database at " << dbPath << endl;
+            g_db.reset();
+        }
+    }
+
+    ret = mosquitto_lib_init();
+    if (ret != MOSQ_ERR_SUCCESS) {
+        fprintf(stderr, "mosquitto_lib_init failed (%d)!\n", ret);
+        releasePidLock();
+        exit(EXIT_FAILURE);
+    }
+
+    ret = curl_global_init(CURL_GLOBAL_DEFAULT);
+    if (ret != CURLE_OK) {
+        fprintf(stderr, "curl_global_init failed (%d)!\n", ret);
+        releasePidLock();
+        exit(EXIT_FAILURE);
     }
 
     atexit(cleanup);

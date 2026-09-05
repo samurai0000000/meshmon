@@ -12,7 +12,7 @@
 #include <thread>
 #include <MqttClient.hxx>
 
-#define MQTT_QUEUE_MAX 64
+#define MQTT_QUEUE_MAX 4096
 #define MQTT_PACKET_BUF 1024
 
 MqttClient::MqttClient()
@@ -209,6 +209,7 @@ void MqttClient::onConnect(struct mosquitto *mosq, void *obj, int rc)
     }
 
     mqtt->_connected.store(true);
+    mqtt->_cv.notify_one();
 
     if (!mqtt->_topic.empty()) {
         rc = mosquitto_subscribe(mosq, NULL, mqtt->_topic.c_str(), 1);
@@ -303,6 +304,8 @@ void MqttClient::run(void)
             cerr << "mosquitto_new() failed!" << endl;
             goto done;
         }
+        // Do not call mosquitto_threaded_set here: loop_start sets that
+        // itself and returns MOSQ_ERR_INVAL if threaded is already set.
     }
 
     if (_user.empty()) {
@@ -357,10 +360,16 @@ void MqttClient::run(void)
 
         {
             unique_lock<mutex> lock(_mutex);
-            while (_isRunning.load() &&
+            while (_isRunning.load() && !_connected.load()) {
+                _cv.wait_for(lock, std::chrono::seconds(1));
+            }
+            while (_isRunning.load() && _connected.load() &&
                    _proxyQueue.empty() && _packetQueue.empty() &&
                    _textQueue.empty()) {
                 _cv.wait_for(lock, std::chrono::seconds(1));
+            }
+            if (!_connected.load()) {
+                continue;
             }
             if (!_proxyQueue.empty()) {
                 m = _proxyQueue.front();

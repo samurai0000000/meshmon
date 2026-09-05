@@ -2197,6 +2197,60 @@ bool MeshMonDb::executeRawQuery(const string &sql, QueryResult &result)
     return true;
 }
 
+bool MeshMonDb::getDiscoveredAutomationNodes(vector<DbAutomationNodeSummary> &nodes)
+{
+    lock_guard<mutex> lock(_dbMutex);
+    if (_db == NULL) {
+        return false;
+    }
+
+    nodes.clear();
+
+    const char *sql =
+        "SELECT "
+        "  a.node_id, "
+        "  a.node_hex, "
+        "  coalesce(n.long_name, ''), "
+        "  coalesce(n.short_name, ''), "
+        "  (SELECT a2.device_type FROM automation_events a2 WHERE a2.node_id = a.node_id ORDER BY a2.meshmon_time DESC LIMIT 1) AS dev_type, "
+        "  (SELECT a3.action_param FROM automation_events a3 WHERE a3.node_id = a.node_id AND a3.command_name = 'ROLLCALL' ORDER BY a3.meshmon_time DESC LIMIT 1) AS rollcall_param, "
+        "  min(a.meshmon_time) AS first_seen, "
+        "  max(a.meshmon_time) AS last_seen, "
+        "  (SELECT count(*) FROM automation_events a4 WHERE a4.node_id = a.node_id AND (a4.command_name = 'BOOT_UP' OR a4.command_name = 'REBOOT_DETECTED')) AS reboot_cnt "
+        "FROM automation_events a "
+        "LEFT JOIN nodes n ON n.node_id = a.node_id "
+        "GROUP BY a.node_id;";
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(_db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        return false;
+    }
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        DbAutomationNodeSummary s;
+        s.nodeId = (uint32_t) sqlite3_column_int64(stmt, 0);
+        const char *nodeHex = (const char *) sqlite3_column_text(stmt, 1);
+        const char *longName = (const char *) sqlite3_column_text(stmt, 2);
+        const char *shortName = (const char *) sqlite3_column_text(stmt, 3);
+        const char *devType = (const char *) sqlite3_column_text(stmt, 4);
+        const char *rollcall = (const char *) sqlite3_column_text(stmt, 5);
+
+        s.nodeHex = nodeHex ? nodeHex : "";
+        s.longName = longName ? longName : "";
+        s.shortName = shortName ? shortName : "";
+        s.deviceType = devType ? devType : "";
+        s.rollcallPayload = rollcall ? rollcall : "";
+        s.firstSeen = (time_t) sqlite3_column_int64(stmt, 6);
+        s.lastSeen = (time_t) sqlite3_column_int64(stmt, 7);
+        s.rebootCount = (uint32_t) sqlite3_column_int64(stmt, 8);
+
+        nodes.push_back(s);
+    }
+
+    sqlite3_finalize(stmt);
+    return true;
+}
+
 /*
  * Local variables:
  * mode: C++

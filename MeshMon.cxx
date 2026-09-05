@@ -29,6 +29,7 @@ MeshMon::MeshMon()
     _verbose = false;
     _isClockSynced = true;
     _haGatewayDiscovered = false;
+    setLogIncoming(false);
 }
 
 bool MeshMon::verbose(void) const
@@ -260,6 +261,7 @@ void MeshMon::setOwnMqtt(const string &server, uint16_t port,
                                         placeholders::_1, placeholders::_2));
     _myownMqtt->subscribe("meshmon/cmd/#");
     _myownMqtt->start();
+    publishAllDiscoveredNodes();
 }
 
 void MeshMon::setChatBot(shared_ptr<ChatBot> bot)
@@ -294,6 +296,12 @@ void MeshMon::setCalibration(shared_ptr<Calibration> calib)
 void MeshMon::setDb(shared_ptr<MeshMonDb> db)
 {
     _db = db;
+    if (_db != NULL) {
+        loadAutomationNodesFromDb();
+        if (_myownMqtt != NULL) {
+            publishAllDiscoveredNodes();
+        }
+    }
 }
 
 void MeshMon::gotModuleConfigMQTT(const meshtastic_ModuleConfig_MQTTConfig &c)
@@ -438,7 +446,22 @@ void MeshMon::gotTextMessage(const meshtastic_MeshPacket &packet,
         _db->enqueueTextMessage(packet, message, time(NULL));
     }
 
-    processAutomationMessage(packet, message);
+    if (packet.to == whoami()) {
+        this->printf("%s:%c%s\n",
+                     getDisplayName(packet.from).c_str(),
+                     message.find('\n') == string::npos ? ' ' : '\n',
+                     message.c_str());
+    } else {
+        this->printf("%s on #%s:%c%s\n",
+                     getDisplayName(packet.from).c_str(),
+                     getChannelName(packet.channel).c_str(),
+                     message.find('\n') == string::npos ? ' ' : '\n',
+                     message.c_str());
+    }
+
+    if (processAutomationMessage(packet, message)) {
+        return;
+    }
 
     bool result = false;
 
@@ -589,13 +612,17 @@ static string haDiscoveryJson(const string &name,
     os << "{"
        << "\"name\":\"" << jsonEscape(name) << "\","
        << "\"unique_id\":\"" << jsonEscape(uniqueId) << "\","
+       << "\"object_id\":\"" << jsonEscape(uniqueId) << "\","
+       << "\"has_entity_name\":true,"
        << "\"state_topic\":\"" << jsonEscape(stateTopic) << "\",";
     if (!deviceClass.empty()) {
         os << "\"device_class\":\"" << jsonEscape(deviceClass) << "\",";
     }
-    os << "\"unit_of_measurement\":\"" << jsonEscape(unit) << "\","
-       << "\"state_class\":\"measurement\","
-       << "\"device\":{"
+    if (!unit.empty()) {
+        os << "\"unit_of_measurement\":\"" << jsonEscape(unit) << "\",";
+        os << "\"state_class\":\"measurement\",";
+    }
+    os << "\"device\":{"
        << "\"identifiers\":[\"" << jsonEscape(identifier) << "\"],"
        << "\"name\":\"" << jsonEscape(deviceName) << "\","
        << "\"manufacturer\":\"Meshtastic\""
@@ -616,6 +643,8 @@ static string haSwitchDiscoveryJson(const string &name,
     os << "{"
        << "\"name\":\"" << jsonEscape(name) << "\","
        << "\"unique_id\":\"" << jsonEscape(uniqueId) << "\","
+       << "\"object_id\":\"" << jsonEscape(uniqueId) << "\","
+       << "\"has_entity_name\":true,"
        << "\"state_topic\":\"" << jsonEscape(stateTopic) << "\","
        << "\"command_topic\":\"" << jsonEscape(commandTopic) << "\","
        << "\"payload_on\":\"ON\","
@@ -642,6 +671,8 @@ static string haButtonDiscoveryJson(const string &name,
     os << "{"
        << "\"name\":\"" << jsonEscape(name) << "\","
        << "\"unique_id\":\"" << jsonEscape(uniqueId) << "\","
+       << "\"object_id\":\"" << jsonEscape(uniqueId) << "\","
+       << "\"has_entity_name\":true,"
        << "\"command_topic\":\"" << jsonEscape(commandTopic) << "\","
        << "\"payload_press\":\"" << jsonEscape(payloadPress) << "\","
        << "\"device\":{"
@@ -666,6 +697,8 @@ static string haNumberDiscoveryJson(const string &name,
     os << "{"
        << "\"name\":\"" << jsonEscape(name) << "\","
        << "\"unique_id\":\"" << jsonEscape(uniqueId) << "\","
+       << "\"object_id\":\"" << jsonEscape(uniqueId) << "\","
+       << "\"has_entity_name\":true,"
        << "\"state_topic\":\"" << jsonEscape(stateTopic) << "\","
        << "\"command_topic\":\"" << jsonEscape(commandTopic) << "\","
        << "\"min\":" << minVal << ","
@@ -694,6 +727,8 @@ static string haTextDiscoveryJson(const string &name,
     os << "{"
        << "\"name\":\"" << jsonEscape(name) << "\","
        << "\"unique_id\":\"" << jsonEscape(uniqueId) << "\","
+       << "\"object_id\":\"" << jsonEscape(uniqueId) << "\","
+       << "\"has_entity_name\":true,"
        << "\"state_topic\":\"" << jsonEscape(stateTopic) << "\","
        << "\"command_topic\":\"" << jsonEscape(commandTopic) << "\","
        << "\"device\":{"
@@ -716,6 +751,8 @@ static string haBinarySensorDiscoveryJson(const string &name,
     os << "{"
        << "\"name\":\"" << jsonEscape(name) << "\","
        << "\"unique_id\":\"" << jsonEscape(uniqueId) << "\","
+       << "\"object_id\":\"" << jsonEscape(uniqueId) << "\","
+       << "\"has_entity_name\":true,"
        << "\"state_topic\":\"" << jsonEscape(stateTopic) << "\",";
     if (!deviceClass.empty()) {
         os << "\"device_class\":\"" << jsonEscape(deviceClass) << "\",";
@@ -747,6 +784,8 @@ static string haClimateDiscoveryJson(const string &name,
     os << "{"
        << "\"name\":\"" << jsonEscape(name) << "\","
        << "\"unique_id\":\"" << jsonEscape(uniqueId) << "\","
+       << "\"object_id\":\"" << jsonEscape(uniqueId) << "\","
+       << "\"has_entity_name\":true,"
        << "\"mode_state_topic\":\"" << jsonEscape(modeStateTopic) << "\","
        << "\"mode_command_topic\":\"" << jsonEscape(modeCmdTopic) << "\","
        << "\"temperature_state_topic\":\"" << jsonEscape(tempStateTopic) << "\","
@@ -820,10 +859,8 @@ void MeshMon::gotEnvironmentMetrics(const meshtastic_MeshPacket &packet,
     }
 
     const string id = nodeHexId(packet.from);
-    string shortName = SimpleClient::lookupShortName(packet.from, true);
-    string longName = SimpleClient::lookupLongName(packet.from, true);
-    string identifier = shortName.empty() ? id : shortName;
-    string deviceName = longName.empty() ? (string("!") + id) : longName;
+    string identifier = "meshmon_" + id;
+    string deviceName = "meshmon_" + id;
     string namesKey = identifier + "\n" + deviceName;
     unsigned int present = 0;
     unsigned int already = 0;
@@ -974,10 +1011,8 @@ void MeshMon::gotDeviceMetrics(const meshtastic_MeshPacket &packet,
     }
 
     const string id = nodeHexId(packet.from);
-    string shortName = SimpleClient::lookupShortName(packet.from, true);
-    string longName = SimpleClient::lookupLongName(packet.from, true);
-    string identifier = shortName.empty() ? id : shortName;
-    string deviceName = longName.empty() ? (string("!") + id) : longName;
+    string identifier = "meshmon_" + id;
+    string deviceName = "meshmon_" + id;
     string namesKey = identifier + "\n" + deviceName;
     unsigned int present = 0;
     unsigned int already = 0;
@@ -1114,10 +1149,8 @@ void MeshMon::gotPowerMetrics(const meshtastic_MeshPacket &packet,
     }
 
     const string id = nodeHexId(packet.from);
-    string shortName = SimpleClient::lookupShortName(packet.from, true);
-    string longName = SimpleClient::lookupLongName(packet.from, true);
-    string identifier = shortName.empty() ? id : shortName;
-    string deviceName = longName.empty() ? (string("!") + id) : longName;
+    string identifier = "meshmon_" + id;
+    string deviceName = "meshmon_" + id;
     string namesKey = identifier + "\n" + deviceName;
     unsigned int present = 0;
     unsigned int already = 0;
@@ -1570,19 +1603,6 @@ bool MeshMon::handleTextMessage(const meshtastic_MeshPacket &packet,
         }
 
         if (query == "time") {
-            if (directMessage) {
-                this->printf("%s:%c%s\n",
-                             getDisplayName(packet.from).c_str(),
-                             _message.find('\n') == string::npos ? ' ' : '\n',
-                             _message.c_str());
-            } else {
-                this->printf("%s on #%s:%c%s\n",
-                             getDisplayName(packet.from).c_str(),
-                             getChannelName(packet.channel).c_str(),
-                             _message.find('\n') == string::npos ? ' ' : '\n',
-                             _message.c_str());
-            }
-
             time_t now = ::time(NULL);
             struct tm tm;
             char timeBuf[64];
@@ -1734,19 +1754,6 @@ bool MeshMon::handleTextMessage(const meshtastic_MeshPacket &packet,
             }
 
             if (!reply.empty()) {
-                if (directMessage) {
-                    this->printf("%s:%c%s\n",
-                                 getDisplayName(packet.from).c_str(),
-                                 _message.find('\n') == string::npos ? ' ' : '\n',
-                                 _message.c_str());
-                } else {
-                    this->printf("%s on #%s:%c%s\n",
-                                 getDisplayName(packet.from).c_str(),
-                                 getChannelName(packet.channel).c_str(),
-                                 _message.find('\n') == string::npos ? ' ' : '\n',
-                                 _message.c_str());
-                }
-
                 bool result = textMessage(dest, channel, reply);
                 if (result == false) {
                     this->printf("textMessage '%s' failed!\n", reply.c_str());
@@ -1759,6 +1766,15 @@ bool MeshMon::handleTextMessage(const meshtastic_MeshPacket &packet,
                 setLastMessageFrom(packet.from, _message);
                 return true;
             }
+        }
+    }
+
+    {
+        string serviceCheck = _message;
+        toLowercase(serviceCheck);
+        if (serviceCheck.find("is at your service") != string::npos) {
+            setLastMessageFrom(packet.from, _message);
+            return true;
         }
     }
 
@@ -2156,24 +2172,45 @@ bool MeshMon::getAutomationNode(uint32_t nodeId, AutomationNode &node) const
 }
 
 bool MeshMon::sendAutomationCommand(uint32_t nodeId, const string &cmd,
-                                    const string &initiator)
+                                    const string &initiator, int channel)
 {
     if (nodeId == 0) {
         return false;
     }
 
-    int robotChan = getRobotChannel();
-    uint8_t chan = (robotChan >= 0) ? (uint8_t) robotChan : 0;
+    uint8_t chan = 0;
+    if (channel >= 0) {
+        chan = (uint8_t) channel;
+    } else {
+        int robotChan = getRobotChannel();
+        chan = (robotChan >= 0) ? (uint8_t) robotChan : 0;
+    }
+
+    string onAirCmd = cmd;
+    string lowerCmd = cmd;
+    toLowercase(lowerCmd);
+    trimWhitespace(lowerCmd);
+    if (lowerCmd.rfind("rollcall", 0) != 0) {
+        onAirCmd = idString(nodeId) + " " + cmd;
+    }
 
     {
         lock_guard<mutex> lock(_autoNodesMutex);
         PendingCommand pc;
-        pc.command = cmd;
+        pc.command = onAirCmd;
         pc.txTime = chrono::steady_clock::now();
         _pendingCommands[nodeId] = pc;
     }
 
-    bool sent = textMessage(nodeId, chan, cmd);
+    bool sent = textMessage(0xffffffffU, chan, onAirCmd);
+    if (!sent) {
+        this->printf("sendAutomationCommand '%s' to %s failed!\n",
+                     onAirCmd.c_str(), getDisplayName(nodeId).c_str());
+    } else {
+        this->printf("my_reply to %s: %s\n",
+                     getDisplayName(nodeId).c_str(), onAirCmd.c_str());
+    }
+
     if (_db != NULL) {
         string devType = "";
         {
@@ -2183,27 +2220,85 @@ bool MeshMon::sendAutomationCommand(uint32_t nodeId, const string &cmd,
             }
         }
         _db->enqueueAutomationEvent(time(NULL), nodeId, devType, "TX_CMD",
-                                    "command", cmd, "", sent ? "EXECUTED" : "FAILED",
+                                    "command", onAirCmd, "",
+                                    sent ? "EXECUTED" : "FAILED",
                                     initiator);
     }
     return sent;
 }
 
-void MeshMon::processAutomationMessage(const meshtastic_MeshPacket &packet,
-                                      const string &message)
+void MeshMon::loadAutomationNodesFromDb(void)
 {
-    if (packet.from == 0 || packet.from == whoami()) {
+    if (_db == NULL) {
         return;
     }
 
-    if (!isSensorForwardAllowed(packet.from)) {
+    vector<DbAutomationNodeSummary> dbNodes;
+    if (!_db->getDiscoveredAutomationNodes(dbNodes)) {
         return;
+    }
+
+    {
+        lock_guard<mutex> lock(_autoNodesMutex);
+
+        for (size_t i = 0; i < dbNodes.size(); i++) {
+            const DbAutomationNodeSummary &s = dbNodes[i];
+            if (s.nodeId == 0) continue;
+
+            AutomationNode &node = _autoNodes[s.nodeId];
+            node.nodeId = s.nodeId;
+            node.nodeHex = nodeHexId(s.nodeId);
+            node.shortName = !s.shortName.empty() ? s.shortName : node.nodeHex;
+            node.longName = !s.longName.empty() ? s.longName : (!s.shortName.empty() ? s.shortName : (string("!") + node.nodeHex));
+            node.deviceType = s.deviceType;
+            node.firstSeen = s.firstSeen;
+            node.lastSeen = s.lastSeen;
+            node.rebootCount = s.rebootCount;
+            node.online = false;
+            node.haDiscovered = false;
+
+            if (!s.rollcallPayload.empty()) {
+                istringstream iss(s.rollcallPayload);
+                string token;
+                while (iss >> token) {
+                    size_t eq = token.find('=');
+                    if (eq != string::npos) {
+                        string key = token.substr(0, eq);
+                        string val = token.substr(eq + 1);
+                        if (key == "app" && node.deviceType.empty()) node.deviceType = val;
+                        else if (key == "ver") node.version = val;
+                        else if (key == "hw") node.hardware = val;
+                        else if (key == "caps") node.capabilities = val;
+                    }
+                }
+            }
+        }
+    }
+}
+
+bool MeshMon::processAutomationMessage(const meshtastic_MeshPacket &packet,
+                                       const string &message)
+{
+    if (packet.from == 0 || packet.from == whoami()) {
+        return false;
+    }
+
+    if (!isSensorForwardAllowed(packet.from)) {
+        return false;
     }
 
     string text = message;
     trimWhitespace(text);
     if (text.empty()) {
-        return;
+        return false;
+    }
+
+    {
+        string serviceCheck = text;
+        toLowercase(serviceCheck);
+        if (serviceCheck.find("is at your service") != string::npos) {
+            return true;
+        }
     }
 
     uint32_t rttMs = 0;
@@ -2254,11 +2349,11 @@ void MeshMon::processAutomationMessage(const meshtastic_MeshPacket &packet,
     toLowercase(lower);
 
     if (lower.find("boot-up:") == 0 || lower.find("boot-up ") == 0) {
-        parseBootupMessage(packet, text, rttMs);
+        return parseBootupMessage(packet, text, rttMs);
     } else if (lower.find("uptime:") == 0 || lower.find("uptime ") == 0) {
-        parseUptimeMessage(packet, text, rttMs);
-    } else if (lower.find("rollcall:") == 0) {
-        parseRollcallResponse(packet, text, rttMs);
+        return parseUptimeMessage(packet, text, rttMs);
+    } else if (lower.find("identify:") == 0 || lower.find("rollcall:") == 0) {
+        return parseRollcallResponse(packet, text, rttMs);
     } else {
         string devType;
         {
@@ -2269,20 +2364,22 @@ void MeshMon::processAutomationMessage(const meshtastic_MeshPacket &packet,
         if (devType == "meshpump" || lower.find("fish") != string::npos ||
             lower.find("pump") != string::npos || lower.find("soil") != string::npos ||
             lower.find("water") != string::npos) {
-            parseMeshPumpStatus(packet, text, rttMs);
+            return parseMeshPumpStatus(packet, text, rttMs);
         } else if (devType == "meshroof" || lower.find("amplify") != string::npos ||
                    lower.find("wifi") != string::npos || lower.find("net:") != string::npos ||
                    lower.find("reset") != string::npos) {
-            parseMeshRoofStatus(packet, text, rttMs);
+            return parseMeshRoofStatus(packet, text, rttMs);
         } else if (devType == "meshroom" || lower.find("ac:") != string::npos ||
                    lower.find("tv:") != string::npos || lower.find("ac ") != string::npos ||
                    lower.find("tv ") != string::npos) {
-            parseMeshRoomStatus(packet, text, rttMs);
+            return parseMeshRoomStatus(packet, text, rttMs);
         }
     }
+
+    return false;
 }
 
-void MeshMon::parseBootupMessage(const meshtastic_MeshPacket &packet,
+bool MeshMon::parseBootupMessage(const meshtastic_MeshPacket &packet,
                                  const string &text, uint32_t rttMs)
 {
     time_t now = time(NULL);
@@ -2315,14 +2412,18 @@ void MeshMon::parseBootupMessage(const meshtastic_MeshPacket &packet,
                                     "system", "BOOT_UP", shortName, "EXECUTED", "RF", rttMs);
     }
 
-    // Auto-discover capabilities via targeted rollcall
-    char hexId[16];
-    snprintf(hexId, sizeof(hexId), "!%08x", packet.from);
-    string rollcallCmd = "rollcall " + string(hexId);
-    sendAutomationCommand(packet.from, rollcallCmd, "SYSTEM");
+    if (_myownMqtt != NULL) {
+        string id = nodeHexId(packet.from);
+        _myownMqtt->publish("meshmon/" + id + "/uptime", "0", true);
+    }
+
+    // Auto-discover capabilities via targeted identify on the channel
+    // where bootup arrived (!id identify after sendAutomationCommand prefix)
+    sendAutomationCommand(packet.from, "identify", "SYSTEM", packet.channel);
+    return true;
 }
 
-void MeshMon::parseUptimeMessage(const meshtastic_MeshPacket &packet,
+bool MeshMon::parseUptimeMessage(const meshtastic_MeshPacket &packet,
                                  const string &text, uint32_t rttMs)
 {
     time_t now = time(NULL);
@@ -2336,17 +2437,47 @@ void MeshMon::parseUptimeMessage(const meshtastic_MeshPacket &packet,
     uint32_t days = 0, hours = 0, mins = 0, secs = 0;
     uint32_t totalSec = 0;
 
-    // Support formats: "1d 2h 3m 4s", "02:03:04", "12345s", "12345"
-    if (sscanf(upStr.c_str(), "%ud %uh %um %us", &days, &hours, &mins, &secs) >= 1 ||
-        sscanf(upStr.c_str(), "%ud %uh %um", &days, &hours, &mins) >= 1 ||
-        sscanf(upStr.c_str(), "%uh %um %us", &hours, &mins, &secs) >= 1 ||
-        sscanf(upStr.c_str(), "%um %us", &mins, &secs) >= 1 ||
-        sscanf(upStr.c_str(), "%u:%u:%u", &hours, &mins, &secs) == 3) {
+    // Support formats:
+    // 1) "<N>d HH:MM:SS" (e.g. "3d 14:00:00")
+    // 2) "HH:MM:SS" (e.g. "00:08:01", "04:00:00")
+    // 3) "MM:SS" (e.g. "08:01")
+    // 4) "1d 2h 3m 4s", "1d 2h 3m", "2h 3m 4s", "3m 4s", "4s", "12345s", "12345"
+    if (sscanf(upStr.c_str(), "%ud %u:%u:%u", &days, &hours, &mins, &secs) == 4) {
         totalSec = days * 86400 + hours * 3600 + mins * 60 + secs;
+    } else if (sscanf(upStr.c_str(), "%u:%u:%u", &hours, &mins, &secs) == 3) {
+        totalSec = hours * 3600 + mins * 60 + secs;
+    } else if (sscanf(upStr.c_str(), "%u:%u", &mins, &secs) == 2) {
+        totalSec = mins * 60 + secs;
+    } else if (sscanf(upStr.c_str(), "%ud %uh %um %us", &days, &hours, &mins, &secs) == 4) {
+        totalSec = days * 86400 + hours * 3600 + mins * 60 + secs;
+    } else if (sscanf(upStr.c_str(), "%ud %uh %um", &days, &hours, &mins) == 3) {
+        totalSec = days * 86400 + hours * 3600 + mins * 60;
+    } else if (sscanf(upStr.c_str(), "%ud %uh", &days, &hours) == 2) {
+        totalSec = days * 86400 + hours * 3600;
+    } else if (sscanf(upStr.c_str(), "%uh %um %us", &hours, &mins, &secs) == 3) {
+        totalSec = hours * 3600 + mins * 60 + secs;
+    } else if (sscanf(upStr.c_str(), "%uh %um", &hours, &mins) == 2) {
+        totalSec = hours * 3600 + mins * 60;
+    } else if (sscanf(upStr.c_str(), "%um %us", &mins, &secs) == 2) {
+        totalSec = mins * 60 + secs;
     } else {
-        uint32_t val = 0;
-        if (sscanf(upStr.c_str(), "%u", &val) == 1) {
-            totalSec = val;
+        istringstream iss(upStr);
+        string tok;
+        bool matchedUnit = false;
+        uint32_t d = 0, h = 0, m = 0, s = 0;
+        while (iss >> tok) {
+            uint32_t val = 0;
+            char unit = 0;
+            if (sscanf(tok.c_str(), "%u%c", &val, &unit) >= 1) {
+                if (unit == 'd' || unit == 'D') { d += val; matchedUnit = true; }
+                else if (unit == 'h' || unit == 'H') { h += val; matchedUnit = true; }
+                else if (unit == 'm' || unit == 'M') { m += val; matchedUnit = true; }
+                else if (unit == 's' || unit == 'S') { s += val; matchedUnit = true; }
+                else if (unit == 0) { s += val; }
+            }
+        }
+        if (matchedUnit || (d == 0 && h == 0 && m == 0 && s > 0)) {
+            totalSec = d * 86400 + h * 3600 + m * 60 + s;
         }
     }
 
@@ -2381,12 +2512,16 @@ void MeshMon::parseUptimeMessage(const meshtastic_MeshPacket &packet,
         snprintf(buf, sizeof(buf), "%u", totalSec);
         _myownMqtt->publish("meshmon/" + id + "/uptime", string(buf), true);
     }
+
+    ensureAutomationDiscovery(packet.from, packet.channel);
+    return true;
 }
 
-void MeshMon::parseRollcallResponse(const meshtastic_MeshPacket &packet,
+bool MeshMon::parseRollcallResponse(const meshtastic_MeshPacket &packet,
                                     const string &text, uint32_t rttMs)
 {
-    // Format: "rollcall: app=meshpump ver=2.1.2 hw=linux caps=pump_fish,pump_up,led,env"
+    // Format: "identify: app=meshpump ver=2.1.2 hw=linux caps=..."
+    // Also accepts legacy "rollcall: app=..." replies.
     time_t now = time(NULL);
     string payload = text;
     size_t colon = text.find(':');
@@ -2411,7 +2546,7 @@ void MeshMon::parseRollcallResponse(const meshtastic_MeshPacket &packet,
     }
 
     if (app.empty()) {
-        return;
+        return false;
     }
 
     string oldType;
@@ -2441,6 +2576,10 @@ void MeshMon::parseRollcallResponse(const meshtastic_MeshPacket &packet,
     if (_myownMqtt != NULL) {
         publishAutomationDiscovery(nodeCopy);
         publishAutomationState(nodeCopy);
+        {
+            lock_guard<mutex> lock(_autoNodesMutex);
+            _autoNodes[packet.from].haDiscovered = nodeCopy.haDiscovered;
+        }
     }
 
     if (_db != NULL) {
@@ -2452,9 +2591,11 @@ void MeshMon::parseRollcallResponse(const meshtastic_MeshPacket &packet,
         _db->enqueueAutomationEvent(now, packet.from, app, "RX_STATE",
                                     "system", "ROLLCALL", payload, "EXECUTED", "RF", rttMs);
     }
+
+    return true;
 }
 
-void MeshMon::parseMeshPumpStatus(const meshtastic_MeshPacket &packet,
+bool MeshMon::parseMeshPumpStatus(const meshtastic_MeshPacket &packet,
                                   const string &text, uint32_t rttMs)
 {
     time_t now = time(NULL);
@@ -2515,9 +2656,12 @@ void MeshMon::parseMeshPumpStatus(const meshtastic_MeshPacket &packet,
     if (stateUpdated && _myownMqtt != NULL) {
         publishAutomationState(nodeCopy);
     }
+
+    ensureAutomationDiscovery(packet.from, packet.channel);
+    return true;
 }
 
-void MeshMon::parseMeshRoofStatus(const meshtastic_MeshPacket &packet,
+bool MeshMon::parseMeshRoofStatus(const meshtastic_MeshPacket &packet,
                                   const string &text, uint32_t rttMs)
 {
     time_t now = time(NULL);
@@ -2567,9 +2711,12 @@ void MeshMon::parseMeshRoofStatus(const meshtastic_MeshPacket &packet,
     if (stateUpdated && _myownMqtt != NULL) {
         publishAutomationState(nodeCopy);
     }
+
+    ensureAutomationDiscovery(packet.from, packet.channel);
+    return true;
 }
 
-void MeshMon::parseMeshRoomStatus(const meshtastic_MeshPacket &packet,
+bool MeshMon::parseMeshRoomStatus(const meshtastic_MeshPacket &packet,
                                   const string &text, uint32_t rttMs)
 {
     time_t now = time(NULL);
@@ -2621,6 +2768,72 @@ void MeshMon::parseMeshRoomStatus(const meshtastic_MeshPacket &packet,
     if (stateUpdated && _myownMqtt != NULL) {
         publishAutomationState(nodeCopy);
     }
+
+    ensureAutomationDiscovery(packet.from, packet.channel);
+    return true;
+}
+
+void MeshMon::publishAllDiscoveredNodes(void)
+{
+    if (_myownMqtt == NULL) {
+        return;
+    }
+
+    vector<AutomationNode> nodesToPublish;
+    {
+        lock_guard<mutex> lock(_autoNodesMutex);
+        for (auto &kv : _autoNodes) {
+            if (!kv.second.deviceType.empty() && !kv.second.capabilities.empty()) {
+                nodesToPublish.push_back(kv.second);
+            }
+        }
+    }
+
+    for (auto &n : nodesToPublish) {
+        publishAutomationDiscovery(n);
+        publishAutomationState(n);
+        {
+            lock_guard<mutex> lock(_autoNodesMutex);
+            _autoNodes[n.nodeId].haDiscovered = true;
+        }
+    }
+}
+
+void MeshMon::ensureAutomationDiscovery(uint32_t nodeId, uint32_t channel)
+{
+    if (nodeId == 0 || nodeId == whoami()) {
+        return;
+    }
+
+    if (!isSensorForwardAllowed(nodeId)) {
+        return;
+    }
+
+    bool needsDiscovery = false;
+    bool needsPublishDiscovery = false;
+    AutomationNode nodeCopy;
+
+    {
+        lock_guard<mutex> lock(_autoNodesMutex);
+        AutomationNode &node = _autoNodes[nodeId];
+        if (node.deviceType.empty() || node.capabilities.empty()) {
+            needsDiscovery = true;
+        } else if (!node.haDiscovered) {
+            needsPublishDiscovery = true;
+            nodeCopy = node;
+        }
+    }
+
+    if (needsPublishDiscovery && _myownMqtt != NULL) {
+        publishAutomationDiscovery(nodeCopy);
+        publishAutomationState(nodeCopy);
+        {
+            lock_guard<mutex> lock(_autoNodesMutex);
+            _autoNodes[nodeId].haDiscovered = true;
+        }
+    } else if (needsDiscovery) {
+        sendAutomationCommand(nodeId, "identify", "SYSTEM", channel);
+    }
 }
 
 void MeshMon::publishAutomationDiscovery(AutomationNode &node)
@@ -2629,9 +2842,9 @@ void MeshMon::publishAutomationDiscovery(AutomationNode &node)
         return;
     }
 
-    string id = node.nodeHex;
-    string identifier = node.shortName.empty() ? id : node.shortName;
-    string deviceName = node.longName.empty() ? (string("!") + id) : node.longName;
+    string id = nodeHexId(node.nodeId);
+    string identifier = "meshmon_" + id;
+    string deviceName = "meshmon_" + id;
 
     // Common Uptime Sensor
     _myownMqtt->publish(
@@ -2851,7 +3064,7 @@ void MeshMon::publishAutomationState(const AutomationNode &node)
         return;
     }
 
-    string id = node.nodeHex;
+    string id = nodeHexId(node.nodeId);
 
     if (node.deviceType == "meshpump") {
         _myownMqtt->publish("meshmon/" + id + "/pump_fish/state", node.fishPumpState ? "ON" : "OFF", true);
@@ -2888,6 +3101,12 @@ void MeshMon::publishAutomationState(const AutomationNode &node)
             snprintf(buf, sizeof(buf), "%.1f", node.boardTempC);
             _myownMqtt->publish("meshmon/" + id + "/board_temp", string(buf), true);
         }
+    }
+
+    if (node.uptimeSec > 0) {
+        char upBuf[32];
+        snprintf(upBuf, sizeof(upBuf), "%u", node.uptimeSec);
+        _myownMqtt->publish("meshmon/" + id + "/uptime", string(upBuf), true);
     }
 
     if (node.lastRttMs > 0) {

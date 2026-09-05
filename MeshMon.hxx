@@ -107,7 +107,8 @@ public:
     map<uint32_t, AutomationNode> getAutomationNodes(void) const;
     bool getAutomationNode(uint32_t nodeId, AutomationNode &node) const;
     bool sendAutomationCommand(uint32_t nodeId, const string &cmd,
-                               const string &initiator = "SHELL");
+                               const string &initiator = "SHELL",
+                               int channel = -1);
 
 protected:
 
@@ -176,20 +177,23 @@ protected:
     void publishGatewayStatsToMqtt(void);
 
     // HomeMesh Automation Handling
-    void processAutomationMessage(const meshtastic_MeshPacket &packet,
+    bool processAutomationMessage(const meshtastic_MeshPacket &packet,
                                   const string &message);
-    void parseRollcallResponse(const meshtastic_MeshPacket &packet,
+    bool parseRollcallResponse(const meshtastic_MeshPacket &packet,
                                const string &text, uint32_t rttMs = 0);
-    void parseBootupMessage(const meshtastic_MeshPacket &packet,
+    bool parseBootupMessage(const meshtastic_MeshPacket &packet,
                             const string &text, uint32_t rttMs = 0);
-    void parseUptimeMessage(const meshtastic_MeshPacket &packet,
+    bool parseUptimeMessage(const meshtastic_MeshPacket &packet,
                             const string &text, uint32_t rttMs = 0);
-    void parseMeshPumpStatus(const meshtastic_MeshPacket &packet,
+    bool parseMeshPumpStatus(const meshtastic_MeshPacket &packet,
                              const string &text, uint32_t rttMs = 0);
-    void parseMeshRoofStatus(const meshtastic_MeshPacket &packet,
+    bool parseMeshRoofStatus(const meshtastic_MeshPacket &packet,
                              const string &text, uint32_t rttMs = 0);
-    void parseMeshRoomStatus(const meshtastic_MeshPacket &packet,
+    bool parseMeshRoomStatus(const meshtastic_MeshPacket &packet,
                              const string &text, uint32_t rttMs = 0);
+    void loadAutomationNodesFromDb(void);
+    void publishAllDiscoveredNodes(void);
+    void ensureAutomationDiscovery(uint32_t nodeId, uint32_t channel = 0);
     void publishAutomationDiscovery(AutomationNode &node);
     void revokeAutomationDiscovery(uint32_t nodeId, const string &oldDeviceType);
     void publishAutomationState(const AutomationNode &node);

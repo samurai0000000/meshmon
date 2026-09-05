@@ -83,7 +83,7 @@ In modular LoRa setups, radio modules may be reprogrammed or swapped between phy
                                           └─────────────────────────────────┘
 ```
 
-1. **Detection**: When an incoming message (`rollcall`, `boot-up`, or subsystem telemetry) announces an application type differing from the node's current in-memory record, `meshmon` triggers an immediate **Device Role Migration**.
+1. **Detection**: When an incoming message (`identify`, `rollcall:`, `boot-up`, or subsystem telemetry) announces an application type differing from the node's current in-memory record, `meshmon` triggers an immediate **Device Role Migration**.
 2. **Home Assistant Entity Revocation (Pruning)**:
    - Home Assistant retains MQTT Auto-Discovery topics until explicitly cleared.
    - `meshmon` iterates over all discovery topics registered for the node's **old** role (e.g., `climate.<node>_ac_climate`, `switch.<node>_tv_power`) and publishes an **empty payload (`""`) with `retain=true`**.
@@ -104,7 +104,7 @@ All HomeMesh robot nodes automatically broadcast standard lifecycle messages on 
 * **Format**: `boot-up: <ShortName>` (e.g. `boot-up: PUMP`)
 * **MeshMon Ingestion Logic**:
   1. **Instant Node Awakening**: Node is immediately marked `ONLINE` in memory and available in Home Assistant.
-  2. **Automated Registration Interrogation**: `meshmon` automatically dispatches a targeted `rollcall <node_id>` to discover the node's application type, version, and capabilities with zero manual configuration.
+  2. **Automated Registration Interrogation**: `meshmon` automatically broadcasts `!<node_id> identify` on the robot channel (visible to observers). Only the addressed node reports its application type, version, and capabilities. HomeChat `rollcall` is not used for fleet probing.
   3. **Reboot Counter Tracking**: Increments the node's reboot counter in memory and logs the boot event to SQLite `automation_events` (`subsystem="system"`, `command_name="BOOT_UP"`).
 
 ### B. Hourly Uptime Broadcast (`uptime: ...`)
@@ -119,43 +119,48 @@ All HomeMesh robot nodes automatically broadcast standard lifecycle messages on 
 
 ---
 
-## 5. Targeted Node Discovery & Rollcall Protocol
+## 5. Targeted Node Discovery (`identify`)
 
-To dynamically register automation nodes and capabilities without flooding the LoRa mesh network:
+`meshmon` transmits every outbound automation command as a **robot-channel broadcast** (`to = 0xffffffff`), not a Meshtastic direct message. Targeting is in the text so observers on `#home` can see interrogations and controls, while only the addressed node answers or acts.
 
-### A. Targeted `rollcall` Command Syntax
+- **Fleet probe**: `!<nodeid> identify` (HomeChat channel addressing). Old HomeChat nodes ignore `identify` and stay silent. Only updated robot firmware replies.
+- **Control verbs**: `!<nodeid> <cmd>` (e.g. `!db2f0dcc fish on`).
+- **HomeChat `rollcall`**: social / human command only. MeshMon does **not** use it for automation discovery (legacy firmware replies `"… is at your service"` and must not be fed to Gemini).
+
+### A. Targeted `identify` Command Syntax
 
 | Command Syntax | Target Scope | Behavior |
 | :--- | :--- | :--- |
-| `rollcall <node_id>` | Specific Hex Node ID (e.g. `!2bf941d4` or `0x2bf941d4`) | Only the matching node responds. Other nodes remain silent. |
-| `rollcall <short_name>` | Specific Short Name (e.g. `PUMP`, `ROOF`, `ROOM`) | Only the node whose short name matches responds. |
-| `rollcall <long_name>` | Specific Long Name (e.g. `Garden Pump`, `Living Room`) | Only the node whose long name matches responds. |
-| `rollcall` *(Directed DM)* | Single Target Node via direct Meshtastic message | The recipient node responds. |
-| `rollcall` *(Broadcast)* | All Nodes on Channel | Broadcast discovery; nodes reply with small jitter delay. |
+| `!<node_id> identify` | Specific Hex Node ID (e.g. `!2bf941d4`) | Channel broadcast; only the matching node responds. Other nodes remain silent. |
+| `<short_name> identify` | Specific Short Name (e.g. `PUMP`, `ROOF`, `ROOM`) | Only the node whose short name matches responds. |
+| `<long_name> identify` | Specific Long Name | Only the node whose long name matches responds. |
+| `all identify` | All Nodes on Channel | Broadcast discovery; updated nodes reply with small jitter delay. |
 
 ### B. Standard Machine-Readable Response Format
 
 ```text
-rollcall: app=<app_name> ver=<x.y.z> hw=<platform> [caps=<cap1,cap2...>]
+identify: app=<app_name> ver=<x.y.z> hw=<platform> [caps=<cap1,cap2...>]
 ```
+
+MeshMon also accepts the legacy prefix `rollcall: app=…` with the same tokens.
 
 #### Per-Device Structured Responses:
 * **`meshpump`**:
   ```text
-  rollcall: app=meshpump ver=2.1.2 hw=linux caps=pump_fish,pump_up,led,env
+  identify: app=meshpump ver=2.1.2 hw=linux caps=pump_fish,pump_up,led,env
   ```
 * **`meshroof`**:
   ```text
-  rollcall: app=meshroof ver=2.1.2 hw=esp32s3 caps=amplify,wifi,net,cpu_temp,buzzer
+  identify: app=meshroof ver=2.1.2 hw=esp32s3 caps=amplify,wifi,net,cpu_temp,buzzer
   ```
 * **`meshroom`**:
   ```text
-  rollcall: app=meshroom ver=2.1.2 hw=rp2040 caps=ac_ir,tv_ir,board_temp,buzzer
+  identify: app=meshroom ver=2.1.2 hw=rp2040 caps=ac_ir,tv_ir,board_temp,buzzer
   ```
 
 ### C. Outdated / Unparseable Firmware Policy
-* If an authorized mate responds to `rollcall` with a legacy unparseable string (such as `"<Node>, <Target> is at your service"`), `meshmon` assumes the node is running **outdated firmware**.
-* The node is flagged as running outdated firmware and is **ignored** for Home Assistant entity auto-discovery and control proxying until updated firmware is installed.
+* If an authorized mate responds to a human `rollcall` with a legacy unparseable string (such as `"<Node>, <Target> is at your service"`), `meshmon` consumes the message and does not forward it to Gemini.
+* The node is **ignored** for Home Assistant entity auto-discovery and control proxying until it answers `identify` with a structured `identify:` (or `rollcall:`) payload.
 
 ---
 
@@ -252,7 +257,7 @@ Subsystems:
 
 ## 8. Supported Device Types & Extended Command Protocols
 
-Messages transmitted on the dedicated **Robot Channel** utilize structured `HomeChat` key-value syntax with deterministic acknowledgments.
+Messages transmitted on the dedicated **Robot Channel** utilize structured `HomeChat` key-value syntax with deterministic acknowledgments. MeshMon prefixes each control verb with the target node hex (`!2bf941d4 pump fish on`) so the packet is a channel broadcast that only the addressed node executes. The tables below list the verb after that prefix.
 
 ### A. `meshpump` (Fish Tank & Upper Water Pump Relay Controller)
 
@@ -370,7 +375,7 @@ CREATE INDEX IF NOT EXISTS idx_auto_events_sub ON automation_events(subsystem, m
 
 ## 10. Response Latency (RTT) & Network Performance Tracing
 
-`MeshMon` measures the real-world round-trip time (RTT) between transmitting a command (or targeted rollcall) over the LoRa mesh and receiving the device's corresponding acknowledgment or telemetry reply:
+`MeshMon` measures the real-world round-trip time (RTT) between transmitting a command (or targeted `identify`) over the LoRa mesh and receiving the device's corresponding acknowledgment or telemetry reply:
 
 1. **Dispatch Timestamping**: When `sendAutomationCommand()` dispatches a packet, high-resolution monotonic timestamps (`std::chrono::steady_clock`) are stored in `_pendingCommands[nodeId]`.
 2. **Reply Ingestion & EMA Filtering**: When a reply packet arrives from `nodeId`, elapsed milliseconds are calculated. `MeshMon` maintains:
@@ -473,7 +478,7 @@ Time     | Node      | App      | Dir  | Command          | Param      | Stat
 ## 13. Safety & Invariants
 
 1. **Mate Verification**: Unauthorized Meshtastic messages cannot trigger state changes or dispatch commands.
-2. **Targeted Discovery**: Directed `rollcall <target>` avoids channel congestion and broadcast storms.
+2. **Targeted Discovery**: Directed `!<nodeid> identify` avoids HomeChat `rollcall` storms from older firmware.
 3. **Hardware Cutoff Enforcement**: `meshpump` upper pump commands default to automated cutoff timers to protect pumps from running dry.
 4. **Automatic Role Migration**: Changing a node's firmware cleanly removes stale entities from Home Assistant without orphaned controls.
 5. **Loss-of-Signal Heartbeats**: MeshMon marks devices `OFFLINE` if no Meshtastic message, telemetry, or hourly uptime heartbeat is received within 90 minutes (5400s), allowing a 1-heartbeat grace window to accommodate temporary LoRa packet collisions or RF fading without false offline alarms.

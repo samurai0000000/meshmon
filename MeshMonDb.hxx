@@ -245,6 +245,18 @@ struct RoomAnalytics {
           avgBoardTemp(0.0f), maxBoardTemp(0.0f), totalCommands(0) {}
 };
 
+struct DbAutomationNodeSummary {
+    uint32_t nodeId;
+    string nodeHex;
+    string longName;
+    string shortName;
+    string deviceType;
+    string rollcallPayload;
+    time_t firstSeen;
+    time_t lastSeen;
+    uint32_t rebootCount;
+};
+
 struct QueryResult {
     vector<string> columns;
     vector<vector<string>> rows;
@@ -335,6 +347,7 @@ public:
     bool getAutomationHistory(size_t limit, vector<AutomationEvent> &events);
     bool getLatencyTrend(uint32_t nodeId, time_t since, vector<LatencyTrendPoint> &points);
     bool getAutomationEventCount(time_t since, uint32_t &count);
+    bool getDiscoveredAutomationNodes(vector<DbAutomationNodeSummary> &nodes);
 
     // Raw SQL Execution
     bool executeRawQuery(const string &sql, QueryResult &result);
