@@ -79,6 +79,19 @@ database = {
 
 Restart `meshmon`. Within seconds, Home Assistant will automatically discover the gateway, network diagnostics, telemetry sensors, and all HomeMesh automation controls!
 
+### Step 4: Entity & Device Lifecycle Management (Purging Stale or Ghost Entities)
+
+Home Assistant MQTT Auto-Discovery retains configuration payloads indefinitely on the broker until they are explicitly overwritten or deleted. If a hardware module is decommissioned, renamed, or if legacy entities (such as opaque `meshmon_<hex>` ghost devices) need to be pruned:
+
+1. **Automatic Pruning on Hardware Migration**: When `meshmon` detects that a node has migrated between robot roles (e.g., `meshroom` $\rightarrow$ `meshroof`), it automatically publishes an empty payload (`""`) with `retain=true` to all obsolete config topics.
+2. **Manual Broker Purging**: To remove any unwanted or obsolete MQTT entity, publish an empty string with the retain flag set to the entity's configuration topic:
+   ```bash
+   # Example: purge an obsolete sensor discovery configuration
+   mosquitto_pub -h 192.168.1.100 -p 1883 -u meshmon -P your-password \
+     -t "homeassistant/sensor/meshmon_ae608f08_battery/config" -n -r
+   ```
+   Home Assistant will instantly remove the purged entity from its registry without requiring a server reboot.
+
 ---
 
 ## 3. Exported Entities & Topics Catalog
@@ -114,7 +127,14 @@ Restart `meshmon`. Within seconds, Home Assistant will automatically discover th
 
 ---
 
-### B. Per-Node Environmental & Device Sensors (`meshmon_<node_id>_*`)
+### B. Per-Node Environmental & Device Sensors
+
+#### Device Identity & Naming Standard
+Every Meshtastic node registered in Home Assistant is published with:
+- **`device.identifiers`**: `["meshmon_<node_id>"]` (e.g. `["meshmon_ae608f08"]`). This invariant hardware key ensures all telemetry sensors and automation controls map to a single unified device in Home Assistant without duplicate device profiles.
+- **`device.name`**: Standardized to use the human-readable **Long Name** configured on the node (e.g., `"CasaMagnifica 2FBed"`, `"dev1"`, `"bcnm"`). If the long name is not yet resolved, it falls back to the short name, and finally `!<node_id>`.
+- **Dynamic Name Updates**: When `meshmon` receives a Meshtastic `User` / `NodeInfo` packet announcing or updating a node's long name, it automatically republishes the MQTT Auto-Discovery configuration in-place. Home Assistant updates the device display title in the UI seamlessly while preserving all history, entity IDs, and dashboard bindings.
+- **Telemetry vs. Robot Fleet Separation**: Authorized nodes in the gateway's `_mates`, `_admins`, or `whoami` lists have their telemetry forwarded under their friendly names. Telemetry forwarding **does not** mark a node as an automation robot; non-robot mates do not create empty robot controls and are excluded from robot fleet counts.
 
 | Sensor Type | State Topic | Unit | Device Class |
 | :--- | :--- | :---: | :---: |
@@ -134,6 +154,8 @@ Restart `meshmon`. Within seconds, Home Assistant will automatically discover th
 ---
 
 ### C. HomeMesh Bidirectional Automation Controls
+
+Automation controls attach to the same unified device (`identifiers: ["meshmon_<node_id>"]`) under the node's friendly long name. Only nodes that have passed explicit robot capability identification (`app=meshpump`, `meshroof`, `meshroom`) receive these entities.
 
 #### 1. `meshpump` (Fish Tank & Upper Water Pump Relay Controller)
 | Domain | Entity Name | State Topic | Command Topic | Payload / Values |

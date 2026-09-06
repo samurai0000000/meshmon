@@ -2299,6 +2299,9 @@ void MeshMonShell::printFleetRobotStatus(void)
 
     for (map<uint32_t, AutomationNode>::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
         const AutomationNode &n = it->second;
+        if (n.deviceType.empty()) {
+            continue;
+        }
         string statusStr = n.online ? "ON" : "OFF";
         string upStr = (n.uptimeSec > 0) ? (to_string(n.uptimeSec / 3600) + "h " + to_string((n.uptimeSec % 3600) / 60) + "m") : "-";
         string stateSummary = "-";

@@ -2212,13 +2212,14 @@ bool MeshMonDb::getDiscoveredAutomationNodes(vector<DbAutomationNodeSummary> &no
         "  a.node_hex, "
         "  coalesce(n.long_name, ''), "
         "  coalesce(n.short_name, ''), "
-        "  (SELECT a2.device_type FROM automation_events a2 WHERE a2.node_id = a.node_id ORDER BY a2.meshmon_time DESC LIMIT 1) AS dev_type, "
+        "  (SELECT a2.device_type FROM automation_events a2 WHERE a2.node_id = a.node_id AND a2.device_type IS NOT NULL AND a2.device_type != '' ORDER BY a2.meshmon_time DESC LIMIT 1) AS dev_type, "
         "  (SELECT a3.action_param FROM automation_events a3 WHERE a3.node_id = a.node_id AND a3.command_name = 'ROLLCALL' ORDER BY a3.meshmon_time DESC LIMIT 1) AS rollcall_param, "
         "  min(a.meshmon_time) AS first_seen, "
         "  max(a.meshmon_time) AS last_seen, "
         "  (SELECT count(*) FROM automation_events a4 WHERE a4.node_id = a.node_id AND (a4.command_name = 'BOOT_UP' OR a4.command_name = 'REBOOT_DETECTED')) AS reboot_cnt "
         "FROM automation_events a "
         "LEFT JOIN nodes n ON n.node_id = a.node_id "
+        "WHERE a.device_type IS NOT NULL AND a.device_type != '' "
         "GROUP BY a.node_id;";
 
     sqlite3_stmt *stmt = NULL;
@@ -2239,6 +2240,9 @@ bool MeshMonDb::getDiscoveredAutomationNodes(vector<DbAutomationNodeSummary> &no
         s.longName = longName ? longName : "";
         s.shortName = shortName ? shortName : "";
         s.deviceType = devType ? devType : "";
+        if (s.nodeId == 0 || s.deviceType.empty()) {
+            continue;
+        }
         s.rollcallPayload = rollcall ? rollcall : "";
         s.firstSeen = (time_t) sqlite3_column_int64(stmt, 6);
         s.lastSeen = (time_t) sqlite3_column_int64(stmt, 7);

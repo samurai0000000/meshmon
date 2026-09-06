@@ -102,6 +102,7 @@ public:
 
     float getCpuTempC(void);
     bool isSensorForwardAllowed(uint32_t nodeId) const;
+    bool isRobotNode(uint32_t nodeId) const;
 
     // HomeMesh Automation Fleet Access
     map<uint32_t, AutomationNode> getAutomationNodes(void) const;

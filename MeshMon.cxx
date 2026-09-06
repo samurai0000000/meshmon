@@ -430,7 +430,7 @@ void MeshMon::gotPacket(const meshtastic_MeshPacket &packet)
     if (packet.from != 0 && isSensorForwardAllowed(packet.from)) {
         lock_guard<mutex> lock(_autoNodesMutex);
         map<uint32_t, AutomationNode>::iterator it = _autoNodes.find(packet.from);
-        if (it != _autoNodes.end()) {
+        if (it != _autoNodes.end() && !it->second.deviceType.empty()) {
             it->second.lastSeen = meshmonTime;
             it->second.online = true;
         }
@@ -504,6 +504,29 @@ void MeshMon::gotUser(const meshtastic_MeshPacket &packet,
     }
 
     MeshClient::gotUser(packet, user);
+
+    bool rediscoveryNeeded = false;
+    AutomationNode nodeCopy;
+    {
+        lock_guard<mutex> lock(_autoNodesMutex);
+        map<uint32_t, AutomationNode>::iterator it = _autoNodes.find(packet.from);
+        if (it != _autoNodes.end() && !it->second.deviceType.empty()) {
+            if (user.long_name[0] != '\0') {
+                it->second.longName = user.long_name;
+            }
+            if (user.short_name[0] != '\0') {
+                it->second.shortName = user.short_name;
+            }
+            if (it->second.haDiscovered) {
+                rediscoveryNeeded = true;
+                nodeCopy = it->second;
+            }
+        }
+    }
+
+    if (rediscoveryNeeded && _myownMqtt != NULL) {
+        publishAutomationDiscovery(nodeCopy);
+    }
 
 #if 0
     if (!verbose()) {
@@ -829,6 +852,21 @@ bool MeshMon::isSensorForwardAllowed(uint32_t nodeId) const
     return false;
 }
 
+bool MeshMon::isRobotNode(uint32_t nodeId) const
+{
+    if (nodeId == 0) {
+        return false;
+    }
+
+    if (nodeId == whoami()) {
+        return true;
+    }
+
+    lock_guard<mutex> lock(_autoNodesMutex);
+    map<uint32_t, AutomationNode>::const_iterator it = _autoNodes.find(nodeId);
+    return (it != _autoNodes.end() && !it->second.deviceType.empty());
+}
+
 void MeshMon::gotEnvironmentMetrics(const meshtastic_MeshPacket &packet,
                                     const meshtastic_EnvironmentMetrics &metrics)
 {
@@ -859,8 +897,10 @@ void MeshMon::gotEnvironmentMetrics(const meshtastic_MeshPacket &packet,
     }
 
     const string id = nodeHexId(packet.from);
+    string shortName = SimpleClient::lookupShortName(packet.from, true);
+    string longName = SimpleClient::lookupLongName(packet.from, true);
     string identifier = "meshmon_" + id;
-    string deviceName = "meshmon_" + id;
+    string deviceName = !longName.empty() ? longName : (!shortName.empty() ? shortName : (string("!") + id));
     string namesKey = identifier + "\n" + deviceName;
     unsigned int present = 0;
     unsigned int already = 0;
@@ -1011,8 +1051,10 @@ void MeshMon::gotDeviceMetrics(const meshtastic_MeshPacket &packet,
     }
 
     const string id = nodeHexId(packet.from);
+    string shortName = SimpleClient::lookupShortName(packet.from, true);
+    string longName = SimpleClient::lookupLongName(packet.from, true);
     string identifier = "meshmon_" + id;
-    string deviceName = "meshmon_" + id;
+    string deviceName = !longName.empty() ? longName : (!shortName.empty() ? shortName : (string("!") + id));
     string namesKey = identifier + "\n" + deviceName;
     unsigned int present = 0;
     unsigned int already = 0;
@@ -1149,8 +1191,10 @@ void MeshMon::gotPowerMetrics(const meshtastic_MeshPacket &packet,
     }
 
     const string id = nodeHexId(packet.from);
+    string shortName = SimpleClient::lookupShortName(packet.from, true);
+    string longName = SimpleClient::lookupLongName(packet.from, true);
     string identifier = "meshmon_" + id;
-    string deviceName = "meshmon_" + id;
+    string deviceName = !longName.empty() ? longName : (!shortName.empty() ? shortName : (string("!") + id));
     string namesKey = identifier + "\n" + deviceName;
     unsigned int present = 0;
     unsigned int already = 0;
@@ -2122,8 +2166,11 @@ void MeshMon::publishGatewayStatsToMqtt(void)
     uint32_t rttCount = 0;
     {
         lock_guard<mutex> lock(_autoNodesMutex);
-        autoTotal = (uint32_t) _autoNodes.size();
         for (map<uint32_t, AutomationNode>::const_iterator it = _autoNodes.begin(); it != _autoNodes.end(); ++it) {
+            if (it->second.deviceType.empty()) {
+                continue;
+            }
+            autoTotal++;
             if (it->second.online) {
                 autoOnline++;
             }
@@ -2157,14 +2204,20 @@ void MeshMon::publishGatewayStatsToMqtt(void)
 map<uint32_t, AutomationNode> MeshMon::getAutomationNodes(void) const
 {
     lock_guard<mutex> lock(_autoNodesMutex);
-    return _autoNodes;
+    map<uint32_t, AutomationNode> result;
+    for (map<uint32_t, AutomationNode>::const_iterator it = _autoNodes.begin(); it != _autoNodes.end(); ++it) {
+        if (!it->second.deviceType.empty()) {
+            result[it->first] = it->second;
+        }
+    }
+    return result;
 }
 
 bool MeshMon::getAutomationNode(uint32_t nodeId, AutomationNode &node) const
 {
     lock_guard<mutex> lock(_autoNodesMutex);
     map<uint32_t, AutomationNode>::const_iterator it = _autoNodes.find(nodeId);
-    if (it == _autoNodes.end()) {
+    if (it == _autoNodes.end() || it->second.deviceType.empty()) {
         return false;
     }
     node = it->second;
@@ -2243,7 +2296,7 @@ void MeshMon::loadAutomationNodesFromDb(void)
 
         for (size_t i = 0; i < dbNodes.size(); i++) {
             const DbAutomationNodeSummary &s = dbNodes[i];
-            if (s.nodeId == 0) continue;
+            if (s.nodeId == 0 || s.deviceType.empty()) continue;
 
             AutomationNode &node = _autoNodes[s.nodeId];
             node.nodeId = s.nodeId;
@@ -2315,30 +2368,28 @@ bool MeshMon::processAutomationMessage(const meshtastic_MeshPacket &packet,
     }
 
     time_t now = time(NULL);
+    bool isKnownRobot = false;
     {
         lock_guard<mutex> lock(_autoNodesMutex);
-        AutomationNode &node = _autoNodes[packet.from];
-        node.nodeId = packet.from;
-        node.nodeHex = nodeHexId(packet.from);
-        node.shortName = SimpleClient::lookupShortName(packet.from, true);
-        node.longName = SimpleClient::lookupLongName(packet.from, true);
-        node.lastSeen = now;
-        if (node.firstSeen == 0) {
-            node.firstSeen = now;
-        }
-        node.online = true;
-        if (rttMs > 0) {
-            node.lastRttMs = rttMs;
-            node.rttSampleCount++;
-            if (node.avgRttMs == 0) {
-                node.avgRttMs = rttMs;
-            } else {
-                node.avgRttMs = (uint32_t)(node.avgRttMs * 0.75f + rttMs * 0.25f);
+        map<uint32_t, AutomationNode>::iterator it = _autoNodes.find(packet.from);
+        if (it != _autoNodes.end() && !it->second.deviceType.empty()) {
+            isKnownRobot = true;
+            AutomationNode &node = it->second;
+            node.lastSeen = now;
+            node.online = true;
+            if (rttMs > 0) {
+                node.lastRttMs = rttMs;
+                node.rttSampleCount++;
+                if (node.avgRttMs == 0) {
+                    node.avgRttMs = rttMs;
+                } else {
+                    node.avgRttMs = (uint32_t)(node.avgRttMs * 0.75f + rttMs * 0.25f);
+                }
             }
         }
     }
 
-    if (rttMs > 0 && _myownMqtt != NULL) {
+    if (isKnownRobot && rttMs > 0 && _myownMqtt != NULL) {
         string id = nodeHexId(packet.from);
         char rttBuf[32];
         snprintf(rttBuf, sizeof(rttBuf), "%u", rttMs);
@@ -2358,20 +2409,27 @@ bool MeshMon::processAutomationMessage(const meshtastic_MeshPacket &packet,
         string devType;
         {
             lock_guard<mutex> lock(_autoNodesMutex);
-            devType = _autoNodes[packet.from].deviceType;
+            map<uint32_t, AutomationNode>::const_iterator it = _autoNodes.find(packet.from);
+            if (it != _autoNodes.end()) {
+                devType = it->second.deviceType;
+            }
         }
 
-        if (devType == "meshpump" || lower.find("fish") != string::npos ||
-            lower.find("pump") != string::npos || lower.find("soil") != string::npos ||
-            lower.find("water") != string::npos) {
+        if (devType == "meshpump" ||
+            (devType.empty() && (lower.find("fish is on") != string::npos ||
+                                 lower.find("fish is off") != string::npos ||
+                                 lower.find("upper pump is") != string::npos ||
+                                 lower.find("soil moisture:") != string::npos))) {
             return parseMeshPumpStatus(packet, text, rttMs);
-        } else if (devType == "meshroof" || lower.find("amplify") != string::npos ||
-                   lower.find("wifi") != string::npos || lower.find("net:") != string::npos ||
-                   lower.find("reset") != string::npos) {
+        } else if (devType == "meshroof" ||
+                   (devType.empty() && (lower.find("rf power amplifier is") != string::npos ||
+                                        lower.find("wifi:") == 0 ||
+                                        lower.find("net:") == 0 ||
+                                        lower.find("reset count:") != string::npos))) {
             return parseMeshRoofStatus(packet, text, rttMs);
-        } else if (devType == "meshroom" || lower.find("ac:") != string::npos ||
-                   lower.find("tv:") != string::npos || lower.find("ac ") != string::npos ||
-                   lower.find("tv ") != string::npos) {
+        } else if (devType == "meshroom" ||
+                   (devType.empty() && (lower.find("ac: power=") != string::npos ||
+                                        lower.find("tv: power=") != string::npos))) {
             return parseMeshRoomStatus(packet, text, rttMs);
         }
     }
@@ -2390,29 +2448,31 @@ bool MeshMon::parseBootupMessage(const meshtastic_MeshPacket &packet,
         trimWhitespace(shortName);
     }
 
+    bool isKnown = false;
+    string devType;
     {
         lock_guard<mutex> lock(_autoNodesMutex);
-        AutomationNode &node = _autoNodes[packet.from];
-        if (!shortName.empty()) {
-            node.shortName = shortName;
+        map<uint32_t, AutomationNode>::iterator it = _autoNodes.find(packet.from);
+        if (it != _autoNodes.end() && !it->second.deviceType.empty()) {
+            isKnown = true;
+            AutomationNode &node = it->second;
+            if (!shortName.empty()) {
+                node.shortName = shortName;
+            }
+            node.online = true;
+            node.lastSeen = now;
+            node.rebootCount++;
+            node.uptimeSec = 0;
+            devType = node.deviceType;
         }
-        node.online = true;
-        node.lastSeen = now;
-        node.rebootCount++;
-        node.uptimeSec = 0;
     }
 
-    if (_db != NULL) {
-        string devType;
-        {
-            lock_guard<mutex> lock(_autoNodesMutex);
-            devType = _autoNodes[packet.from].deviceType;
-        }
+    if (isKnown && _db != NULL) {
         _db->enqueueAutomationEvent(now, packet.from, devType, "RX_STATE",
                                     "system", "BOOT_UP", shortName, "EXECUTED", "RF", rttMs);
     }
 
-    if (_myownMqtt != NULL) {
+    if (isKnown && _myownMqtt != NULL) {
         string id = nodeHexId(packet.from);
         _myownMqtt->publish("meshmon/" + id + "/uptime", "0", true);
     }
@@ -2482,25 +2542,32 @@ bool MeshMon::parseUptimeMessage(const meshtastic_MeshPacket &packet,
     }
 
     bool silentReboot = false;
+    bool isKnown = false;
+    string devType;
     {
         lock_guard<mutex> lock(_autoNodesMutex);
-        AutomationNode &node = _autoNodes[packet.from];
-        if (node.uptimeSec > 0 && totalSec > 0 && totalSec < node.uptimeSec) {
-            silentReboot = true;
-            node.rebootCount++;
+        map<uint32_t, AutomationNode>::iterator it = _autoNodes.find(packet.from);
+        if (it != _autoNodes.end() && !it->second.deviceType.empty()) {
+            isKnown = true;
+            AutomationNode &node = it->second;
+            if (node.uptimeSec > 0 && totalSec > 0 && totalSec < node.uptimeSec) {
+                silentReboot = true;
+                node.rebootCount++;
+            }
+            node.uptimeSec = totalSec;
+            node.lastUptimeReportTime = now;
+            node.lastSeen = now;
+            node.online = true;
+            devType = node.deviceType;
         }
-        node.uptimeSec = totalSec;
-        node.lastUptimeReportTime = now;
-        node.lastSeen = now;
-        node.online = true;
+    }
+
+    if (!isKnown) {
+        sendAutomationCommand(packet.from, "identify", "SYSTEM", packet.channel);
+        return true;
     }
 
     if (_db != NULL) {
-        string devType;
-        {
-            lock_guard<mutex> lock(_autoNodesMutex);
-            devType = _autoNodes[packet.from].deviceType;
-        }
         _db->enqueueAutomationEvent(now, packet.from, devType, "RX_STATE",
                                     "system", silentReboot ? "REBOOT_DETECTED" : "UPTIME",
                                     upStr, "EXECUTED", "RF", rttMs);
@@ -2545,7 +2612,7 @@ bool MeshMon::parseRollcallResponse(const meshtastic_MeshPacket &packet,
         }
     }
 
-    if (app.empty()) {
+    if (app.empty() || (app != "meshpump" && app != "meshroof" && app != "meshroom")) {
         return false;
     }
 
@@ -2556,6 +2623,10 @@ bool MeshMon::parseRollcallResponse(const meshtastic_MeshPacket &packet,
     {
         lock_guard<mutex> lock(_autoNodesMutex);
         AutomationNode &node = _autoNodes[packet.from];
+        node.nodeId = packet.from;
+        node.nodeHex = nodeHexId(packet.from);
+        node.shortName = SimpleClient::lookupShortName(packet.from, true);
+        node.longName = SimpleClient::lookupLongName(packet.from, true);
         oldType = node.deviceType;
         if (!oldType.empty() && oldType != app) {
             typeChanged = true;
@@ -2566,6 +2637,9 @@ bool MeshMon::parseRollcallResponse(const meshtastic_MeshPacket &packet,
         node.capabilities = caps;
         node.online = true;
         node.lastSeen = now;
+        if (node.firstSeen == 0) {
+            node.firstSeen = now;
+        }
         nodeCopy = node;
     }
 
@@ -2815,12 +2889,14 @@ void MeshMon::ensureAutomationDiscovery(uint32_t nodeId, uint32_t channel)
 
     {
         lock_guard<mutex> lock(_autoNodesMutex);
-        AutomationNode &node = _autoNodes[nodeId];
-        if (node.deviceType.empty() || node.capabilities.empty()) {
-            needsDiscovery = true;
-        } else if (!node.haDiscovered) {
-            needsPublishDiscovery = true;
-            nodeCopy = node;
+        auto it = _autoNodes.find(nodeId);
+        if (it != _autoNodes.end() && !it->second.deviceType.empty()) {
+            if (it->second.capabilities.empty()) {
+                needsDiscovery = true;
+            } else if (!it->second.haDiscovered) {
+                needsPublishDiscovery = true;
+                nodeCopy = it->second;
+            }
         }
     }
 
@@ -2844,7 +2920,8 @@ void MeshMon::publishAutomationDiscovery(AutomationNode &node)
 
     string id = nodeHexId(node.nodeId);
     string identifier = "meshmon_" + id;
-    string deviceName = "meshmon_" + id;
+    string longName = !node.longName.empty() ? node.longName : SimpleClient::lookupLongName(node.nodeId, true);
+    string deviceName = !longName.empty() ? longName : (!node.shortName.empty() ? node.shortName : (string("!") + id));
 
     // Common Uptime Sensor
     _myownMqtt->publish(
@@ -3203,6 +3280,9 @@ void MeshMon::checkAutomationWatchdog(void)
     lock_guard<mutex> lock(_autoNodesMutex);
     for (map<uint32_t, AutomationNode>::iterator it = _autoNodes.begin(); it != _autoNodes.end(); ++it) {
         AutomationNode &node = it->second;
+        if (node.deviceType.empty()) {
+            continue;
+        }
         if (node.online && (now - node.lastSeen > 5400)) { // 90 minutes (allows 1 missed hourly heartbeat)
             node.online = false;
             if (_myownMqtt != NULL) {

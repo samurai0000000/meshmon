@@ -50,6 +50,9 @@ To prevent rogue nodes or RF spoofing from injecting bogus states or hijacking c
    * If a Meshtastic message arrives from a node that is NOT an authorized mate, `meshmon` **immediately drops and ignores** the message for all automation, state update, and control proxying operations.
 2. **Channel Authorization**:
    * Operations on designated authorized channels verify channel PSK identity before executing privileged actions.
+3. **Mate Authorization vs. Automation Robot Gating**:
+   * Presence in the `_mates` list authorizes a node to send packets, forward environmental telemetry, or participate in mesh chat. It **does not** automatically register the node as an automation robot.
+   * A node is only recognized as a member of the HomeMesh Automation Fleet if it explicitly identifies as a supported robot application (`meshpump`, `meshroof`, `meshroom`). Non-robot mates (such as relays, anchors, or personal communicators) never generate automation controls or appear in the robot fleet.
 
 ---
 
@@ -158,9 +161,10 @@ MeshMon also accepts the legacy prefix `rollcall: app=…` with the same tokens.
   identify: app=meshroom ver=2.1.2 hw=rp2040 caps=ac_ir,tv_ir,board_temp,buzzer
   ```
 
-### C. Outdated / Unparseable Firmware Policy
-* If an authorized mate responds to a human `rollcall` with a legacy unparseable string (such as `"<Node>, <Target> is at your service"`), `meshmon` consumes the message and does not forward it to Gemini.
-* The node is **ignored** for Home Assistant entity auto-discovery and control proxying until it answers `identify` with a structured `identify:` (or `rollcall:`) payload.
+### C. Outdated / Unparseable Firmware Policy & Strict Robot Gating
+* **Legacy String Rejection**: If an authorized mate responds to a human `rollcall` with a legacy unparseable string (such as `"<Node>, <Target> is at your service"`), `meshmon` consumes the message and does not forward it to Gemini. The node is **strictly excluded** from `_autoNodes` and will not be registered as a robot.
+* **Probing without Premature Insertion**: When an unknown node broadcasts `boot-up:` or `uptime:`, `meshmon` dispatches a targeted `!<node_id> identify` probe. However, `meshmon` **refrains** from creating an in-memory `AutomationNode` entry or generating Home Assistant discovery configs until the node responds with a recognized robot application (`app=meshpump`, `app=meshroof`, `app=meshroom`).
+* **Non-Robot Exclusion**: Nodes running standard Meshtastic firmware, legacy scripts, or non-robot roles (e.g. `anch`) are never added to the fleet, never appear in the `robot` CLI command, and do not increment gateway automation fleet metrics (`auto_nodes_total`, `auto_nodes_online`).
 
 ---
 
@@ -222,7 +226,7 @@ MeshMon also accepts the legacy prefix `rollcall: app=…` with the same tokens.
 
 ## 7. Interactive Shell `robot` Command
 
-The **`robot`** command in `MeshMonShell` provides live status inspection for in-memory automation nodes:
+The **`robot`** command in `MeshMonShell` provides live status inspection for in-memory automation nodes. It strictly filters out any non-robot entries, displaying only verified automation nodes with a valid, non-empty `deviceType`:
 
 ```text
   robot                   - Show live status table of all discovered robot nodes
@@ -415,9 +419,12 @@ Time     | Node      | App      | Dir  | Command          | Param      | Stat
 
 ---
 
-## 12. Home Assistant Integration & Bidirectional Controls
-
 `MeshMon` exports entities to Home Assistant via **MQTT Auto-Discovery** and proxies commands received from Home Assistant to the target mesh devices.
+
+### Device Naming & Identity
+- **Parent Device Name**: Uses the human-readable **Long Name** of the node (e.g., `"dev1"`, `"bcnm"`, `"offc"`), falling back to `shortName`, and finally `!<node_id>`.
+- **Immutable Hardware Key**: `device.identifiers: ["meshmon_<node_id>"]` links all automation switches, climate entities, numbers, and telemetry sensors to a single physical device in Home Assistant.
+- **Dynamic In-Place Updates**: When node info (Long Name) is received via Meshtastic `User` packets, discovery configs are republished in-place, updating the device title without breaking entity IDs.
 
 ### A. Exported Controls & State Topics Catalog
 
@@ -483,3 +490,4 @@ Time     | Node      | App      | Dir  | Command          | Param      | Stat
 4. **Automatic Role Migration**: Changing a node's firmware cleanly removes stale entities from Home Assistant without orphaned controls.
 5. **Loss-of-Signal Heartbeats**: MeshMon marks devices `OFFLINE` if no Meshtastic message, telemetry, or hourly uptime heartbeat is received within 90 minutes (5400s), allowing a 1-heartbeat grace window to accommodate temporary LoRa packet collisions or RF fading without false offline alarms.
 6. **Airtime Duty Cycles**: LoRa channel airtime duty cycles are preserved by throttling rapid consecutive command state toggles.
+7. **Strict Robot Gating**: An `AutomationNode` is instantiated and published to Home Assistant or displayed in the `robot` CLI command ONLY if the node explicitly identifies with a supported robot application (`meshpump`, `meshroof`, `meshroom`). Casual chat, legacy firmware text, or raw telemetry from non-robot mates never create phantom robot records.
