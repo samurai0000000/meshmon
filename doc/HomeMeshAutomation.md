@@ -34,7 +34,7 @@
 │   │  - Fish / Up Pumps  │  │  - RF PA Amplifier│  │  - AC IR Control   │   │
 │   │  - Auto-cutoff timer│  │  - WiFi / Net IP  │  │  - TV IR Control   │   │
 │   │  - MAX7219 LED Matrix│ │  - CPU Temp Sensor│  │  - Board Temp / Env│   │
-│   │  - Env / Reservoir  │  │  - Buzzer / Morse │  │  - Buzzer / Morse  │   │
+│   │  - Uptime / Latency │  │  - Buzzer / Morse │  │  - Buzzer / Morse  │   │
 │   └─────────────────────┘  └───────────────────┘  └────────────────────┘   │
 └────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -161,6 +161,12 @@ MeshMon also accepts the legacy prefix `rollcall: app=…` with the same tokens.
   identify: app=meshroom ver=2.1.2 hw=rp2040 caps=ac_ir,tv_ir,board_temp,buzzer
   ```
 
+`caps=` is a string literal compiled into each firmware. It advertises
+what the application was built to support, and does not vary with how
+an individual unit is provisioned or wired. MeshMon records it for
+display only and never gates Home Assistant entities on it; see
+section 12.B for the provisioning signal that is actually per unit.
+
 ### C. Outdated / Unparseable Firmware Policy & Strict Robot Gating
 * **Legacy String Rejection**: If an authorized mate responds to a human `rollcall` with a legacy unparseable string (such as `"<Node>, <Target> is at your service"`), `meshmon` consumes the message and does not forward it to Gemini. The node is **strictly excluded** from `_autoNodes` and will not be registered as a robot.
 * **Probing without Premature Insertion**: When an unknown node broadcasts `boot-up:` or `uptime:`, `meshmon` dispatches a targeted `!<node_id> identify` probe. However, `meshmon` **refrains** from creating an in-memory `AutomationNode` entry or generating Home Assistant discovery configs until the node responds with a recognized robot application (`app=meshpump`, `app=meshroof`, `app=meshroom`).
@@ -254,7 +260,7 @@ Subsystems:
   Fish Pump:     ON
   Upper Pump:    OFF (Auto-Cutoff: 30 seconds)
   LED Matrix:    Delay: 50ms, Row0: "Garden Active", SF: 1
-  Environment:   Temp: 24.1 °C, Hum: 52%, Moisture: 68%, Reservoir: OK
+  Environment:   Temp: 24.1 °C, Hum: 52%, Press: 1013 hPa
 ```
 
 ---
@@ -276,13 +282,26 @@ Messages transmitted on the dedicated **Robot Channel** utilize structured `Home
 | `led blank` | — | Clear/blank the LED matrix | `led blank` |
 | `led welcome` | — | Reset LED matrix to default welcome text | `led welcome` |
 | `led` | — | Query current LED matrix timing and configuration | `led` |
-| `env` | — | Query ambient sensors, moisture, and reservoir state | `env` |
+| `env` | — | Query ambient sensors and CPU temperature | `env` |
+| `status` | — | Query both pump relays and the auto-cutoff timer | `status` |
+
+`fish` and `up` are sub-verbs of `pump` and are **not** dispatched on
+their own. `pump fish on` works; a bare `fish on` draws no reply at all.
+There is no standalone cutoff setter: the auto-cutoff value rides along
+with `pump up on <cutoff_sec>`, so MeshMon remembers a cutoff set from
+Home Assistant and applies it on the next start of the upper pump.
 
 #### State & Telemetry Reports (`meshpump` $\rightarrow$ MeshMon):
-* **Fish Pump State**: `pump: fish=<on|off>`
-* **Up Pump State**: `pump: up=<on|off> [cutoff=<sec>s]`
-* **LED Status**: `led: delay=<ms>ms row0: ttl=<s>s, sf=<sf>`
-* **Env Telemetry**: `env: temp=<c> hum=<pct>% moisture=<pct>% reservoir=<ok|low>`
+* **Pump Query**: `pump: fish=<on|off> up=<on|off> cutoff=<sec>s`
+* **Fish Pump Set**: `pump: fish=<on|off>`
+* **Up Pump Set**: `pump: up=<on|off> [cutoff=<sec>s]`
+* **Status Report**: `status: fish=<on|off> up=<on|off> up_cutoff=<sec>s`
+* **LED Status**: `delay: <ms>ms` followed by one `row <n> ...` line per row
+* **Env Telemetry**: `env: temp=<c> rh=<pct> bp=<hpa> temp_cpu=<c>`
+
+`meshpump` has no soil moisture probe and no reservoir level switch, so
+it never reports either. The corresponding Home Assistant entities were
+removed in 2.1.11.
 
 ---
 
@@ -302,12 +321,15 @@ Messages transmitted on the dedicated **Robot Channel** utilize structured `Home
 | `status` | — | Multi-line status report (amplify, reset count, CPU temp) | `status` |
 
 #### State & Telemetry Reports (`meshroof` $\rightarrow$ MeshMon):
-* **Amplify State**: `amplify: pwr=<on|off>`
-* **WiFi Status**: `wifi: connected=<yes|no> ssid=<ssid> bssid=<mac> chan=<ch> rssi=<rssi>`
-* **Network Status**: `net: mode=<dhcp|static> ip=<ip> mask=<mask> gw=<gw> dns1=<dns>`
-* **Reset Status**: `reset: count=<n> [last=<s>s]`
-* **Morse Reply**: `morse: msg=<text>`
-* **Env Telemetry**: `env: temp=<c> hum=<pct>% press=<hpa> temp_cpu=<c>`
+* **Amplify State**: `amplify: state=<on|off> gain=<level> pa=<n>dBm`
+* **WiFi Status**: `wifi: status=<connected|disconnected> [ssid=<ssid> rssi=<n> ip=<addr>]`
+* **Network Status**: `net: ip=<ip> gw=<gw> dns=<dns>`
+* **Network Ping**: `net: ping=<host> rtt=<n>ms` or `net: ping=<host> failed`
+* **Reset Status**: `reset: count=<n> reason=<r> secs_ago=<n>`
+* **Status Report**: `status: amplify=<on|off> gain=<level> pa=<n>dBm reset_count=<n> last_reset=<s>s temp_chip=<c>`
+* **Buzzer Reply**: `buzz: freq=<hz> dur=<ms>`
+* **Morse Reply**: `morse: text='<text>'`
+* **Env Telemetry**: `env: temp=<c> rh=<pct> bp=<hpa> temp_chip=<c>`
 
 ---
 
@@ -335,9 +357,20 @@ Messages transmitted on the dedicated **Robot Channel** utilize structured `Home
 | `env` | — | Query ambient sensors and RP2040 onboard temperature | `env` |
 
 #### State & Telemetry Reports (`meshroom` $\rightarrow$ MeshMon):
-* **AC State**: `ac: pwr=<on|off> mode=<cool|heat|dry|fan|auto> temp=<c> fan=<fan> vane=<vane>`
-* **TV State**: `tv: pwr=<on|off> vol=<vol> chan=<chan> mute=<on|off> ir=<protocol>`
-* **Env Telemetry**: `env: temp=<c> hum=<pct>% press=<hpa> temp_board=<c>`
+* **AC State**: `ac: pwr=<on|off> mode=<cool|heat|dry|fan|auto> temp=<16-30> fan=<auto|1-5> vane=<auto|1-5> turbo=<on|off> quiet=<on|off> ir=<protocol|none>`
+* **TV State**: `tv: pwr=<on|off> vol=<vol> chan=<chan> mute=<on|off> ir=<protocol|none>`
+* **Env Telemetry**: `env: temp=<c> rh=<pct> bp=<hpa> temp_board=<c>`
+
+Single-field setters reply with only the field they changed, such as
+`ac: temp=24` or `tv: mute=on`. Only the bare `ac` and `tv` queries
+carry the full state including `ir=`. The `env` reply drops the `env:`
+prefix entirely when the gateway holds no cached environment metrics
+for the node, leaving a bare `temp_board=<c>`, so MeshMon reads the
+board temperature from the tokens rather than from the verb.
+
+The AC mode vocabulary differs on the two sides: meshroom says `fan`
+where Home Assistant says `fan_only`, and MeshMon translates in both
+directions at the MQTT boundary.
 
 ---
 
@@ -358,6 +391,22 @@ CREATE TABLE IF NOT EXISTS automation_events (
     status TEXT NOT NULL,                   -- 'EXECUTED', 'ACKED', 'TIMEOUT', 'FAILED'
     initiator TEXT NOT NULL,                -- 'HOMEASSISTANT', 'SHELL', 'SCHEDULE', 'RF'
     rtt_ms INTEGER DEFAULT 0                -- Measured round-trip response latency in milliseconds
+);
+
+-- Durable registry of identified robots, so Home Assistant discovery
+-- is correct on the first publish after a gateway restart instead of
+-- waiting for a probe round-trip.
+CREATE TABLE IF NOT EXISTS automation_nodes (
+    node_id INTEGER PRIMARY KEY,            -- Meshtastic node integer ID
+    node_hex TEXT NOT NULL,                 -- Node hex string without the '!'
+    device_type TEXT NOT NULL,              -- 'meshpump', 'meshroof', 'meshroom'
+    version TEXT,                           -- Firmware version from identify ver=
+    hardware TEXT,                          -- Hardware string from identify hw=
+    capabilities TEXT,                      -- Compile-time caps= list, informational only
+    ac_ir_protocol TEXT,                    -- meshroom ac reply ir=, 'none' when cleared
+    tv_ir_protocol TEXT,                    -- meshroom tv reply ir=, 'none' when cleared
+    first_seen INTEGER NOT NULL,
+    last_seen INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_auto_events_node ON automation_events(node_id, meshmon_time);
@@ -401,7 +450,7 @@ Example 70-column live fleet status table:
 === HomeMesh Smart Automation Fleet (3 Nodes) ===
 Node      | Name     | App      | Stat | Uptime  | State / Telemetry    | Seen  
 ----------+----------+----------+------+---------+----------------------+--------
-!2bf941d4 | PumpNode | meshpump | ON   | 14h 22m | Fish:ON Up:OFF M:42% | 12s   
+!2bf941d4 | PumpNode | meshpump | ON   | 14h 22m | Fish:ON Up:OFF       | 12s   
 !2c018a12 | RoofNode | meshroof | ON   | 3d 1h   | Amp:ON CPU:38.5C     | 45s   
 !2c159e4b | RoomNode | meshroom | ON   | 1d 8h   | AC:ON(24C) TV:OFF    | 2m    
 ```
@@ -437,55 +486,126 @@ Time     | Node      | App      | Dir  | Command          | Param      | Stat
 | **Sensor** | `Automation Events (24h)` | `meshmon/gateway/auto_events_24h` | events| — |
 
 #### 2. Common Robot Lifecycle & Diagnostic Sensors
+Published for every identified robot regardless of device type. Every
+robot entity also carries `availability_topic: meshmon/<node>/availability`
+with `online` / `offline` payloads, so Home Assistant shows entities as
+unavailable rather than holding the last reading forever.
+
 | Home Assistant Domain | Entity Name | State Topic | Unit | Device Class / Category |
 | :--- | :--- | :--- | :---: | :--- |
 | **Sensor** | `Subsystem` | `meshmon/<node>/app` | — | `diagnostic` (icon: `mdi:robot`) |
-| **Sensor** | `Node Uptime` | `meshmon/<node>/uptime` | s | `duration` |
+| **Sensor** | `Uptime` | `meshmon/<node>/uptime` | s | `duration` |
 | **Sensor** | `Response Latency` | `meshmon/<node>/rtt` | ms | `duration` |
 
 #### 3. `meshpump` Controls:
 | Home Assistant Domain | Entity Name | State Topic | Command Topic | Payload |
 | :--- | :--- | :--- | :--- | :--- |
-| **Switch** | `Fish Pump Power` | `meshmon/<node>/pump_fish/state` | `meshmon/cmd/<node>/pump_fish` | `ON` / `OFF` |
-| **Switch** | `Up Pump Power` | `meshmon/<node>/pump_up/state` | `meshmon/cmd/<node>/pump_up` | `ON` / `OFF` |
-| **Number** | `Up Pump Cutoff Timer`| `meshmon/<node>/pump_up/cutoff` | `meshmon/cmd/<node>/pump_up_cutoff` | `5` .. `300` (sec) |
-| **Text** / **Button** | `LED Matrix Message` | `meshmon/<node>/led/msg` | `meshmon/cmd/<node>/led_msg` | String text |
-| **Number** | `LED Scroll Delay` | `meshmon/<node>/led/delay` | `meshmon/cmd/<node>/led_delay` | `10` .. `500` (ms) |
-| **Sensor** | `Soil Moisture` | `meshmon/<node>/moisture` | — | `%` |
-| **Binary Sensor**| `Water Reservoir` | `meshmon/<node>/reservoir` | — | `OK` / `PROBLEM` |
-| **Sensor** | `Node Uptime` | `meshmon/<node>/uptime` | — | `s` (device_class: `duration`) |
-| **Sensor** | `Response Latency` | `meshmon/<node>/rtt` | — | `ms` (device_class: `duration`) |
+| **Switch** | `Fish Pump` | `meshmon/<node>/pump_fish/state` | `meshmon/cmd/<node>/pump_fish` | `ON` / `OFF` |
+| **Switch** | `Upper Pump` | `meshmon/<node>/pump_up/state` | `meshmon/cmd/<node>/pump_up` | `ON` / `OFF` |
+| **Number** | `Upper Pump Cutoff` | `meshmon/<node>/pump_up_cutoff/state` | `meshmon/cmd/<node>/pump_up_cutoff` | `5` .. `300` (sec) |
+| **Text** | `LED Matrix Message` | `meshmon/<node>/led_message/state` | `meshmon/cmd/<node>/led` | String text |
 
 #### 4. `meshroof` Controls:
 | Home Assistant Domain | Entity Name | State Topic | Command Topic | Payload |
 | :--- | :--- | :--- | :--- | :--- |
 | **Switch** | `RF Power Amplifier` | `meshmon/<node>/amplify/state` | `meshmon/cmd/<node>/amplify` | `ON` / `OFF` |
 | **Button** | `Sound Buzzer` | — | `meshmon/cmd/<node>/buzz` | `PRESS` |
-| **Text** | `Send Morse Code` | — | `meshmon/cmd/<node>/morse` | String text |
-| **Sensor** | `WiFi RSSI` | `meshmon/<node>/wifi_rssi` | — | `dBm` |
-| **Sensor** | `WiFi IP Address` | `meshmon/<node>/ip_addr` | — | IP string |
-| **Sensor** | `ESP32 CPU Temp` | `meshmon/<node>/cpu_temp` | — | `°C` |
-| **Sensor** | `Reset Count` | `meshmon/<node>/reset_count`| — | count |
-| **Sensor** | `Node Uptime` | `meshmon/<node>/uptime` | — | `s` (device_class: `duration`) |
-| **Sensor** | `Response Latency` | `meshmon/<node>/rtt` | — | `ms` (device_class: `duration`) |
+| **Text** | `Morse Code Transmitter` | `meshmon/<node>/morse/state` | `meshmon/cmd/<node>/morse` | String text |
+| **Sensor** | `ESP32 CPU Temperature` | `meshmon/<node>/cpu_temp` | — | `°C` (device_class: `temperature`) |
 
 #### 5. `meshroom` Controls:
+The AC and TV groups are gated on the node's IR provisioning; see
+section 12.B.
+
 | Home Assistant Domain | Entity Name | State Topic | Command Topic | Payload |
 | :--- | :--- | :--- | :--- | :--- |
-| **Climate** | `Room AC Climate` | `meshmon/<node>/ac/climate_state` | `meshmon/cmd/<node>/ac_climate` | JSON `{mode, temp, fan}` |
-| **Switch** | `AC Power` | `meshmon/<node>/ac_power/state` | `meshmon/cmd/<node>/ac_power` | `ON` / `OFF` |
-| **Number** | `AC Target Temp` | `meshmon/<node>/ac_temp/state` | `meshmon/cmd/<node>/ac_temp` | `16` .. `30` (°C) |
-| **Select** | `AC Mode` | `meshmon/<node>/ac_mode/state` | `meshmon/cmd/<node>/ac_mode` | `cool`, `heat`, `dry`, `fan`, `auto` |
-| **Select** | `AC Fan Speed` | `meshmon/<node>/ac_fan/state` | `meshmon/cmd/<node>/ac_fan` | `auto`, `quiet`, `low`, `med`, `high`, `max` |
-| **Button** | `AC Force IR Blast` | — | `meshmon/cmd/<node>/ac_blast` | `PRESS` |
-| **Media Player** / **Switch** | `TV Power` | `meshmon/<node>/tv_power/state` | `meshmon/cmd/<node>/tv_power` | `ON` / `OFF` |
-| **Number** | `TV Volume` | `meshmon/<node>/tv_vol/state` | `meshmon/cmd/<node>/tv_vol` | `0` .. `100` |
-| **Number** | `TV Channel` | `meshmon/<node>/tv_chan/state` | `meshmon/cmd/<node>/tv_chan` | `1` .. `999` |
-| **Switch** | `TV Mute` | `meshmon/<node>/tv_mute/state` | `meshmon/cmd/<node>/tv_mute` | `ON` / `OFF` |
-| **Button** | `TV Input Source` | — | `meshmon/cmd/<node>/tv_input` | `PRESS` |
-| **Sensor** | `RP2040 Board Temp` | `meshmon/<node>/board_temp` | — | `°C` |
-| **Sensor** | `Node Uptime` | `meshmon/<node>/uptime` | — | `s` (device_class: `duration`) |
-| **Sensor** | `Response Latency` | `meshmon/<node>/rtt` | — | `ms` (device_class: `duration`) |
+| **Climate** | `Room AC` | `meshmon/<node>/ac/mode/state` | `meshmon/cmd/<node>/ac_mode` | `off`, `cool`, `heat`, `dry`, `fan_only`, `auto` |
+| **Climate** | (target temp) | `meshmon/<node>/ac/temp/state` | `meshmon/cmd/<node>/ac_temp` | `16` .. `30` (°C) |
+| **Climate** | (fan mode) | `meshmon/<node>/ac/fan/state` | `meshmon/cmd/<node>/ac_fan` | `auto`, `1` .. `5` |
+| **Climate** | (current temp) | `meshmon/<node>/temperature` | — | °C from Meshtastic env metrics |
+| **Switch** | `AC Power` | `meshmon/<node>/ac/power/state` | `meshmon/cmd/<node>/ac_power` | `ON` / `OFF` |
+| **Button** | `AC IR Force Blast` | — | `meshmon/cmd/<node>/ac_blast` | `PRESS` |
+| **Switch** | `TV Power` | `meshmon/<node>/tv/power/state` | `meshmon/cmd/<node>/tv_power` | `ON` / `OFF` |
+| **Switch** | `TV Mute` | `meshmon/<node>/tv/mute/state` | `meshmon/cmd/<node>/tv_mute` | `ON` / `OFF` |
+| **Number** | `TV Volume` | `meshmon/<node>/tv/volume/state` | `meshmon/cmd/<node>/tv_vol` | `0` .. `100` |
+| **Number** | `TV Channel` | `meshmon/<node>/tv/channel/state` | `meshmon/cmd/<node>/tv_chan` | `1` .. `999` |
+| **Button** | `TV Input Next` | — | `meshmon/cmd/<node>/tv_input` | `PRESS` |
+| **Sensor** | `RP2040 Board Temperature` | `meshmon/<node>/board_temp` | — | `°C` (device_class: `temperature`) |
+
+### B. IR-Gated Capability Discovery
+
+The `caps=` field in an `identify` reply is a compile-time string
+literal in each firmware. It lists what the application was built to
+support, not what a given unit is provisioned for, so it cannot gate
+entities. `meshroom` in particular always claims `ac_ir,tv_ir` even on
+a unit where the administrator has cleared one of the IR protocols.
+
+The provisioning is instead reported per feature in the bare `ac` and
+`tv` query replies as `ir=<protocol>`, and becomes `ir=none` after an
+`ir del` on the node's serial shell. MeshMon treats that as the gate:
+
+| `ir=` value | Meaning | Entities |
+| :--- | :--- | :--- |
+| (never probed) | No `ac` / `tv` reply seen yet | Published, so a node is never invisible while waiting for its first reply |
+| `<protocol>` | Feature is provisioned | Published |
+| `none` | Administrator cleared the protocol | Pruned with an empty retained payload |
+
+A node going offline never prunes anything: liveness is carried by the
+availability topic, not by discovery. Only an explicit `ir=none`
+removes entities, and re-provisioning the protocol restores them on the
+next probe.
+
+Both protocols are persisted in the `automation_nodes` table, so gating
+is correct on the first publish after a gateway restart instead of
+waiting up to 20 minutes for the probe cycle to come around. Inspect
+the current values with `robot status <node>`.
+
+### C. One-Time Entity ID Purge (upgrading to 2.1.11)
+
+Releases before 2.1.11 emitted `object_id`, which Home Assistant
+deprecated in 2025.9 and ignores from 2026.4 onwards. Once ignored,
+entity IDs fall back to being derived from the device and entity names,
+producing IDs such as `sensor.casamagnifica_devboard1_uptime` instead
+of the intended `sensor.meshmon_ea8ee0b8_uptime`. The Live Fleet Table
+card matches `^sensor\.meshmon_[0-9a-fA-F]{8}_uptime$` and splices the
+hex ID out of that match to build its other 17 lookups, so a node whose
+uptime entity is name-derived is missing from the table entirely.
+
+Nodes registered while `object_id` was still honored already carry the
+intended IDs and need nothing done. Only nodes first registered after
+Home Assistant began ignoring it are affected, so a fleet is typically
+part correct and part broken.
+
+2.1.11 emits `default_entity_id` instead. Because every entity also
+carries a `unique_id`, Home Assistant applies `default_entity_id` only
+when an entity is created for the first time; for an entity already in
+the registry it is read and discarded. Republishing therefore renames
+nothing, and the old entities must be deleted once:
+
+```sh
+# 1. Stop meshmon so it does not republish while purging
+# 2. Clear the retained discovery configs.  An MQTT '+' must occupy a
+#    whole topic level, so 'meshmon_+' is not a legal filter: subscribe
+#    wide and match the topic names instead.
+mosquitto_sub -h <broker> -u <user> -P <pass> -t 'homeassistant/+/+/config' \
+    --retained-only -F '%t' -W 5 | grep '/meshmon_' | while read -r topic; do
+    mosquitto_pub -h <broker> -u <user> -P <pass> -t "$topic" -r -n
+done
+# 3. Confirm the devices disappeared from Home Assistant, then restart meshmon
+```
+
+To spare the nodes that are already correct, narrow step 2 to just the
+affected hex IDs, for example `grep -E '/meshmon_(ae613b60|ea8ee0b8)_'`.
+
+Restarting MeshMon republishes every config from the persisted
+`automation_nodes` registry, and Home Assistant creates the entities
+fresh with the intended IDs. List the current IDs from Developer Tools
+&rarr; Template to confirm:
+
+```jinja
+{{ states.sensor | selectattr('entity_id', 'search', 'uptime')
+   | map(attribute='entity_id') | list }}
+```
 
 ---
 
@@ -495,6 +615,6 @@ Time     | Node      | App      | Dir  | Command          | Param      | Stat
 2. **Targeted Discovery**: Directed `!<nodeid> identify` avoids HomeChat `rollcall` storms from older firmware.
 3. **Hardware Cutoff Enforcement**: `meshpump` upper pump commands default to automated cutoff timers to protect pumps from running dry.
 4. **Automatic Role Migration**: Changing a node's firmware cleanly removes stale entities from Home Assistant without orphaned controls.
-5. **Loss-of-Signal Heartbeats & Proactive Probing**: MeshMon marks devices `OFFLINE` if no Meshtastic message, telemetry, or command reply is received within 15 minutes (900s). To prevent false offline transitions and maintain fresh operational telemetry, MeshMon's 1-minute crontab watchdog proactively probes silent nodes every 10 minutes (600s) using alternating subsystem queries (`AutomationDevice`: `MeshRoomDevice` $\rightarrow$ `ac`/`tv`, `MeshPumpDevice` $\rightarrow$ `fish`/`up`, `MeshRoofDevice` $\rightarrow$ `amplify`/`wifi`). Every probe response updates round-trip latency (RTT) and continuously advances live `uptimeSec`.
+5. **Loss-of-Signal Heartbeats & Proactive Probing**: MeshMon marks devices `OFFLINE` if no Meshtastic message, telemetry, or command reply is received within 15 minutes (900s). To prevent false offline transitions and maintain fresh operational telemetry, MeshMon's 1-minute crontab watchdog proactively probes silent nodes every 10 minutes (600s) using alternating subsystem queries (`AutomationDevice`: `MeshRoomDevice` $\rightarrow$ `ac`/`tv`, `MeshPumpDevice` $\rightarrow$ `pump`, `MeshRoofDevice` $\rightarrow$ `amplify`/`wifi`). Every probe verb must be one the firmware dispatches on at the top level; a sub-verb such as `fish` draws no reply and silently starves the node's state. Every probe response updates round-trip latency (RTT) and continuously advances live `uptimeSec`.
 6. **Airtime Duty Cycles**: LoRa channel airtime duty cycles are preserved by throttling rapid consecutive command state toggles.
 7. **Strict Robot Gating**: An `AutomationNode` is instantiated and published to Home Assistant or displayed in the `robot` CLI command ONLY if the node explicitly identifies with a supported robot application (`meshpump`, `meshroof`, `meshroom`). Casual chat, legacy firmware text, or raw telemetry from non-robot mates never create phantom robot records.

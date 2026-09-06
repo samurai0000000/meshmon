@@ -31,7 +31,7 @@
 │   │  - Fish / Up Pumps  │  │  - RF PA Amplifier│  │  - AC IR Control   │   │
 │   │  - Auto-cutoff timer│  │  - WiFi / Net IP  │  │  - TV IR Control   │   │
 │   │  - MAX7219 LED Matrix│ │  - CPU Temp Sensor│  │  - Board Temp / Env│   │
-│   │  - Env / Reservoir  │  │  - Buzzer / Morse │  │  - Buzzer / Morse  │   │
+│   │  - Uptime / Latency │  │  - Buzzer / Morse │  │  - Buzzer / Morse  │   │
 │   └─────────────────────┘  └───────────────────┘  └────────────────────┘   │
 └────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -167,12 +167,10 @@ Automation controls attach to the same unified device (`identifiers: ["meshmon_<
 #### 1. `meshpump` (Fish Tank & Upper Water Pump Relay Controller)
 | Domain | Entity Name | State Topic | Command Topic | Payload / Values |
 | :--- | :--- | :--- | :--- | :--- |
-| **Switch** | `Fish Tank Water Pump` | `meshmon/<node>/pump/fish/state` | `meshmon/cmd/<node>/pump_fish` | `ON` / `OFF` |
-| **Switch** | `Upper Water Pump Relay` | `meshmon/<node>/pump/up/state` | `meshmon/cmd/<node>/pump_up` | `ON` / `OFF` |
-| **Number** | `Upper Pump Cutoff Duration`| `meshmon/<node>/pump/up/cutoff` | `meshmon/cmd/<node>/pump_up_cutoff` | `1` .. `3600` (s) |
-| **Sensor** | `Plant Soil Moisture` | `meshmon/<node>/soil_moisture` | — | `%` |
-| **Binary Sensor** | `Reservoir Empty Alarm` | `meshmon/<node>/reservoir/empty` | — | `ON` / `OFF` (problem) |
-| **Text** | `LED Display Banner` | — | `meshmon/cmd/<node>/led` | String text |
+| **Switch** | `Fish Pump` | `meshmon/<node>/pump_fish/state` | `meshmon/cmd/<node>/pump_fish` | `ON` / `OFF` |
+| **Switch** | `Upper Pump` | `meshmon/<node>/pump_up/state` | `meshmon/cmd/<node>/pump_up` | `ON` / `OFF` |
+| **Number** | `Upper Pump Cutoff` | `meshmon/<node>/pump_up_cutoff/state` | `meshmon/cmd/<node>/pump_up_cutoff` | `5` .. `300` (s), step `5` |
+| **Text** | `LED Matrix Message` | `meshmon/<node>/led_message/state` | `meshmon/cmd/<node>/led` | String text |
 | **Sensor** | `Node Uptime` | `meshmon/<node>/uptime` | — | `s` (device_class: `duration`) |
 | **Sensor** | `Response Latency` | `meshmon/<node>/rtt` | — | `ms` (device_class: `duration`) |
 
@@ -404,11 +402,11 @@ cards:
         {% set is_online = (s.state != 'unavailable' and s.state != 'unknown' and up > 0) %}
         {% set app_type = states('sensor.meshmon_' ~ node_id ~ '_app') %}
         {% if app_type in ['unknown', 'unavailable', ''] %}
-          {% if states('switch.meshmon_' ~ node_id ~ '_rf_power_amplifier') != 'unknown' or states('switch.meshmon_' ~ node_id ~ '_amplify') != 'unknown' %}
+          {% if states('switch.meshmon_' ~ node_id ~ '_amplify') != 'unknown' %}
             {% set app_type = 'meshroof' %}
           {% elif states('switch.meshmon_' ~ node_id ~ '_ac_power') != 'unknown' %}
             {% set app_type = 'meshroom' %}
-          {% elif states('switch.meshmon_' ~ node_id ~ '_fish_pump') != 'unknown' or states('switch.meshmon_' ~ node_id ~ '_pump_fish') != 'unknown' %}
+          {% elif states('switch.meshmon_' ~ node_id ~ '_pump_fish') != 'unknown' %}
             {% set app_type = 'meshpump' %}
           {% else %}
             {% set app_type = 'generic' %}
@@ -416,26 +414,19 @@ cards:
         {% endif %}
         {% set details = [] %}
         {% if app_type == 'meshpump' %}
-          {% set fish = states('switch.meshmon_' ~ node_id ~ '_fish_pump') %}
-          {% if fish == 'unknown' %}{% set fish = states('switch.meshmon_' ~ node_id ~ '_pump_fish') %}{% endif %}
-          {% set up_p = states('switch.meshmon_' ~ node_id ~ '_upper_pump') %}
-          {% if up_p == 'unknown' %}{% set up_p = states('switch.meshmon_' ~ node_id ~ '_pump_up') %}{% endif %}
-          {% set soil = states('sensor.meshmon_' ~ node_id ~ '_soil_moisture') %}
+          {% set fish = states('switch.meshmon_' ~ node_id ~ '_pump_fish') %}
+          {% set up_p = states('switch.meshmon_' ~ node_id ~ '_pump_up') %}
           {% set details = details + ['Fish:' ~ (fish | upper if fish not in ['unknown', 'unavailable'] else '-')] %}
           {% set details = details + ['Up:' ~ (up_p | upper if up_p not in ['unknown', 'unavailable'] else '-')] %}
-          {% if soil not in ['unknown', 'unavailable'] %}{% set details = details + ['Soil:' ~ soil ~ '%'] %}{% endif %}
         {% elif app_type == 'meshroof' %}
-          {% set pa = states('switch.meshmon_' ~ node_id ~ '_rf_power_amplifier') %}
-          {% if pa == 'unknown' %}{% set pa = states('switch.meshmon_' ~ node_id ~ '_amplify') %}{% endif %}
-          {% set cpu = states('sensor.meshmon_' ~ node_id ~ '_esp32_cpu_temperature') %}
-          {% if cpu == 'unknown' %}{% set cpu = states('sensor.meshmon_' ~ node_id ~ '_cpu_temp') %}{% endif %}
+          {% set pa = states('switch.meshmon_' ~ node_id ~ '_amplify') %}
+          {% set cpu = states('sensor.meshmon_' ~ node_id ~ '_cpu_temp') %}
           {% set details = details + ['PA:' ~ (pa | upper if pa not in ['unknown', 'unavailable'] else '-')] %}
           {% if cpu not in ['unknown', 'unavailable'] %}{% set details = details + ['CPU:' ~ cpu ~ '°C'] %}{% endif %}
         {% elif app_type == 'meshroom' %}
           {% set ac = states('switch.meshmon_' ~ node_id ~ '_ac_power') %}
           {% set tv = states('switch.meshmon_' ~ node_id ~ '_tv_power') %}
-          {% set brd = states('sensor.meshmon_' ~ node_id ~ '_rp2040_board_temperature') %}
-          {% if brd == 'unknown' %}{% set brd = states('sensor.meshmon_' ~ node_id ~ '_board_temp') %}{% endif %}
+          {% set brd = states('sensor.meshmon_' ~ node_id ~ '_board_temp') %}
           {% set details = details + ['AC:' ~ (ac | upper if ac not in ['unknown', 'unavailable'] else '-')] %}
           {% set details = details + ['TV:' ~ (tv | upper if tv not in ['unknown', 'unavailable'] else '-')] %}
           {% if brd not in ['unknown', 'unavailable'] %}{% set details = details + ['Board:' ~ brd ~ '°C'] %}{% endif %}
@@ -444,6 +435,22 @@ cards:
       {% endfor %}
       {% endif %}
 ```
+
+Every lookup uses the `unique_id` suffix (`_amplify`, `_cpu_temp`,
+`_pump_fish`, `_pump_up`, `_board_temp`), never a suffix slugified from
+a friendly name such as `_rf_power_amplifier` or `_upper_pump`. Since
+2.1.11 MeshMon publishes `default_entity_id`, so Home Assistant assigns
+`<domain>.meshmon_<hex>_<unique_id suffix>` when it first creates each
+entity. A row only appears at all when `sensor.meshmon_<hex>_uptime`
+matched, and all of a node's configs are published in one batch, so any
+node that renders necessarily has canonical IDs for its other entities
+too. Name-derived fallbacks are therefore unreachable and were removed.
+Installs upgrading from an older release need the one-time purge in
+`HomeMeshAutomation.md` section 12.C before their nodes appear.
+
+There is deliberately no `Soil:` reading. No meshpump firmware reports
+soil moisture or a reservoir level, so 2.1.11 stopped publishing those
+two phantom entities.
 
 ---
 
@@ -459,12 +466,12 @@ cards:
     square: false
     cards:
       - type: tile
-        entity: switch.meshmon_2bf941d4_fish_pump
+        entity: switch.meshmon_2bf941d4_pump_fish
         name: Fish Tank Pump
         icon: mdi:fishbowl
         color: blue
       - type: tile
-        entity: switch.meshmon_2c018a12_rf_power_amplifier
+        entity: switch.meshmon_2c018a12_amplify
         name: Rooftop RF PA
         icon: mdi:signal-cellular-outline
         color: amber
@@ -485,8 +492,6 @@ cards:
         name: Upper Water Pump
       - entity: number.meshmon_2bf941d4_pump_up_cutoff
         name: Upper Pump Auto-Cutoff (seconds)
-      - entity: binary_sensor.meshmon_2bf941d4_reservoir_empty
-        name: Water Reservoir Warning
-      - entity: sensor.meshmon_2bf941d4_soil_moisture
-        name: Soil Moisture
+      - entity: text.meshmon_2bf941d4_led_message
+        name: LED Matrix Message
 ```

@@ -2309,11 +2309,6 @@ void MeshMonShell::printFleetRobotStatus(void)
         if (n.deviceType == "meshpump") {
             stateSummary = "Fish:" + string(n.fishPumpState ? "ON" : "OFF") +
                            " Up:" + string(n.upPumpState ? "ON" : "OFF");
-            if (n.soilMoisture > 0.0f) {
-                char buf[16];
-                snprintf(buf, sizeof(buf), " M:%.0f%%", n.soilMoisture);
-                stateSummary += buf;
-            }
         } else if (n.deviceType == "meshroof") {
             stateSummary = "Amp:" + string(n.amplifyState ? "ON" : "OFF");
             if (n.cpuTempC > 0.0f) {
@@ -2378,8 +2373,6 @@ void MeshMonShell::printNodeRobotStatus(uint32_t nodeId)
         this->printf("  MeshPump States:\n");
         this->printf("    Fish Tank Pump:     %s\n", node.fishPumpState ? "ON" : "OFF");
         this->printf("    Upper Plant Pump:   %s (Cutoff: %u sec)\n", node.upPumpState ? "ON" : "OFF", node.upPumpCutoffSec);
-        this->printf("    Soil Moisture:      %.1f %%\n", node.soilMoisture);
-        this->printf("    Water Reservoir:    %s\n", node.reservoirEmpty ? "EMPTY (Warning)" : "OK");
         if (!node.ledMessage.empty()) {
             this->printf("    LED Display:        '%s'\n", node.ledMessage.c_str());
         }
@@ -2401,8 +2394,14 @@ void MeshMonShell::printNodeRobotStatus(uint32_t nodeId)
         this->printf("    AC Power:           %s\n", node.acPower ? "ON" : "OFF");
         this->printf("    AC Mode / Target:   %s, %.1f C\n", node.acMode.c_str(), node.acTargetTemp);
         this->printf("    AC Fan / Vane:      %s, %s\n", node.acFan.c_str(), node.acVane.c_str());
+        this->printf("    AC Turbo / Quiet:   %s, %s\n",
+                     node.acTurbo ? "ON" : "OFF", node.acQuiet ? "ON" : "OFF");
         this->printf("    TV Power / Volume:  %s, Vol %d, Chan %d\n", node.tvPower ? "ON" : "OFF", node.tvVolume, node.tvChannel);
         this->printf("    TV Mute / Input:    %s, %s\n", node.tvMute ? "MUTED" : "UNMUTED", node.tvInput.c_str());
+        this->printf("    AC IR Protocol:     %s\n",
+                     node.acIrProtocol.empty() ? "(not probed)" : node.acIrProtocol.c_str());
+        this->printf("    TV IR Protocol:     %s\n",
+                     node.tvIrProtocol.empty() ? "(not probed)" : node.tvIrProtocol.c_str());
         if (node.boardTempC > 0.0f) {
             this->printf("    RP2040 Board Temp:  %.1f C\n", node.boardTempC);
         }

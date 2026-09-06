@@ -8,8 +8,12 @@
 
 const string MeshPumpDevice::_deviceType = "meshpump";
 const vector<string> MeshPumpDevice::_probeCommands = {
-    "fish",
-    "up"
+    /*
+     * A bare "pump" answers with fish, up, and cutoff in one reply.
+     * "fish" and "up" are sub-verbs and are not dispatched on their
+     * own, so probing with them draws no response at all.
+     */
+    "pump"
 };
 
 MeshPumpDevice::MeshPumpDevice()

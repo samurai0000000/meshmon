@@ -370,7 +370,19 @@ bool MeshMonDb::initSchema(void)
         ");"
         "CREATE INDEX IF NOT EXISTS idx_auto_events_node ON automation_events(node_id, meshmon_time);"
         "CREATE INDEX IF NOT EXISTS idx_auto_events_dev ON automation_events(device_type, meshmon_time);"
-        "CREATE INDEX IF NOT EXISTS idx_auto_events_sub ON automation_events(subsystem, meshmon_time);";
+        "CREATE INDEX IF NOT EXISTS idx_auto_events_sub ON automation_events(subsystem, meshmon_time);"
+        "CREATE TABLE IF NOT EXISTS automation_nodes ("
+        "  node_id INTEGER PRIMARY KEY,"
+        "  node_hex TEXT NOT NULL,"
+        "  device_type TEXT NOT NULL,"
+        "  version TEXT,"
+        "  hardware TEXT,"
+        "  capabilities TEXT,"
+        "  ac_ir_protocol TEXT,"
+        "  tv_ir_protocol TEXT,"
+        "  first_seen INTEGER NOT NULL,"
+        "  last_seen INTEGER NOT NULL"
+        ");";
 
     char *err = NULL;
     int rc = sqlite3_exec(_db, ddl, NULL, NULL, &err);
@@ -2197,6 +2209,53 @@ bool MeshMonDb::executeRawQuery(const string &sql, QueryResult &result)
     return true;
 }
 
+bool MeshMonDb::upsertAutomationNode(const DbAutomationNodeSummary &node)
+{
+    lock_guard<mutex> lock(_dbMutex);
+    sqlite3_stmt *stmt = NULL;
+    int rc;
+
+    if ((_db == NULL) || (node.nodeId == 0)) {
+        return false;
+    }
+
+    const char *sql =
+        "INSERT INTO automation_nodes "
+        "  (node_id, node_hex, device_type, version, hardware, capabilities,"
+        "   ac_ir_protocol, tv_ir_protocol, first_seen, last_seen) "
+        "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) "
+        "ON CONFLICT(node_id) DO UPDATE SET "
+        "  node_hex = excluded.node_hex,"
+        "  device_type = excluded.device_type,"
+        "  version = excluded.version,"
+        "  hardware = excluded.hardware,"
+        "  capabilities = excluded.capabilities,"
+        "  ac_ir_protocol = excluded.ac_ir_protocol,"
+        "  tv_ir_protocol = excluded.tv_ir_protocol,"
+        "  first_seen = min(automation_nodes.first_seen, excluded.first_seen),"
+        "  last_seen = max(automation_nodes.last_seen, excluded.last_seen);";
+
+    if (sqlite3_prepare_v2(_db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        return false;
+    }
+
+    sqlite3_bind_int64(stmt, 1, (sqlite3_int64) node.nodeId);
+    sqlite3_bind_text(stmt, 2, node.nodeHex.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, node.deviceType.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, node.version.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 5, node.hardware.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 6, node.capabilities.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 7, node.acIrProtocol.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 8, node.tvIrProtocol.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 9, (sqlite3_int64) node.firstSeen);
+    sqlite3_bind_int64(stmt, 10, (sqlite3_int64) node.lastSeen);
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    return rc == SQLITE_DONE;
+}
+
 bool MeshMonDb::getDiscoveredAutomationNodes(vector<DbAutomationNodeSummary> &nodes)
 {
     lock_guard<mutex> lock(_dbMutex);
@@ -2216,9 +2275,15 @@ bool MeshMonDb::getDiscoveredAutomationNodes(vector<DbAutomationNodeSummary> &no
         "  (SELECT a3.action_param FROM automation_events a3 WHERE a3.node_id = a.node_id AND a3.command_name = 'ROLLCALL' ORDER BY a3.meshmon_time DESC LIMIT 1) AS rollcall_param, "
         "  min(a.meshmon_time) AS first_seen, "
         "  max(a.meshmon_time) AS last_seen, "
-        "  (SELECT count(*) FROM automation_events a4 WHERE a4.node_id = a.node_id AND (a4.command_name = 'BOOT_UP' OR a4.command_name = 'REBOOT_DETECTED')) AS reboot_cnt "
+        "  (SELECT count(*) FROM automation_events a4 WHERE a4.node_id = a.node_id AND (a4.command_name = 'BOOT_UP' OR a4.command_name = 'REBOOT_DETECTED')) AS reboot_cnt, "
+        "  coalesce(r.capabilities, ''), "
+        "  coalesce(r.ac_ir_protocol, ''), "
+        "  coalesce(r.tv_ir_protocol, ''), "
+        "  coalesce(r.version, ''), "
+        "  coalesce(r.hardware, '') "
         "FROM automation_events a "
         "LEFT JOIN nodes n ON n.node_id = a.node_id "
+        "LEFT JOIN automation_nodes r ON r.node_id = a.node_id "
         "WHERE a.device_type IS NOT NULL AND a.device_type != '' "
         "GROUP BY a.node_id;";
 
@@ -2247,6 +2312,18 @@ bool MeshMonDb::getDiscoveredAutomationNodes(vector<DbAutomationNodeSummary> &no
         s.firstSeen = (time_t) sqlite3_column_int64(stmt, 6);
         s.lastSeen = (time_t) sqlite3_column_int64(stmt, 7);
         s.rebootCount = (uint32_t) sqlite3_column_int64(stmt, 8);
+
+        const char *caps = (const char *) sqlite3_column_text(stmt, 9);
+        const char *acIr = (const char *) sqlite3_column_text(stmt, 10);
+        const char *tvIr = (const char *) sqlite3_column_text(stmt, 11);
+        const char *ver = (const char *) sqlite3_column_text(stmt, 12);
+        const char *hw = (const char *) sqlite3_column_text(stmt, 13);
+
+        s.capabilities = caps ? caps : "";
+        s.acIrProtocol = acIr ? acIr : "";
+        s.tvIrProtocol = tvIr ? tvIr : "";
+        s.version = ver ? ver : "";
+        s.hardware = hw ? hw : "";
 
         nodes.push_back(s);
     }

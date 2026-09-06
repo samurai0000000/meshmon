@@ -4,7 +4,7 @@
 
 cmake_minimum_required(VERSION 3.13)
 
-project(meshmon VERSION 2.1.10 LANGUAGES C CXX ASM)
+project(meshmon VERSION 2.1.11 LANGUAGES C CXX ASM)
 
 find_package(SQLite3 REQUIRED)
 find_package(Mosquitto QUIET)

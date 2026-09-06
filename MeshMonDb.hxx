@@ -255,6 +255,16 @@ struct DbAutomationNodeSummary {
     time_t firstSeen;
     time_t lastSeen;
     uint32_t rebootCount;
+
+    // Hydrated from automation_nodes, empty for rows that predate it
+    string version;
+    string hardware;
+    string capabilities;
+    string acIrProtocol;
+    string tvIrProtocol;
+
+    DbAutomationNodeSummary()
+        : nodeId(0), firstSeen(0), lastSeen(0), rebootCount(0) {}
 };
 
 struct QueryResult {
@@ -316,6 +326,9 @@ public:
                                 const string &subsystem, const string &commandName,
                                 const string &actionParam, const string &status,
                                 const string &initiator, int32_t rttMs = 0);
+
+    // HomeMesh automation node registry (survives gateway restarts)
+    bool upsertAutomationNode(const DbAutomationNodeSummary &node);
 
     // Maintenance
     size_t pruneOlderThan(time_t thresholdTime);

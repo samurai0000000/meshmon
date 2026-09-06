@@ -48,8 +48,6 @@ struct AutomationNode {
     bool fishPumpState;
     bool upPumpState;
     uint32_t upPumpCutoffSec;
-    float soilMoisture;
-    bool reservoirEmpty;
     string ledMessage;
     uint32_t ledScrollDelay;
 
@@ -67,6 +65,8 @@ struct AutomationNode {
     string acMode;
     string acFan;
     string acVane;
+    bool acTurbo;
+    bool acQuiet;
     bool tvPower;
     int tvVolume;
     int tvChannel;
@@ -75,15 +75,22 @@ struct AutomationNode {
     float boardTempC;
     float roomTempC;
 
+    // meshroom IR provisioning, "none" when the administrator has
+    // cleared the protocol with the "ir del" shell command.  Empty
+    // means the node has not answered an "ac"/"tv" probe yet.
+    string acIrProtocol;
+    string tvIrProtocol;
+
     AutomationNode() :
         nodeId(0), device(nullptr), firstSeen(0), lastSeen(0),
         lastProbeTime(0), probeCount(0), uptimeSec(0),
         lastUptimeReportTime(0), rebootCount(0), online(false), haDiscovered(false),
         lastRttMs(0), avgRttMs(0), rttSampleCount(0),
         fishPumpState(false), upPumpState(false), upPumpCutoffSec(0),
-        soilMoisture(0.0f), reservoirEmpty(false), ledScrollDelay(0),
+        ledScrollDelay(0),
         amplifyState(false), wifiRssi(0), cpuTempC(0.0f), resetCount(0),
         acPower(false), acTargetTemp(24.0f), acMode("off"), acFan("auto"), acVane("auto"),
+        acTurbo(false), acQuiet(false),
         tvPower(false), tvVolume(20), tvChannel(1), tvMute(false), tvInput("HDMI1"),
         boardTempC(0.0f), roomTempC(0.0f) {}
 };
@@ -198,9 +205,14 @@ protected:
     bool parseMeshRoomStatus(const meshtastic_MeshPacket &packet,
                              const string &text, uint32_t rttMs = 0);
     void loadAutomationNodesFromDb(void);
+    void persistAutomationNode(const AutomationNode &node);
     void publishAllDiscoveredNodes(void);
     void ensureAutomationDiscovery(uint32_t nodeId, uint32_t channel = 0);
     void publishAutomationDiscovery(AutomationNode &node);
+    void publishCommonAutomationDiscovery(const AutomationNode &node);
+    void syncCapabilityDiscovery(const AutomationNode &node);
+    void publishDiscoveryConfig(const string &topic, const string &config,
+                                bool enabled);
     void revokeAutomationDiscovery(uint32_t nodeId, const string &oldDeviceType);
     void publishAutomationState(const AutomationNode &node);
     void handleMqttCommand(const string &topic, const string &payload);
