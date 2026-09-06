@@ -628,7 +628,9 @@ static string haDiscoveryJson(const string &name,
                               const string &deviceClass,
                               const string &unit,
                               const string &identifier,
-                              const string &deviceName)
+                              const string &deviceName,
+                              const string &icon = "",
+                              const string &entityCategory = "")
 {
     ostringstream os;
 
@@ -644,6 +646,12 @@ static string haDiscoveryJson(const string &name,
     if (!unit.empty()) {
         os << "\"unit_of_measurement\":\"" << jsonEscape(unit) << "\",";
         os << "\"state_class\":\"measurement\",";
+    }
+    if (!icon.empty()) {
+        os << "\"icon\":\"" << jsonEscape(icon) << "\",";
+    }
+    if (!entityCategory.empty()) {
+        os << "\"entity_category\":\"" << jsonEscape(entityCategory) << "\",";
     }
     os << "\"device\":{"
        << "\"identifiers\":[\"" << jsonEscape(identifier) << "\"],"
@@ -2939,6 +2947,14 @@ void MeshMon::publishAutomationDiscovery(AutomationNode &node)
                         identifier, deviceName),
         true);
 
+    // Common Subsystem (App Type) Diagnostic Sensor
+    _myownMqtt->publish(
+        "homeassistant/sensor/meshmon_" + id + "_app/config",
+        haDiscoveryJson("Subsystem", "meshmon_" + id + "_app",
+                        "meshmon/" + id + "/app", "", "",
+                        identifier, deviceName, "mdi:robot", "diagnostic"),
+        true);
+
     if (node.deviceType == "meshpump") {
         _myownMqtt->publish(
             "homeassistant/switch/meshmon_" + id + "_pump_fish/config",
@@ -3130,6 +3146,8 @@ void MeshMon::revokeAutomationDiscovery(uint32_t nodeId, const string &oldDevice
         topics.push_back("homeassistant/sensor/meshmon_" + id + "_board_temp/config");
     }
 
+    topics.push_back("homeassistant/sensor/meshmon_" + id + "_app/config");
+
     for (size_t i = 0; i < topics.size(); i++) {
         _myownMqtt->publish(topics[i], "", true);
     }
@@ -3142,6 +3160,10 @@ void MeshMon::publishAutomationState(const AutomationNode &node)
     }
 
     string id = nodeHexId(node.nodeId);
+
+    if (!node.deviceType.empty()) {
+        _myownMqtt->publish("meshmon/" + id + "/app", node.deviceType, true);
+    }
 
     if (node.deviceType == "meshpump") {
         _myownMqtt->publish("meshmon/" + id + "/pump_fish/state", node.fishPumpState ? "ON" : "OFF", true);

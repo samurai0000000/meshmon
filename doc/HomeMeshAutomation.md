@@ -436,7 +436,14 @@ Time     | Node      | App      | Dir  | Command          | Param      | Stat
 | **Sensor** | `Automation Fleet Avg RTT`| `meshmon/gateway/auto_avg_rtt` | ms | `duration` |
 | **Sensor** | `Automation Events (24h)` | `meshmon/gateway/auto_events_24h` | events| — |
 
-#### 2. `meshpump` Controls:
+#### 2. Common Robot Lifecycle & Diagnostic Sensors
+| Home Assistant Domain | Entity Name | State Topic | Unit | Device Class / Category |
+| :--- | :--- | :--- | :---: | :--- |
+| **Sensor** | `Subsystem` | `meshmon/<node>/app` | — | `diagnostic` (icon: `mdi:robot`) |
+| **Sensor** | `Node Uptime` | `meshmon/<node>/uptime` | s | `duration` |
+| **Sensor** | `Response Latency` | `meshmon/<node>/rtt` | ms | `duration` |
+
+#### 3. `meshpump` Controls:
 | Home Assistant Domain | Entity Name | State Topic | Command Topic | Payload |
 | :--- | :--- | :--- | :--- | :--- |
 | **Switch** | `Fish Pump Power` | `meshmon/<node>/pump_fish/state` | `meshmon/cmd/<node>/pump_fish` | `ON` / `OFF` |
@@ -449,7 +456,7 @@ Time     | Node      | App      | Dir  | Command          | Param      | Stat
 | **Sensor** | `Node Uptime` | `meshmon/<node>/uptime` | — | `s` (device_class: `duration`) |
 | **Sensor** | `Response Latency` | `meshmon/<node>/rtt` | — | `ms` (device_class: `duration`) |
 
-#### 3. `meshroof` Controls:
+#### 4. `meshroof` Controls:
 | Home Assistant Domain | Entity Name | State Topic | Command Topic | Payload |
 | :--- | :--- | :--- | :--- | :--- |
 | **Switch** | `RF Power Amplifier` | `meshmon/<node>/amplify/state` | `meshmon/cmd/<node>/amplify` | `ON` / `OFF` |
@@ -462,7 +469,7 @@ Time     | Node      | App      | Dir  | Command          | Param      | Stat
 | **Sensor** | `Node Uptime` | `meshmon/<node>/uptime` | — | `s` (device_class: `duration`) |
 | **Sensor** | `Response Latency` | `meshmon/<node>/rtt` | — | `ms` (device_class: `duration`) |
 
-#### 4. `meshroom` Controls:
+#### 5. `meshroom` Controls:
 | Home Assistant Domain | Entity Name | State Topic | Command Topic | Payload |
 | :--- | :--- | :--- | :--- | :--- |
 | **Climate** | `Room AC Climate` | `meshmon/<node>/ac/climate_state` | `meshmon/cmd/<node>/ac_climate` | JSON `{mode, temp, fan}` |

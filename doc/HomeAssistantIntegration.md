@@ -157,6 +157,13 @@ Every Meshtastic node registered in Home Assistant is published with:
 
 Automation controls attach to the same unified device (`identifiers: ["meshmon_<node_id>"]`) under the node's friendly long name. Only nodes that have passed explicit robot capability identification (`app=meshpump`, `meshroof`, `meshroom`) receive these entities.
 
+#### Common Robot Lifecycle & Diagnostic Sensors
+| Domain | Entity Name | State Topic | Unit | Device Class / Category |
+| :--- | :--- | :--- | :---: | :--- |
+| **Sensor** | `Subsystem` | `meshmon/<node>/app` | — | `diagnostic` (icon: `mdi:robot`) |
+| **Sensor** | `Node Uptime` | `meshmon/<node>/uptime` | s | `duration` |
+| **Sensor** | `Response Latency` | `meshmon/<node>/rtt` | ms | `duration` |
+
 #### 1. `meshpump` (Fish Tank & Upper Water Pump Relay Controller)
 | Domain | Entity Name | State Topic | Command Topic | Payload / Values |
 | :--- | :--- | :--- | :--- | :--- |
@@ -395,22 +402,43 @@ cards:
         {% set hours = (up // 3600) %}
         {% set mins = ((up % 3600) // 60) %}
         {% set is_online = (s.state != 'unavailable' and s.state != 'unknown' and up > 0) %}
-        {% set app_type = 'generic' %}
+        {% set app_type = states('sensor.meshmon_' ~ node_id ~ '_app') %}
+        {% if app_type in ['unknown', 'unavailable', ''] %}
+          {% if states('switch.meshmon_' ~ node_id ~ '_rf_power_amplifier') != 'unknown' or states('switch.meshmon_' ~ node_id ~ '_amplify') != 'unknown' %}
+            {% set app_type = 'meshroof' %}
+          {% elif states('switch.meshmon_' ~ node_id ~ '_ac_power') != 'unknown' %}
+            {% set app_type = 'meshroom' %}
+          {% elif states('switch.meshmon_' ~ node_id ~ '_fish_pump') != 'unknown' or states('switch.meshmon_' ~ node_id ~ '_pump_fish') != 'unknown' %}
+            {% set app_type = 'meshpump' %}
+          {% else %}
+            {% set app_type = 'generic' %}
+          {% endif %}
+        {% endif %}
         {% set details = [] %}
-        {% if states('switch.meshmon_' ~ node_id ~ '_pump_fish') != 'unknown' %}
-          {% set app_type = 'meshpump' %}
-          {% set details = details + ['Fish:' ~ states('switch.meshmon_' ~ node_id ~ '_pump_fish') | upper] %}
-          {% set details = details + ['Up:' ~ states('switch.meshmon_' ~ node_id ~ '_pump_up') | upper] %}
-          {% set details = details + ['Soil:' ~ states('sensor.meshmon_' ~ node_id ~ '_soil_moisture') ~ '%'] %}
-        {% elif states('switch.meshmon_' ~ node_id ~ '_amplify') != 'unknown' %}
-          {% set app_type = 'meshroof' %}
-          {% set details = details + ['PA:' ~ states('switch.meshmon_' ~ node_id ~ '_amplify') | upper] %}
-          {% set details = details + ['CPU:' ~ states('sensor.meshmon_' ~ node_id ~ '_cpu_temp') ~ '°C'] %}
-        {% elif states('switch.meshmon_' ~ node_id ~ '_ac_power') != 'unknown' %}
-          {% set app_type = 'meshroom' %}
-          {% set details = details + ['AC:' ~ states('switch.meshmon_' ~ node_id ~ '_ac_power') | upper] %}
-          {% set details = details + ['TV:' ~ states('switch.meshmon_' ~ node_id ~ '_tv_power') | upper] %}
-          {% set details = details + ['Board:' ~ states('sensor.meshmon_' ~ node_id ~ '_board_temp') ~ '°C'] %}
+        {% if app_type == 'meshpump' %}
+          {% set fish = states('switch.meshmon_' ~ node_id ~ '_fish_pump') %}
+          {% if fish == 'unknown' %}{% set fish = states('switch.meshmon_' ~ node_id ~ '_pump_fish') %}{% endif %}
+          {% set up_p = states('switch.meshmon_' ~ node_id ~ '_upper_pump') %}
+          {% if up_p == 'unknown' %}{% set up_p = states('switch.meshmon_' ~ node_id ~ '_pump_up') %}{% endif %}
+          {% set soil = states('sensor.meshmon_' ~ node_id ~ '_soil_moisture') %}
+          {% set details = details + ['Fish:' ~ (fish | upper if fish not in ['unknown', 'unavailable'] else '-')] %}
+          {% set details = details + ['Up:' ~ (up_p | upper if up_p not in ['unknown', 'unavailable'] else '-')] %}
+          {% if soil not in ['unknown', 'unavailable'] %}{% set details = details + ['Soil:' ~ soil ~ '%'] %}{% endif %}
+        {% elif app_type == 'meshroof' %}
+          {% set pa = states('switch.meshmon_' ~ node_id ~ '_rf_power_amplifier') %}
+          {% if pa == 'unknown' %}{% set pa = states('switch.meshmon_' ~ node_id ~ '_amplify') %}{% endif %}
+          {% set cpu = states('sensor.meshmon_' ~ node_id ~ '_esp32_cpu_temperature') %}
+          {% if cpu == 'unknown' %}{% set cpu = states('sensor.meshmon_' ~ node_id ~ '_cpu_temp') %}{% endif %}
+          {% set details = details + ['PA:' ~ (pa | upper if pa not in ['unknown', 'unavailable'] else '-')] %}
+          {% if cpu not in ['unknown', 'unavailable'] %}{% set details = details + ['CPU:' ~ cpu ~ '°C'] %}{% endif %}
+        {% elif app_type == 'meshroom' %}
+          {% set ac = states('switch.meshmon_' ~ node_id ~ '_ac_power') %}
+          {% set tv = states('switch.meshmon_' ~ node_id ~ '_tv_power') %}
+          {% set brd = states('sensor.meshmon_' ~ node_id ~ '_rp2040_board_temperature') %}
+          {% if brd == 'unknown' %}{% set brd = states('sensor.meshmon_' ~ node_id ~ '_board_temp') %}{% endif %}
+          {% set details = details + ['AC:' ~ (ac | upper if ac not in ['unknown', 'unavailable'] else '-')] %}
+          {% set details = details + ['TV:' ~ (tv | upper if tv not in ['unknown', 'unavailable'] else '-')] %}
+          {% if brd not in ['unknown', 'unavailable'] %}{% set details = details + ['Board:' ~ brd ~ '°C'] %}{% endif %}
         {% endif %}
         | `!{{ node_id }}` | **{{ dev_name }}** | `{{ app_type }}` | {{ '🟢 Online' if is_online else '🔴 Offline' }} | {{ hours }}h {{ mins }}m | {{ details | join(' ') }} | `{{ rtt }} ms` |
       {% endfor %}
@@ -431,12 +459,12 @@ cards:
     square: false
     cards:
       - type: tile
-        entity: switch.meshmon_2bf941d4_pump_fish
+        entity: switch.meshmon_2bf941d4_fish_pump
         name: Fish Tank Pump
         icon: mdi:fishbowl
         color: blue
       - type: tile
-        entity: switch.meshmon_2c018a12_amplify
+        entity: switch.meshmon_2c018a12_rf_power_amplifier
         name: Rooftop RF PA
         icon: mdi:signal-cellular-outline
         color: amber
