@@ -13,6 +13,7 @@
 #include <ChatBot.hxx>
 #include <Calibration.hxx>
 #include <MeshMonDb.hxx>
+#include <AutomationDevice.hxx>
 #include <map>
 #include <chrono>
 
@@ -27,8 +28,11 @@ struct AutomationNode {
     string version;
     string hardware;
     string capabilities;
+    shared_ptr<AutomationDevice> device;
     time_t firstSeen;
     time_t lastSeen;
+    time_t lastProbeTime;
+    uint32_t probeCount;
     uint32_t uptimeSec;
     time_t lastUptimeReportTime;
     uint32_t rebootCount;
@@ -72,7 +76,8 @@ struct AutomationNode {
     float roomTempC;
 
     AutomationNode() :
-        nodeId(0), firstSeen(0), lastSeen(0), uptimeSec(0),
+        nodeId(0), device(nullptr), firstSeen(0), lastSeen(0),
+        lastProbeTime(0), probeCount(0), uptimeSec(0),
         lastUptimeReportTime(0), rebootCount(0), online(false), haDiscovered(false),
         lastRttMs(0), avgRttMs(0), rttSampleCount(0),
         fishPumpState(false), upPumpState(false), upPumpCutoffSec(0),

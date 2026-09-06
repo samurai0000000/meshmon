@@ -92,7 +92,8 @@ configure_file(
   )
 
 add_executable(meshmon meshmon.cxx MeshMon.cxx MeshMonShell.cxx MqttClient.cxx
-  ChatBot.cxx GeminiChat.cxx Calibration.cxx MeshMonDb.cxx)
+  ChatBot.cxx GeminiChat.cxx Calibration.cxx MeshMonDb.cxx
+  AutomationDevice.cxx MeshPumpDevice.cxx MeshRoofDevice.cxx MeshRoomDevice.cxx)
 target_include_directories(meshmon PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
 target_include_directories(meshmon PRIVATE
   ${SQLite3_INCLUDE_DIRS}

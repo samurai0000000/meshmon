@@ -2312,6 +2312,7 @@ void MeshMon::loadAutomationNodesFromDb(void)
             node.shortName = !s.shortName.empty() ? s.shortName : node.nodeHex;
             node.longName = !s.longName.empty() ? s.longName : (!s.shortName.empty() ? s.shortName : (string("!") + node.nodeHex));
             node.deviceType = s.deviceType;
+            node.device = AutomationDevice::create(s.deviceType);
             node.firstSeen = s.firstSeen;
             node.lastSeen = s.lastSeen;
             node.rebootCount = s.rebootCount;
@@ -2326,7 +2327,10 @@ void MeshMon::loadAutomationNodesFromDb(void)
                     if (eq != string::npos) {
                         string key = token.substr(0, eq);
                         string val = token.substr(eq + 1);
-                        if (key == "app" && node.deviceType.empty()) node.deviceType = val;
+                        if (key == "app" && node.deviceType.empty()) {
+                            node.deviceType = val;
+                            node.device = AutomationDevice::create(val);
+                        }
                         else if (key == "ver") node.version = val;
                         else if (key == "hw") node.hardware = val;
                         else if (key == "caps") node.capabilities = val;
@@ -2377,6 +2381,8 @@ bool MeshMon::processAutomationMessage(const meshtastic_MeshPacket &packet,
 
     time_t now = time(NULL);
     bool isKnownRobot = false;
+    uint32_t currentUptime = 0;
+    string nodeHex = "";
     {
         lock_guard<mutex> lock(_autoNodesMutex);
         map<uint32_t, AutomationNode>::iterator it = _autoNodes.find(packet.from);
@@ -2385,6 +2391,16 @@ bool MeshMon::processAutomationMessage(const meshtastic_MeshPacket &packet,
             AutomationNode &node = it->second;
             node.lastSeen = now;
             node.online = true;
+            nodeHex = node.nodeHex;
+            if (node.device == nullptr) {
+                node.device = AutomationDevice::create(node.deviceType);
+            }
+            if (node.lastUptimeReportTime > 0 && node.uptimeSec > 0 && now > node.lastUptimeReportTime) {
+                uint32_t delta = (uint32_t)(now - node.lastUptimeReportTime);
+                node.uptimeSec += delta;
+                node.lastUptimeReportTime = now;
+                currentUptime = node.uptimeSec;
+            }
             if (rttMs > 0) {
                 node.lastRttMs = rttMs;
                 node.rttSampleCount++;
@@ -2397,11 +2413,20 @@ bool MeshMon::processAutomationMessage(const meshtastic_MeshPacket &packet,
         }
     }
 
-    if (isKnownRobot && rttMs > 0 && _myownMqtt != NULL) {
-        string id = nodeHexId(packet.from);
-        char rttBuf[32];
-        snprintf(rttBuf, sizeof(rttBuf), "%u", rttMs);
-        _myownMqtt->publish("meshmon/" + id + "/rtt", string(rttBuf), true);
+    if (isKnownRobot && _myownMqtt != NULL) {
+        if (!nodeHex.empty()) {
+            _myownMqtt->publish("meshmon/" + nodeHex + "/availability", "online", true);
+        }
+        if (rttMs > 0) {
+            char rttBuf[32];
+            snprintf(rttBuf, sizeof(rttBuf), "%u", rttMs);
+            _myownMqtt->publish("meshmon/" + nodeHex + "/rtt", string(rttBuf), true);
+        }
+        if (currentUptime > 0) {
+            char upBuf[32];
+            snprintf(upBuf, sizeof(upBuf), "%u", currentUptime);
+            _myownMqtt->publish("meshmon/" + nodeHex + "/uptime", string(upBuf), true);
+        }
     }
 
     string lower = text;
@@ -2640,6 +2665,9 @@ bool MeshMon::parseRollcallResponse(const meshtastic_MeshPacket &packet,
             typeChanged = true;
         }
         node.deviceType = app;
+        if (node.device == nullptr || typeChanged) {
+            node.device = AutomationDevice::create(app);
+        }
         node.version = ver;
         node.hardware = hw;
         node.capabilities = caps;
@@ -3160,6 +3188,7 @@ void MeshMon::publishAutomationState(const AutomationNode &node)
     }
 
     string id = nodeHexId(node.nodeId);
+    _myownMqtt->publish("meshmon/" + id + "/availability", node.online ? "online" : "offline", true);
 
     if (!node.deviceType.empty()) {
         _myownMqtt->publish("meshmon/" + id + "/app", node.deviceType, true);
@@ -3298,19 +3327,58 @@ void MeshMon::handleMqttCommand(const string &topic, const string &payload)
 
 void MeshMon::checkAutomationWatchdog(void)
 {
+    if (!isConnected() || _db == NULL) {
+        return;
+    }
+
     time_t now = time(NULL);
-    lock_guard<mutex> lock(_autoNodesMutex);
-    for (map<uint32_t, AutomationNode>::iterator it = _autoNodes.begin(); it != _autoNodes.end(); ++it) {
-        AutomationNode &node = it->second;
-        if (node.deviceType.empty()) {
-            continue;
-        }
-        if (node.online && (now - node.lastSeen > 5400)) { // 90 minutes (allows 1 missed hourly heartbeat)
-            node.online = false;
-            if (_myownMqtt != NULL) {
-                _myownMqtt->publish("meshmon/" + node.nodeHex + "/availability", "offline", true);
+    vector<pair<uint32_t, string>> probesToSend;
+
+    {
+        lock_guard<mutex> lock(_autoNodesMutex);
+        for (map<uint32_t, AutomationNode>::iterator it = _autoNodes.begin(); it != _autoNodes.end(); ++it) {
+            AutomationNode &node = it->second;
+            if (node.deviceType.empty()) {
+                continue;
+            }
+
+            if (node.device == nullptr) {
+                node.device = AutomationDevice::create(node.deviceType);
+            }
+
+            // 1. Enforce 15-minute offline timeout (900 seconds)
+            if (node.online && (now - node.lastSeen > 900)) {
+                node.online = false;
+                if (_myownMqtt != NULL) {
+                    _myownMqtt->publish("meshmon/" + node.nodeHex + "/availability", "offline", true);
+                }
+                if (_db != NULL) {
+                    _db->enqueueAutomationEvent(now, node.nodeId, node.deviceType, "RX_STATE",
+                                                "system", "OFFLINE_TIMEOUT",
+                                                "No heartbeat/response for > 15m", "TIMEOUT", "SYSTEM");
+                }
+            }
+
+            // 2. Proactive 10-minute probe (600 seconds) or initial bootup probe
+            if ((node.lastProbeTime == 0 || now - node.lastSeen >= 600) && (now - node.lastProbeTime >= 600)) {
+                string probeCmd;
+                if (node.lastProbeTime == 0) {
+                    // First interrogation upon startup queries uptime to sync the out-of-date baseline
+                    probeCmd = "uptime";
+                } else if (node.device != nullptr) {
+                    probeCmd = node.device->getNextProbeCommand(node.probeCount++);
+                }
+                node.lastProbeTime = now;
+                if (!probeCmd.empty()) {
+                    probesToSend.push_back(make_pair(node.nodeId, probeCmd));
+                }
             }
         }
+    }
+
+    // Dispatch probes outside of lock
+    for (size_t i = 0; i < probesToSend.size(); i++) {
+        sendAutomationCommand(probesToSend[i].first, probesToSend[i].second, "WATCHDOG");
     }
 }
 
