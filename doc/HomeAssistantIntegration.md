@@ -188,22 +188,28 @@ Automation controls attach to the same unified device (`identifiers: ["meshmon_<
 | **Sensor** | `Response Latency` | `meshmon/<node>/rtt` | — | `ms` (device_class: `duration`) |
 
 #### 3. `meshroom` (RP2040 Room IR Climate & TV Hub)
+The AC and TV entities are dynamically gated based on `caps=` reported in `identify` (or `ir=` protocol queries):
+
 | Domain | Entity Name | State Topic | Command Topic | Payload / Values |
 | :--- | :--- | :--- | :--- | :--- |
-| **Climate** | `Room AC Climate` | `meshmon/<node>/ac/climate_state` | `meshmon/cmd/<node>/ac_climate` | JSON `{mode, temp, fan}` |
-| **Switch** | `AC Power` | `meshmon/<node>/ac_power/state` | `meshmon/cmd/<node>/ac_power` | `ON` / `OFF` |
-| **Number** | `AC Target Temp` | `meshmon/<node>/ac_temp/state` | `meshmon/cmd/<node>/ac_temp` | `16` .. `30` (°C) |
-| **Select** | `AC Mode` | `meshmon/<node>/ac_mode/state` | `meshmon/cmd/<node>/ac_mode` | `cool`, `heat`, `dry`, `fan`, `auto` |
-| **Select** | `AC Fan Speed` | `meshmon/<node>/ac_fan/state` | `meshmon/cmd/<node>/ac_fan` | `auto`, `quiet`, `low`, `med`, `high`, `max` |
+| **Climate** | `Room AC` (mode) | `meshmon/<node>/ac/mode/state` | `meshmon/cmd/<node>/ac_mode` | `off`, `cool`, `heat`, `dry`, `fan_only`, `auto` |
+| **Climate** | (power) | — | `meshmon/cmd/<node>/ac_power` | `ON` / `OFF` (`power_command_topic`) |
+| **Climate** | (HVAC mode) | `meshmon/<node>/ac/hvac_mode/state` | `meshmon/cmd/<node>/ac_hvac_mode` | `cool`, `heat`, `dry`, `fan_only`, `auto` |
+| **Climate** | (target temp) | `meshmon/<node>/ac/temp/state` | `meshmon/cmd/<node>/ac_temp` | `16` .. `30` (°C) |
+| **Climate** | (fan mode) | `meshmon/<node>/ac/fan/state` | `meshmon/cmd/<node>/ac_fan` | `auto`, `1` .. `5` |
+| **Climate** | (current temp) | `meshmon/<node>/temperature` | — | °C from Meshtastic env metrics |
+| **Switch** | `AC Power` | `meshmon/<node>/ac/power/state` | `meshmon/cmd/<node>/ac_power` | `ON` / `OFF` |
 | **Button** | `AC Force IR Blast` | — | `meshmon/cmd/<node>/ac_blast` | `PRESS` |
-| **Media Player** / **Switch** | `TV Power` | `meshmon/<node>/tv_power/state` | `meshmon/cmd/<node>/tv_power` | `ON` / `OFF` |
-| **Number** | `TV Volume` | `meshmon/<node>/tv_vol/state` | `meshmon/cmd/<node>/tv_vol` | `0` .. `100` |
-| **Number** | `TV Channel` | `meshmon/<node>/tv_chan/state` | `meshmon/cmd/<node>/tv_chan` | `1` .. `999` |
-| **Switch** | `TV Mute` | `meshmon/<node>/tv_mute/state` | `meshmon/cmd/<node>/tv_mute` | `ON` / `OFF` |
-| **Button** | `TV Input Source` | — | `meshmon/cmd/<node>/tv_input` | `PRESS` |
+| **Switch** | `TV Power` | `meshmon/<node>/tv/power/state` | `meshmon/cmd/<node>/tv_power` | `ON` / `OFF` |
+| **Switch** | `TV Mute` | `meshmon/<node>/tv/mute/state` | `meshmon/cmd/<node>/tv_mute` | `ON` / `OFF` |
+| **Number** | `TV Volume` | `meshmon/<node>/tv/volume/state` | `meshmon/cmd/<node>/tv_vol` | `0` .. `100` |
+| **Number** | `TV Channel` | `meshmon/<node>/tv/channel/state` | `meshmon/cmd/<node>/tv_chan` | `1` .. `999` |
+| **Button** | `TV Input Next` | — | `meshmon/cmd/<node>/tv_input` | `PRESS` |
 | **Sensor** | `RP2040 Board Temp` | `meshmon/<node>/board_temp` | — | `°C` |
 | **Sensor** | `Node Uptime` | `meshmon/<node>/uptime` | — | `s` (device_class: `duration`) |
 | **Sensor** | `Response Latency` | `meshmon/<node>/rtt` | — | `ms` (device_class: `duration`) |
+
+*Power State and HVAC Mode Separation*: The Climate entity (`climate.meshmon_<node>_ac`) defines `power_command_topic: "meshmon/cmd/<node>/ac_power"` alongside `mode_command_topic: "meshmon/cmd/<node>/ac_mode"`. This enables dedicated `turn_on` and `turn_off` controls in Home Assistant while allowing mode adjustments without overriding power state. An unpolluted HVAC mode stream is also published to `meshmon/<node>/ac/hvac_mode/state`.
 
 For deep-dive protocol specifications and message formats, see [HomeMeshAutomation.md](HomeMeshAutomation.md).
 

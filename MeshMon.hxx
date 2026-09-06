@@ -95,7 +95,7 @@ struct AutomationNode {
         fishPumpState(false), upPumpState(false), upPumpCutoffSec(0),
         ledScrollDelay(0),
         amplifyState(false), wifiRssi(0), cpuTempC(0.0f), resetCount(0),
-        acPower(false), acTargetTemp(24.0f), acMode("off"), acFan("auto"), acVane("auto"),
+        acPower(false), acTargetTemp(24.0f), acMode("cool"), acFan("auto"), acVane("auto"),
         acTurbo(false), acQuiet(false),
         tvPower(false), tvVolume(20), tvChannel(1), tvMute(false), tvInput("HDMI1"),
         boardTempC(0.0f), roomTempC(0.0f) {}

@@ -89,7 +89,7 @@ In modular LoRa setups, radio modules may be reprogrammed or swapped between phy
 1. **Detection**: When an incoming message (`identify`, `rollcall:`, `boot-up`, or subsystem telemetry) announces an application type differing from the node's current in-memory record, `meshmon` triggers an immediate **Device Role Migration**.
 2. **Home Assistant Entity Revocation (Pruning)**:
    - Home Assistant retains MQTT Auto-Discovery topics until explicitly cleared.
-   - `meshmon` iterates over all discovery topics registered for the node's **old** role (e.g., `climate.<node>_ac_climate`, `switch.<node>_tv_power`) and publishes an **empty payload (`""`) with `retain=true`**.
+   - `meshmon` iterates over all discovery topics registered for the node's **old** role (e.g., `climate.meshmon_<node>_ac`, `switch.meshmon_<node>_tv_power`) and publishes an **empty payload (`""`) with `retain=true`**.
    - Home Assistant immediately removes the stale entities from its registry and Lovelace cards.
 3. **New Entity Registration**:
    - `meshmon` publishes the new role's discovery topics (e.g., `switch.<node>_amplify`, `sensor.<node>_cpu_temp`).
@@ -161,11 +161,13 @@ MeshMon also accepts the legacy prefix `rollcall: app=…` with the same tokens.
   identify: app=meshroom ver=2.1.2 hw=rp2040 caps=ac_ir,tv_ir,board_temp,buzzer
   ```
 
-`caps=` is a string literal compiled into each firmware. It advertises
-what the application was built to support, and does not vary with how
-an individual unit is provisioned or wired. MeshMon records it for
-display only and never gates Home Assistant entities on it; see
-section 12.B for the provisioning signal that is actually per unit.
+`caps=` is a comma-separated list advertising the node's active capabilities.
+For static subsystems, it lists compiled hardware features (`pump_fish`, `amplify`, etc.).
+For dynamically provisioned subsystems such as `meshroom`, `caps=` dynamically reflects
+the node's active configuration: `ac_ir` is included only when an AC IR protocol is enabled
+in non-volatile configuration, and `tv_ir` is included only when a TV IR protocol is enabled.
+MeshMon inspects `caps=` upon receiving `identify` to immediately gate Home Assistant entity
+discovery and prune unconfigured entities (see section 12.B).
 
 ### C. Outdated / Unparseable Firmware Policy & Strict Robot Gating
 * **Legacy String Rejection**: If an authorized mate responds to a human `rollcall` with a legacy unparseable string (such as `"<Node>, <Target> is at your service"`), `meshmon` consumes the message and does not forward it to Gemini. The node is **strictly excluded** from `_autoNodes` and will not be registered as a robot.
@@ -402,7 +404,7 @@ CREATE TABLE IF NOT EXISTS automation_nodes (
     device_type TEXT NOT NULL,              -- 'meshpump', 'meshroof', 'meshroom'
     version TEXT,                           -- Firmware version from identify ver=
     hardware TEXT,                          -- Hardware string from identify hw=
-    capabilities TEXT,                      -- Compile-time caps= list, informational only
+    capabilities TEXT,                      -- Advertised caps= list from identify
     ac_ir_protocol TEXT,                    -- meshroom ac reply ir=, 'none' when cleared
     tv_ir_protocol TEXT,                    -- meshroom tv reply ir=, 'none' when cleared
     first_seen INTEGER NOT NULL,
@@ -519,7 +521,9 @@ section 12.B.
 
 | Home Assistant Domain | Entity Name | State Topic | Command Topic | Payload |
 | :--- | :--- | :--- | :--- | :--- |
-| **Climate** | `Room AC` | `meshmon/<node>/ac/mode/state` | `meshmon/cmd/<node>/ac_mode` | `off`, `cool`, `heat`, `dry`, `fan_only`, `auto` |
+| **Climate** | `Room AC` (mode) | `meshmon/<node>/ac/mode/state` | `meshmon/cmd/<node>/ac_mode` | `off`, `cool`, `heat`, `dry`, `fan_only`, `auto` |
+| **Climate** | (power) | — | `meshmon/cmd/<node>/ac_power` | `ON` / `OFF` (`power_command_topic`) |
+| **Climate** | (HVAC mode) | `meshmon/<node>/ac/hvac_mode/state` | `meshmon/cmd/<node>/ac_hvac_mode` | `cool`, `heat`, `dry`, `fan_only`, `auto` |
 | **Climate** | (target temp) | `meshmon/<node>/ac/temp/state` | `meshmon/cmd/<node>/ac_temp` | `16` .. `30` (°C) |
 | **Climate** | (fan mode) | `meshmon/<node>/ac/fan/state` | `meshmon/cmd/<node>/ac_fan` | `auto`, `1` .. `5` |
 | **Climate** | (current temp) | `meshmon/<node>/temperature` | — | °C from Meshtastic env metrics |
@@ -532,19 +536,22 @@ section 12.B.
 | **Button** | `TV Input Next` | — | `meshmon/cmd/<node>/tv_input` | `PRESS` |
 | **Sensor** | `RP2040 Board Temperature` | `meshmon/<node>/board_temp` | — | `°C` (device_class: `temperature`) |
 
+*Power State and HVAC Mode*: `climate.meshmon_<node>_ac` discovery specifies `power_command_topic: "meshmon/cmd/<node>/ac_power"` (`payload_on: "ON"`, `payload_off: "OFF"`), enabling Home Assistant's `turn_on` and `turn_off` features and presenting the dedicated Power button on the climate card. Discrete mode changes dispatch to `mode_command_topic: "meshmon/cmd/<node>/ac_mode"`. Meanwhile, `meshmon/<node>/ac/hvac_mode/state` continuously reports the configured operating mode without `off` pollution.
+
 ### B. IR-Gated Capability Discovery
 
-The `caps=` field in an `identify` reply is a compile-time string
-literal in each firmware. It lists what the application was built to
-support, not what a given unit is provisioned for, so it cannot gate
-entities. `meshroom` in particular always claims `ac_ir,tv_ir` even on
-a unit where the administrator has cleared one of the IR protocols.
+`meshroom` firmware dynamically reports its active IR provisioning in the
+`caps=` field of `identify` replies (`ac_ir` and/or `tv_ir`). When
+`identify` is received, MeshMon uses `caps=` to immediately gate
+capability discovery and prune inactive entities with empty retained
+payloads without waiting for secondary query replies:
 
-The provisioning is instead reported per feature in the bare `ac` and
-`tv` query replies as `ir=<protocol>`, and becomes `ir=none` after an
-`ir del` on the node's serial shell. MeshMon treats that as the gate:
+- If `caps=` includes `ac_ir`, AC entities (`climate.meshmon_<node>_ac`, `switch.meshmon_<node>_ac_power`, `button.meshmon_<node>_ac_blast`) are published; if omitted, they are pruned with empty retained payloads.
+- If `caps=` includes `tv_ir`, TV entities (`switch.meshmon_<node>_tv_power`, `switch.meshmon_<node>_tv_mute`, `number.meshmon_<node>_tv_volume`, `number.meshmon_<node>_tv_channel`, `button.meshmon_<node>_tv_input`) are published; if omitted, they are pruned with empty retained payloads.
 
-| `ir=` value | Meaning | Entities |
+Additionally, for backward compatibility with older firmware that does not include `caps=` in `identify`, provisioning is reported per feature in the bare `ac` and `tv` query replies as `ir=<protocol>`, and becomes `ir=none` after an `ir del` on the node's serial shell:
+
+| `ir=` value | Meaning | Entities (legacy fallback without `caps=`) |
 | :--- | :--- | :--- |
 | (never probed) | No `ac` / `tv` reply seen yet | Published, so a node is never invisible while waiting for its first reply |
 | `<protocol>` | Feature is provisioned | Published |

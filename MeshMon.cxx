@@ -802,6 +802,7 @@ static string haTextDiscoveryJson(const string &name,
 
 static string haClimateDiscoveryJson(const string &name,
                                      const string &uniqueId,
+                                     const string &powerCmdTopic,
                                      const string &modeStateTopic,
                                      const string &modeCmdTopic,
                                      const string &tempStateTopic,
@@ -819,6 +820,9 @@ static string haClimateDiscoveryJson(const string &name,
        << "\"unique_id\":\"" << jsonEscape(uniqueId) << "\","
        << "\"default_entity_id\":\"climate." << jsonEscape(uniqueId) << "\","
        << "\"has_entity_name\":true,"
+       << "\"power_command_topic\":\"" << jsonEscape(powerCmdTopic) << "\","
+       << "\"payload_on\":\"ON\","
+       << "\"payload_off\":\"OFF\","
        << "\"mode_state_topic\":\"" << jsonEscape(modeStateTopic) << "\","
        << "\"mode_command_topic\":\"" << jsonEscape(modeCmdTopic) << "\","
        << "\"temperature_state_topic\":\"" << jsonEscape(tempStateTopic) << "\","
@@ -3127,13 +3131,21 @@ bool MeshMon::parseMeshRoomStatus(const meshtastic_MeshPacket &packet,
         if (verb == "ac") {
             if (kvOnOff(kv, "pwr", onOff)) {
                 node.acPower = onOff;
+                if (node.acPower && (node.acMode.empty() || node.acMode == "off")) {
+                    node.acMode = "cool";
+                }
             }
             if (kvFloat(kv, "temp", temp) &&
                 (temp >= 16.0f) && (temp <= 30.0f)) {
                 node.acTargetTemp = temp;
             }
             if (kvString(kv, "mode", s)) {
-                node.acMode = s;
+                if (s == "off") {
+                    node.acPower = false;
+                } else {
+                    node.acMode = s;
+                    node.acPower = true;
+                }
             }
             if (kvString(kv, "fan", s)) {
                 node.acFan = s;
@@ -3437,10 +3449,15 @@ void MeshMon::syncCapabilityDiscovery(const AutomationNode &node)
     } else if (node.deviceType == "meshroom") {
         bool ac = irFeatureEnabled(node.acIrProtocol);
         bool tv = irFeatureEnabled(node.tvIrProtocol);
+        if (!node.capabilities.empty()) {
+            ac = ac && (node.capabilities.find("ac_ir") != string::npos);
+            tv = tv && (node.capabilities.find("tv_ir") != string::npos);
+        }
 
         publishDiscoveryConfig(
             "homeassistant/climate/meshmon_" + id + "_ac/config",
             haClimateDiscoveryJson("Room AC", "meshmon_" + id + "_ac",
+                                   "meshmon/cmd/" + id + "/ac_power",
                                    "meshmon/" + id + "/ac/mode/state",
                                    "meshmon/cmd/" + id + "/ac_mode",
                                    "meshmon/" + id + "/ac/temp/state",
@@ -3598,7 +3615,11 @@ void MeshMon::publishAutomationState(const AutomationNode &node)
         _myownMqtt->publish("meshmon/" + id + "/ac/power/state", node.acPower ? "ON" : "OFF", true);
         /* meshroom says "fan", Home Assistant spells it "fan_only" */
         string haMode = (node.acMode == "fan") ? string("fan_only") : node.acMode;
+        if (haMode.empty() || haMode == "off") {
+            haMode = "cool";
+        }
         _myownMqtt->publish("meshmon/" + id + "/ac/mode/state", node.acPower ? haMode : "off", true);
+        _myownMqtt->publish("meshmon/" + id + "/ac/hvac_mode/state", haMode, true);
         char buf[32];
         snprintf(buf, sizeof(buf), "%.1f", node.acTargetTemp);
         _myownMqtt->publish("meshmon/" + id + "/ac/temp/state", string(buf), true);
@@ -3727,9 +3748,13 @@ void MeshMon::handleMqttCommand(const string &topic, const string &payload)
         textCmd = "ac blast";
     } else if (action == "ac_temp" || action == "ac_temperature") {
         textCmd = "ac temp " + payload;
-    } else if (action == "ac_mode") {
-        /* Home Assistant says "fan_only", meshroom says "fan" */
-        textCmd = "ac mode " + ((payload == "fan_only") ? string("fan") : payload);
+    } else if (action == "ac_mode" || action == "ac_hvac_mode") {
+        if (payload == "off") {
+            textCmd = "ac off";
+        } else {
+            /* Home Assistant says "fan_only", meshroom says "fan" */
+            textCmd = "ac mode " + ((payload == "fan_only") ? string("fan") : payload);
+        }
     } else if (action == "ac_fan") {
         textCmd = "ac fan " + payload;
     } else if (action == "tv_power") {
