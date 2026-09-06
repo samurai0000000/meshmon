@@ -33,6 +33,12 @@ struct AutomationNode {
     time_t lastSeen;
     time_t lastProbeTime;
     uint32_t probeCount;
+    /*
+     * Boot refresh sequence, deliberately not persisted so that every
+     * gateway restart re-runs it.  0 = identify still owed, 1 = uptime
+     * still owed, 2 = done and the normal rotation applies.
+     */
+    uint32_t bootProbeStep;
     uint32_t uptimeSec;
     time_t lastUptimeReportTime;
     uint32_t rebootCount;
@@ -83,7 +89,7 @@ struct AutomationNode {
 
     AutomationNode() :
         nodeId(0), device(nullptr), firstSeen(0), lastSeen(0),
-        lastProbeTime(0), probeCount(0), uptimeSec(0),
+        lastProbeTime(0), probeCount(0), bootProbeStep(0), uptimeSec(0),
         lastUptimeReportTime(0), rebootCount(0), online(false), haDiscovered(false),
         lastRttMs(0), avgRttMs(0), rttSampleCount(0),
         fishPumpState(false), upPumpState(false), upPumpCutoffSec(0),

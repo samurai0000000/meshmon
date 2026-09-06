@@ -2618,6 +2618,13 @@ bool MeshMon::parseUptimeMessage(const meshtastic_MeshPacket &packet,
             node.lastUptimeReportTime = now;
             node.lastSeen = now;
             node.online = true;
+            /*
+             * Only advance from 1, never 0 to 2, so an early hourly
+             * uptime announcement cannot skip the identify step.
+             */
+            if (node.bootProbeStep == 1) {
+                node.bootProbeStep = 2;
+            }
             devType = node.deviceType;
         }
     }
@@ -2695,13 +2702,29 @@ bool MeshMon::parseRollcallResponse(const meshtastic_MeshPacket &packet,
         if (node.device == nullptr || typeChanged) {
             node.device = AutomationDevice::create(app);
         }
-        node.version = ver;
-        node.hardware = hw;
-        node.capabilities = caps;
+        /*
+         * identify now runs on every gateway boot rather than once at
+         * discovery, so a reply that omits a token must not erase what
+         * is already known: persistAutomationNode would write the
+         * blank straight into automation_nodes.
+         */
+        if (!ver.empty()) {
+            node.version = ver;
+        }
+        if (!hw.empty()) {
+            node.hardware = hw;
+        }
+        if (!caps.empty()) {
+            node.capabilities = caps;
+        }
         node.online = true;
         node.lastSeen = now;
         if (node.firstSeen == 0) {
             node.firstSeen = now;
+        }
+        /* A volunteered identify satisfies the boot refresh step */
+        if (node.bootProbeStep == 0) {
+            node.bootProbeStep = 1;
         }
         nodeCopy = node;
     }
@@ -3760,12 +3783,31 @@ void MeshMon::checkAutomationWatchdog(void)
                 }
             }
 
-            // 2. Proactive 10-minute probe (600 seconds) or initial bootup probe
-            if ((node.lastProbeTime == 0 || now - node.lastSeen >= 600) && (now - node.lastProbeTime >= 600)) {
+            /*
+             * 2. Boot refresh, then the proactive 10-minute probe.
+             *
+             * The boot steps run one per tick and ignore the 600s
+             * spacing, otherwise they would land 10 minutes apart:
+             * both lastProbeTime and the reply's lastSeen push the
+             * next slot out.  identify goes first because its reply
+             * corrects deviceType and republishes discovery, so the
+             * uptime that follows lands in the right entity set.
+             */
+            bool bootPhase = node.bootProbeStep < 2;
+            if (bootPhase ||
+                ((now - node.lastSeen >= 600) && (now - node.lastProbeTime >= 600))) {
                 string probeCmd;
-                if (node.lastProbeTime == 0) {
-                    // First interrogation upon startup queries uptime to sync the out-of-date baseline
+                if (node.bootProbeStep == 0) {
+                    probeCmd = "identify";
+                    node.bootProbeStep = 1;
+                } else if (node.bootProbeStep == 1) {
+                    /*
+                     * uptimeSec is not persisted, so it is 0 until a
+                     * node reports.  The fleet card treats 0 as
+                     * offline, so this is what restores liveness.
+                     */
                     probeCmd = "uptime";
+                    node.bootProbeStep = 2;
                 } else if (node.device != nullptr) {
                     probeCmd = node.device->getNextProbeCommand(node.probeCount++);
                 }
