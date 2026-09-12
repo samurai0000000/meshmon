@@ -7,9 +7,16 @@ MAKEFLAGS =	--no-print-dir
 
 TARGETS +=	build/$(ARCH)/meshmon
 
-.PHONY: default clean distclean
+.PHONY: default clean distclean all submodules
 
-default: $(TARGETS)
+all: default
+
+default: submodules $(TARGETS)
+
+submodules:
+	@if [ -f .gitmodules ] && [ ! -f third_party/json/include/nlohmann/json.hpp ]; then \
+		git submodule update --init --recursive; \
+	fi
 
 clean:
 	@test -f build/$(ARCH)/Makefile && $(MAKE) -C build/$(ARCH) clean

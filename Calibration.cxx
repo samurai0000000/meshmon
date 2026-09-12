@@ -505,10 +505,34 @@ static string resolveConfigPath(const string &path, const string &storedPath)
     if (!storedPath.empty()) {
         return storedPath;
     }
+
+    const char *xdg = getenv("XDG_CONFIG_HOME");
+    string xdgPath;
+    if (xdg != NULL && xdg[0] != '\0') {
+        xdgPath = string(xdg) + "/meshmon/meshmon.calib";
+    } else {
+        const char *homedir = getenv("HOME");
+        if (homedir != NULL && homedir[0] != '\0') {
+            xdgPath = string(homedir) + "/.config/meshmon/meshmon.calib";
+        }
+    }
+
+    if (!xdgPath.empty() && (access(xdgPath.c_str(), F_OK) == 0)) {
+        return xdgPath;
+    }
+
     const char *homedir = getenv("HOME");
     if ((homedir != NULL) && (homedir[0] != '\0')) {
-        return string(homedir) + "/.meshmon.calib";
+        string legacyPath = string(homedir) + "/.meshmon.calib";
+        if (access(legacyPath.c_str(), F_OK) == 0) {
+            return legacyPath;
+        }
     }
+
+    if (!xdgPath.empty()) {
+        return xdgPath;
+    }
+
     return ".meshmon.calib";
 }
 

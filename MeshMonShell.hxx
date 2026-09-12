@@ -25,6 +25,11 @@ public:
         return _db;
     }
 
+    static string formatRelativeTime(time_t timestamp);
+    static const char *hardwareModelString(meshtastic_HardwareModel model);
+    static const char *roleString(meshtastic_Config_DeviceConfig_Role role);
+    static uint32_t resolveNode(const SimpleClient *client, const string &nodeArg);
+
 protected:
 
     virtual shared_ptr<MeshShell> newInstance(void);
@@ -55,9 +60,6 @@ private:
     uint32_t resolveNode(const string &nodeArg) const;
     void printStatusHelp(void);
     void printNodeStatus(uint32_t nodeId);
-    static string formatRelativeTime(time_t timestamp);
-    static const char *hardwareModelString(meshtastic_HardwareModel model);
-    static const char *roleString(meshtastic_Config_DeviceConfig_Role role);
 
     shared_ptr<MeshMonDb> _db;
 

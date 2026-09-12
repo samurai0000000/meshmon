@@ -1,3 +1,6 @@
 [submodule "libmeshtastic"]
 	path = libmeshtastic
 	url = https://github.com/samurai0000000/libmeshtastic.git
+[submodule "third_party/json"]
+	path = third_party/json
+	url = https://github.com/nlohmann/json.git

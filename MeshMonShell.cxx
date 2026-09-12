@@ -421,14 +421,19 @@ const char *MeshMonShell::roleString(meshtastic_Config_DeviceConfig_Role role)
 
 uint32_t MeshMonShell::resolveNode(const string &nodeArg) const
 {
-    if (nodeArg.empty() || (_client == NULL)) {
+    return resolveNode(_client.get(), nodeArg);
+}
+
+uint32_t MeshMonShell::resolveNode(const SimpleClient *client, const string &nodeArg)
+{
+    if (nodeArg.empty() || (client == NULL)) {
         return 0xffffffffU;
     }
 
     if ((strcasecmp(nodeArg.c_str(), "me") == 0) ||
         (strcasecmp(nodeArg.c_str(), "self") == 0) ||
         (strcasecmp(nodeArg.c_str(), "local") == 0)) {
-        return _client->whoami();
+        return client->whoami();
     }
 
     // 1. Try parsing hex ID: !hex, 0xhex, or 8-char hex
@@ -459,7 +464,7 @@ uint32_t MeshMonShell::resolveNode(const string &nodeArg) const
     }
 
     // 2. Try matching known nodes by short name (case-insensitive)
-    const map<uint32_t, meshtastic_NodeInfo> &nodes = _client->nodeInfos();
+    const map<uint32_t, meshtastic_NodeInfo> &nodes = client->nodeInfos();
     for (map<uint32_t, meshtastic_NodeInfo>::const_iterator it = nodes.begin();
          it != nodes.end(); it++) {
         if (it->second.has_user) {
@@ -494,14 +499,14 @@ uint32_t MeshMonShell::resolveNode(const string &nodeArg) const
         errno = 0;
         unsigned long val = strtoul(nodeArg.c_str(), &end, 10);
         if ((errno == 0) && (end != nodeArg.c_str()) && (*end == '\0')) {
-            if (nodes.find((uint32_t) val) != nodes.end() || ((uint32_t) val == _client->whoami())) {
+            if (nodes.find((uint32_t) val) != nodes.end() || ((uint32_t) val == client->whoami())) {
                 return (uint32_t) val;
             }
         }
     }
 
     // 5. Fallback to SimpleClient::getId
-    uint32_t idByName = _client->getId(nodeArg);
+    uint32_t idByName = client->getId(nodeArg);
     if (idByName != 0xffffffffU) {
         return idByName;
     }

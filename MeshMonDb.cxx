@@ -2184,6 +2184,12 @@ bool MeshMonDb::executeRawQuery(const string &sql, QueryResult &result)
         return false;
     }
 
+    if (!sqlite3_stmt_readonly(stmt)) {
+        result.error = "Write operations are not permitted (statement is not read-only)";
+        sqlite3_finalize(stmt);
+        return false;
+    }
+
     int colCount = sqlite3_column_count(stmt);
     for (int i = 0; i < colCount; i++) {
         const char *name = sqlite3_column_name(stmt, i);

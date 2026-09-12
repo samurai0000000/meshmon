@@ -30,6 +30,7 @@
 #include "GeminiChat.hxx"
 #include "Calibration.hxx"
 #include "MeshMonDb.hxx"
+#include "AimonGatewayClient.hxx"
 #include "version.h"
 
 using namespace libconfig;
@@ -40,6 +41,7 @@ static vector<shared_ptr<MeshMon>> mons;
 static shared_ptr<MeshMonShell> stdioShell;
 static vector<shared_ptr<MeshMonShell>> netShells;
 static shared_ptr<MeshMonDb> g_db;
+static shared_ptr<AimonGatewayClient> gatewayClient;
 static volatile sig_atomic_t g_stop = 0;
 static int g_stop_pipe[2] = { -1, -1 };
 
@@ -57,6 +59,9 @@ void sighandler(int signum)
 
 static void requestStop(void)
 {
+    if (gatewayClient) {
+        gatewayClient->stop();
+    }
     for (vector< shared_ptr<MeshMon>>::iterator it = mons.begin();
          it != mons.end(); it++) {
         (*it)->detach();
@@ -115,6 +120,11 @@ static void addDevice(vector<string> &devices, const string &device)
 
 static void releaseMeshMons(void)
 {
+    if (gatewayClient) {
+        gatewayClient->stop();
+        gatewayClient->join();
+        gatewayClient.reset();
+    }
     stdioShell.reset();
     netShells.clear();
     for (vector< shared_ptr<MeshMon>>::iterator it = mons.begin();
@@ -133,22 +143,52 @@ static void releaseMeshMons(void)
     }
 }
 
+static string getConfigDir(void)
+{
+    const char *xdg = getenv("XDG_CONFIG_HOME");
+    if ((xdg != NULL) && (xdg[0] != '\0')) {
+        return string(xdg) + "/meshmon";
+    }
+    const char *homedir = getenv("HOME");
+    if ((homedir != NULL) && (homedir[0] != '\0')) {
+        return string(homedir) + "/.config/meshmon";
+    }
+    struct passwd *pw = getpwuid(getuid());
+    if ((pw != NULL) && (pw->pw_dir != NULL) && (pw->pw_dir[0] != '\0')) {
+        return string(pw->pw_dir) + "/.config/meshmon";
+    }
+    return "/tmp/meshmon";
+}
+
+static void ensureConfigDirExists(const string &dir)
+{
+    struct stat st;
+    if (stat(dir.c_str(), &st) != 0) {
+        mkdir(dir.c_str(), 0755);
+    }
+}
+
 static int g_lockFd = -1;
 static string g_lockPath;
 
 static string getLockFilePath(void)
 {
+    string cfgDir = getConfigDir();
+    string xdgLock = cfgDir + "/meshmon.lock";
+    if (access(xdgLock.c_str(), F_OK) == 0) {
+        return xdgLock;
+    }
+
     const char *homedir = getenv("HOME");
     if ((homedir != NULL) && (homedir[0] != '\0')) {
-        return string(homedir) + "/.meshmon.lock";
+        string legacyLock = string(homedir) + "/.meshmon.lock";
+        if (access(legacyLock.c_str(), F_OK) == 0) {
+            return legacyLock;
+        }
     }
 
-    struct passwd *pw = getpwuid(getuid());
-    if ((pw != NULL) && (pw->pw_dir != NULL) && (pw->pw_dir[0] != '\0')) {
-        return string(pw->pw_dir) + "/.meshmon.lock";
-    }
-
-    return "/tmp/.meshmon.lock";
+    ensureConfigDirExists(cfgDir);
+    return xdgLock;
 }
 
 static bool acquirePidLock(void)
@@ -248,14 +288,24 @@ static void loadLibConfig(Config &cfg, string &path)
     int fd;
 
     if (path.empty()) {
-        const char *homedir;
+        string cfgDir = getConfigDir();
+        string xdgCfg = cfgDir + "/meshmon.cfg";
 
-        homedir = getenv("HOME");
-        if ((homedir == NULL) || (homedir[0] == '\0')) {
-            return;
+        if (access(xdgCfg.c_str(), F_OK) == 0) {
+            path = xdgCfg;
+        } else {
+            const char *homedir = getenv("HOME");
+            string legacyCfg;
+            if ((homedir != NULL) && (homedir[0] != '\0')) {
+                legacyCfg = string(homedir) + "/.meshmon";
+            }
+            if (!legacyCfg.empty() && (access(legacyCfg.c_str(), F_OK) == 0)) {
+                path = legacyCfg;
+            } else {
+                ensureConfigDirExists(cfgDir);
+                path = xdgCfg;
+            }
         }
-
-        path = string(homedir) + "/.meshmon";
     }
 
     // 'touch' to test the path validity
@@ -605,17 +655,62 @@ static bool readGeminiConfig(Config &cfg, const string &cfgfile,
 
 static string getDefaultDbPath(void)
 {
+    string cfgDir = getConfigDir();
+    string xdgDb = cfgDir + "/meshmon.db";
+    if (access(xdgDb.c_str(), F_OK) == 0) {
+        return xdgDb;
+    }
+
     const char *homedir = getenv("HOME");
     if ((homedir != NULL) && (homedir[0] != '\0')) {
-        return string(homedir) + "/.meshmon.db";
+        string legacyDb = string(homedir) + "/.meshmon.db";
+        if (access(legacyDb.c_str(), F_OK) == 0) {
+            return legacyDb;
+        }
     }
 
     struct passwd *pw = getpwuid(getuid());
     if ((pw != NULL) && (pw->pw_dir != NULL) && (pw->pw_dir[0] != '\0')) {
-        return string(pw->pw_dir) + "/.meshmon.db";
+        string legacyDb = string(pw->pw_dir) + "/.meshmon.db";
+        if (access(legacyDb.c_str(), F_OK) == 0) {
+            return legacyDb;
+        }
     }
 
-    return "/tmp/.meshmon.db";
+    ensureConfigDirExists(cfgDir);
+    return xdgDb;
+}
+
+static bool readGatewayConfig(Config &cfg, const string &cfgfile,
+                              bool &enabled, string &host, uint16_t &port)
+{
+    Setting &root = cfg.getRoot();
+
+    if (!root.exists("gateway")) {
+        return false;
+    }
+
+    try {
+        Setting &gw = root["gateway"];
+
+        if (gw.exists("enabled")) {
+            gw.lookupValue("enabled", enabled);
+        }
+        if (gw.exists("host")) {
+            gw.lookupValue("host", host);
+        }
+        if (gw.exists("port")) {
+            int p = 0;
+            if (gw.lookupValue("port", p) && (p > 0) && (p <= 65535)) {
+                port = static_cast<uint16_t>(p);
+            }
+        }
+    } catch (const SettingTypeException &) {
+        cerr << (cfgfile.empty() ? string("~/.meshmon") : cfgfile)
+             << ": gateway is not a group" << endl;
+    }
+
+    return true;
 }
 
 static bool readDatabaseConfig(Config &cfg, const string &cfgfile,
@@ -663,6 +758,10 @@ static void printUsage(const char *progname)
          << "  -D, --database <path>      Enable SQLite packet logging to specified file" << endl
          << "      --no-database          Disable SQLite packet logging" << endl
          << "      --retention-days <days> Prune database records older than N days" << endl
+         << "      --gateway                  Enable AIMON gateway client" << endl
+         << "      --no-gateway               Disable AIMON gateway client" << endl
+         << "      --gateway-host <host>      AIMON gateway host (default: builder)" << endl
+         << "      --gateway-port <port>      AIMON gateway port (default: 3885)" << endl
          << "  -h, --help                 Display this help message" << endl
          << "  -v, --version              Display version information" << endl;
 }
@@ -678,6 +777,10 @@ static const struct option long_options[] = {
     { "no-database", no_argument, NULL, 1001, },
     { "no-db", no_argument, NULL, 1001, },
     { "retention-days", required_argument, NULL, 1002, },
+    { "gateway", no_argument, NULL, 1003, },
+    { "no-gateway", no_argument, NULL, 1004, },
+    { "gateway-host", required_argument, NULL, 1005, },
+    { "gateway-port", required_argument, NULL, 1006, },
     { "help", no_argument, NULL, 'h', },
     { "version", no_argument, NULL, 'v', },
     { 0, 0, 0, 0 },
@@ -807,6 +910,12 @@ int main(int argc, char **argv)
 
     readDatabaseConfig(cfg, cfgfile, dbPath, dbEnabled, dbRetentionDays);
 
+    bool gatewayEnabled = false;
+    string gatewayHost = "builder";
+    uint16_t gatewayPort = 3885;
+
+    readGatewayConfig(cfg, cfgfile, gatewayEnabled, gatewayHost, gatewayPort);
+
     for (;;) {
         int option_index = 0;
         int c = getopt_long(argc, argv, "d:sp:blD:hv",
@@ -843,6 +952,23 @@ int main(int argc, char **argv)
             break;
         case 1002:
             dbRetentionDays = (uint32_t) atoi(optarg);
+            break;
+        case 1003:
+            gatewayEnabled = true;
+            break;
+        case 1004:
+            gatewayEnabled = false;
+            break;
+        case 1005:
+            gatewayHost = string(optarg);
+            gatewayEnabled = true;
+            break;
+        case 1006:
+            if (!parsePort(optarg, gatewayPort)) {
+                cerr << "Invalid gateway port: " << optarg << endl;
+                exit(EXIT_FAILURE);
+            }
+            gatewayEnabled = true;
             break;
         case 'h':
             printUsage(argv[0]);
@@ -1045,6 +1171,11 @@ int main(int argc, char **argv)
         requestStop();
     }
 
+    if (gatewayEnabled && !mons.empty() && !g_stop) {
+        gatewayClient = make_shared<AimonGatewayClient>(mons[0], g_db);
+        gatewayClient->start(gatewayHost, gatewayPort);
+    }
+
     if (stdioShell && !g_stop) {
         // Attach last to let net shells print to stdout before we output
         // the prompt on stdio
@@ -1065,6 +1196,10 @@ int main(int argc, char **argv)
         for (vector< shared_ptr<MeshMonShell>>::iterator it = netShells.begin();
              it != netShells.end(); it++) {
             (*it)->join();
+        }
+        if (gatewayClient) {
+            gatewayClient->stop();
+            gatewayClient->join();
         }
         cout << "Good-bye!" << endl;
     }

@@ -4,7 +4,7 @@
 
 cmake_minimum_required(VERSION 3.13)
 
-project(meshmon VERSION 2.1.13 LANGUAGES C CXX ASM)
+project(meshmon VERSION 2.1.14 LANGUAGES C CXX ASM)
 
 find_package(SQLite3 REQUIRED)
 find_package(Mosquitto QUIET)
@@ -52,7 +52,7 @@ endif ()
 
 add_subdirectory(libmeshtastic)
 
-set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fexceptions -frtti")
@@ -93,9 +93,11 @@ configure_file(
 
 add_executable(meshmon meshmon.cxx MeshMon.cxx MeshMonShell.cxx MqttClient.cxx
   ChatBot.cxx GeminiChat.cxx Calibration.cxx MeshMonDb.cxx
-  AutomationDevice.cxx MeshPumpDevice.cxx MeshRoofDevice.cxx MeshRoomDevice.cxx)
+  AutomationDevice.cxx MeshPumpDevice.cxx MeshRoofDevice.cxx MeshRoomDevice.cxx
+  AimonGatewayClient.cxx)
 target_include_directories(meshmon PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
 target_include_directories(meshmon PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/json/include
   ${SQLite3_INCLUDE_DIRS}
   ${MOSQUITTO_INCLUDE_DIR}
   ${CONFIG++_INCLUDE_DIR}
