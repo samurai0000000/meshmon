@@ -7,12 +7,11 @@
 
 All configuration files adhere to `libconfig++` and standard XDG paths (`~/.config/meshmon/meshmon.cfg`), with automatic directory creation and fallback compatibility for legacy paths.
 
-### 1.2 Multi-Host Hardware Topology
-`meshmon` is deployed specifically on the hardware node where physical LoRa radio devices are attached:
-- **Host**: `fox` (Raspberry Pi, `aarch64`, IP `192.168.8.245`).
-- **Physical Radios**: Attached via local USB serial interfaces (`/dev/ttyACM*`, `/dev/ttyUSB*`).
-- **Compilation**: Must be compiled natively on `fox` (`ssh -n fox "cd ~/work/meshmon && make"`), generating `build/aarch64/meshmon`.
-- **Runtime Environment**: Runs continuously within GNU `screen` session `meshmon`, attached via `/home/samurai/bin/attach-meshmon` (`screen -x -R meshmon`).
+### 1.2 Hardware Placement & Serial Radios
+`meshmon` is deployed on a Linux host physically connected to Meshtastic LoRa radios:
+- **Physical Radios**: Attached via local USB serial interfaces (`/dev/ttyACM*`, `/dev/ttyUSB*`), TCP, or BLE.
+- **Compilation**: Standard native compilation via top-level `Makefile` (`make -j$(nproc)`).
+- **Runtime Environment**: Runs as an interactive terminal daemon or headless background service.
 
 ---
 
@@ -32,7 +31,7 @@ All configuration files adhere to `libconfig++` and standard XDG paths (`~/.conf
                                        │ Protobuf Stream
                                        ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                        MeshMon Core Daemon (fox)                            │
+│                             MeshMon Core Daemon                             │
 │                                                                             │
 │  ┌───────────────────────┐  ┌──────────────────────┐  ┌──────────────────┐  │
 │  │ MeshClient Engine     │  │ MeshMonDb            │  │ RF Analytics     │  │
@@ -51,12 +50,12 @@ All configuration files adhere to `libconfig++` and standard XDG paths (`~/.conf
 │                                                              │              │
 │  ┌───────────────────────────────────────────────────────────┴───────────┐  │
 │  │                  AimonGatewayClient (TCP Client)                      │  │
-│  │        Exports meshmon_* toolset to aimon on builder:3885             │  │
+│  │          Exports meshmon_* toolset to aimon gateway                   │  │
 │  └───────────────────────────────────┬───────────────────────────────────┘  │
 └──────────────────────────────────────┼──────────────────────────────────────┘
                                        │ Line-delimited JSON-RPC 2.0 (TCP)
                                        ▼
-                         aimon Hub (builder:3885)
+                         aimon Hub (<gateway-host>:3885)
 ```
 
 ---
@@ -74,7 +73,7 @@ Sample `meshmon.cfg` Gateway configuration:
 ```libconfig
 gateway = {
     enabled = true;
-    host = "builder";
+    host = "127.0.0.1";
     port = 3885;
 };
 ```
@@ -103,7 +102,7 @@ Monitors and controls smart IoT mesh devices (`meshpump`, `meshroof`, `meshroom`
 
 Rather than exposing a standalone HTTP/SSE server or spawning an isolated process, `meshmon` integrates an **`AimonGatewayClient`**:
 
-1. **Outbound TCP Connection**: Connects to `aimon` at `builder:3885` (or configured host/port). Reconnects automatically on disconnection.
+1. **Outbound TCP Connection**: Connects to `aimon` gateway at port `3885` (or configured host/port). Reconnects automatically on disconnection.
 2. **Dynamic Toolset Registration**: Upon connection, registers the following MCP tools:
    - `meshmon_get_node_status`: Queries current state, battery percentage, SNR, and last-seen timestamps for mesh nodes.
    - `meshmon_query_telemetry_history`: Queries SQLite `MeshMonDb` for sensor metrics (temperature, humidity, voltage, channel utilization).
@@ -114,22 +113,18 @@ Rather than exposing a standalone HTTP/SSE server or spawning an isolated proces
 
 ---
 
-## 6. Deployment & Process Control
+## 6. Build & Execution
 
-- **Compile**: Native compilation on `fox`:
+- **Compile**: Native compilation via top-level `Makefile`:
   ```bash
-  ssh -n fox "cd ~/work/meshmon && make -j$(nproc)"
+  make -j$(nproc)
   ```
-- **Screen Attachment**:
+- **Running the Daemon**:
   ```bash
-  /home/samurai/bin/attach-meshmon
+  ./build/meshmon -s /dev/ttyACM0 -D ~/.config/meshmon/meshmon.db
   ```
-- **Process Restart via Screen**:
-  ```bash
-  ssh -n fox "screen -S meshmon -X stuff \$''"
-  ssh -n fox "screen -S meshmon -X stuff 'cd ~/work/meshmon && ./build/aarch64/meshmon -s /dev/ttyACM0 -D ~/.config/meshmon/meshmon.db
-'"
-  ```
+- **Interactive Shell Commands**:
+  When running the interactive CLI shell, type `help` to list available radio control commands, node telemetry queries, and database status.
 
 ---
 
