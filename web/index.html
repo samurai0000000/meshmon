@@ -1,0 +1,775 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>meshmon | Meshtastic Telemetry & RF Gateway</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Top Navigation Bar -->
+        <header class="navbar">
+            <div class="brand">
+                <div class="logo-radar">
+                    <div class="radar-sweep"></div>
+                    <div class="radar-dot"></div>
+                </div>
+                <div class="brand-text">
+                    <h1>meshmon</h1>
+                    <span class="badge-sub">Meshtastic RF & Automation Gateway</span>
+                </div>
+            </div>
+
+            <div class="header-center">
+                <div class="status-chip" id="chip-radio" title="Radio Status">
+                    <span class="status-dot dot-online"></span>
+                    <span class="chip-label">Radio:</span>
+                    <span class="chip-val" id="val-radio-name">Connecting...</span>
+                </div>
+                <div class="status-chip" id="chip-db" title="SQLite Database">
+                    <span class="status-dot dot-online"></span>
+                    <span class="chip-label">DB:</span>
+                    <span class="chip-val" id="val-db-packets">-- pkts</span>
+                </div>
+                <div class="status-chip" id="chip-stream" title="Live Server-Sent Events">
+                    <span class="status-dot dot-online" id="dot-sse"></span>
+                    <span class="chip-val" id="val-sse-status">Live Stream</span>
+                </div>
+            </div>
+
+            <div class="header-actions">
+                <!-- Security Lock/Unlock Badge -->
+                <button id="btn-auth-toggle" class="btn-auth locked" title="Click to unlock administrative controls">
+                    <svg class="icon-lock" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                        <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+                    </svg>
+                    <span id="auth-btn-label">View Only</span>
+                </button>
+
+                <span id="last-updated" class="last-updated">Updated: Just now</span>
+                <button id="refresh-btn" class="btn-action" title="Refresh Dashboard">
+                    <svg viewBox="0 0 24 24" width="15" height="15" stroke="currentColor" stroke-width="2" fill="none">
+                        <path d="M23 4v6h-6"></path>
+                        <path d="M1 20v-6h6"></path>
+                        <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+                    </svg>
+                    Refresh
+                </button>
+            </div>
+        </header>
+
+        <!-- Top Metrics Ribbon -->
+        <section class="metrics-ribbon">
+            <div class="metric-card glass-card">
+                <div class="metric-icon icon-cyan">📻</div>
+                <div class="metric-info">
+                    <span class="metric-label">Gateway Node</span>
+                    <span class="metric-value font-mono" id="ribbon-gateway-id">--</span>
+                    <span class="metric-sub" id="ribbon-gateway-fw">Meshtastic FW --</span>
+                </div>
+            </div>
+
+            <div class="metric-card glass-card">
+                <div class="metric-icon icon-green">📡</div>
+                <div class="metric-info">
+                    <span class="metric-label">Active Fleet</span>
+                    <span class="metric-value" id="ribbon-nodes-count">0 Nodes</span>
+                    <span class="metric-sub" id="ribbon-nodes-online">0 Online &bull; 0 Stale</span>
+                </div>
+            </div>
+
+            <div class="metric-card glass-card">
+                <div class="metric-icon icon-amber">⚡</div>
+                <div class="metric-info">
+                    <span class="metric-label">Airtime & Channel</span>
+                    <span class="metric-value font-mono" id="ribbon-channel-util">0.0%</span>
+                    <span class="metric-sub" id="ribbon-air-tx">Gateway Tx: 0.0%</span>
+                </div>
+            </div>
+
+            <div class="metric-card glass-card">
+                <div class="metric-icon icon-purple">🥧</div>
+                <div class="metric-info">
+                    <span class="metric-label">Host Hardware</span>
+                    <span class="metric-value font-mono" id="ribbon-cpu-temp">--°C</span>
+                    <span class="metric-sub" id="ribbon-host-uptime">Uptime: --</span>
+                </div>
+            </div>
+
+            <div class="metric-card glass-card">
+                <div class="metric-icon icon-magenta">🗄️</div>
+                <div class="metric-info">
+                    <span class="metric-label">Packet Storage</span>
+                    <span class="metric-value font-mono" id="ribbon-db-size">0 KB</span>
+                    <span class="metric-sub" id="ribbon-db-records">0 Packets Logged</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Navigation Tabs (Two Rows - Zero Horizontal Scrollbar) -->
+        <nav class="tabs-nav glass-card">
+            <div class="tabs-row tabs-row-primary">
+                <button class="tab-btn active" data-tab="analytics">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg>
+                    Mesh Network Insights
+                </button>
+                <button class="tab-btn" data-tab="sniffer">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
+                    Live Packet Sniffer
+                    <span class="tab-badge" id="sniffer-counter">0</span>
+                </button>
+                <button class="tab-btn" data-tab="spatial">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"></polygon><line x1="8" y1="2" x2="8" y2="18"></line><line x1="16" y1="6" x2="16" y2="22"></line></svg>
+                    Spatial Radar
+                </button>
+                <button class="tab-btn" data-tab="fleet">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+                    Fleet Nodes
+                </button>
+            </div>
+            <div class="tabs-row tabs-row-secondary">
+                <button class="tab-btn" data-tab="automation">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+                    HomeMesh Automation
+                </button>
+                <button class="tab-btn" data-tab="messaging">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+                    Mesh Chat & AI
+                </button>
+                <button class="tab-btn" data-tab="console">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
+                    SQL Console
+                </button>
+            </div>
+        </nav>
+
+        <!-- Main Tab Content Area -->
+        <main class="tab-content-container">
+            <!-- TAB 1: FLEET EXPLORER -->
+            <section id="tab-fleet" class="tab-pane">
+                <div class="pane-toolbar glass-card">
+                    <div class="search-box">
+                        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                        <input type="text" id="node-search-input" placeholder="Search node name, hex ID (!2bf941d4), or role...">
+                    </div>
+                    <div class="filter-group">
+                        <select id="role-filter-select" class="dropdown-filter">
+                            <option value="all">All Roles</option>
+                            <option value="CLIENT">Client</option>
+                            <option value="ROUTER">Router</option>
+                            <option value="REPEATER">Repeater</option>
+                            <option value="ROUTER_CLIENT">Router Client</option>
+                        </select>
+                        <select id="status-filter-select" class="dropdown-filter">
+                            <option value="all">All Status</option>
+                            <option value="online">Online (&le;15m)</option>
+                            <option value="stale">Stale (&le;1h)</option>
+                            <option value="offline">Offline (&gt;1h)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div id="nodes-grid" class="nodes-grid">
+                    <div class="empty-state">Scanning mesh for active nodes...</div>
+                </div>
+            </section>
+
+            <!-- TAB 2: LIVE PACKET SNIFFER -->
+            <section id="tab-sniffer" class="tab-pane">
+                <div class="pane-toolbar glass-card">
+                    <div class="sniffer-controls">
+                        <button id="btn-toggle-sniffer" class="btn-action active">
+                            <span class="dot-status dot-online"></span>
+                            Pause Stream
+                        </button>
+                        <button id="btn-clear-sniffer" class="btn-action">Clear View</button>
+                        <span class="sniffer-rate-text" id="sniffer-rate-label">0 packets/sec</span>
+                    </div>
+                    <div class="search-box">
+                        <input type="text" id="packet-filter-input" placeholder="Filter packets by node, app, or text payload...">
+                    </div>
+                    <select id="portnum-filter-select" class="dropdown-filter">
+                        <option value="-1">All Apps / PortNums</option>
+                        <option value="1">TEXT_MESSAGE_APP</option>
+                        <option value="67">TELEMETRY_APP</option>
+                        <option value="3">POSITION_APP</option>
+                        <option value="4">NODEINFO_APP</option>
+                        <option value="5">ROUTING_APP</option>
+                        <option value="6">ADMIN_APP</option>
+                        <option value="8">TRACEROUTE_APP</option>
+                    </select>
+                </div>
+
+                <div class="table-responsive glass-card">
+                    <table class="data-table" id="table-packets">
+                        <thead>
+                            <tr>
+                                <th style="width: 85px;">Time</th>
+                                <th style="width: 140px;">App / Port</th>
+                                <th style="width: 160px;">From</th>
+                                <th style="width: 160px;">To</th>
+                                <th style="width: 70px;">Ch</th>
+                                <th style="width: 80px;">SNR</th>
+                                <th style="width: 70px;">Hops</th>
+                                <th>Decoded Payload / Content</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tbody-packets">
+                            <tr><td colspan="8" class="empty-cell">Waiting for live packets...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- TAB 3: RF & MESH ANALYTICS (DEFAULT TAB) -->
+            <section id="tab-analytics" class="tab-pane active">
+                <div class="pane-toolbar glass-card">
+                    <div class="toolbar-title-group">
+                        <h2>Mesh Network Observability & RF Intelligence</h2>
+                        <span class="toolbar-sub">Deep telemetry, hop propagation depth, spectrum duty cycle, and backbone infrastructure</span>
+                    </div>
+                    <div class="time-window-selector">
+                        <span class="time-label">Horizon:</span>
+                        <button class="btn-time-window" data-hours="1">1h</button>
+                        <button class="btn-time-window" data-hours="6">6h</button>
+                        <button class="btn-time-window active" data-hours="24">24h</button>
+                        <button class="btn-time-window" data-hours="168">7d</button>
+                    </div>
+                </div>
+
+                <!-- High-Level Insights Hero Banner -->
+                <div class="insights-summary-banner glass-card">
+                    <div class="insight-stat-box">
+                        <span class="insight-label">Direct vs Relayed Traffic</span>
+                        <div class="ratio-bar-container">
+                            <div class="ratio-bar-fill direct-fill" id="bar-direct-pct" style="width: 50%;"></div>
+                            <div class="ratio-bar-fill relay-fill" id="bar-relay-pct" style="width: 50%;"></div>
+                        </div>
+                        <div class="ratio-legend">
+                            <span class="ratio-legend-item"><span class="dot-legend dot-direct"></span> Direct (0-Hop): <strong id="lbl-direct-pct">--%</strong></span>
+                            <span class="ratio-legend-item"><span class="dot-legend dot-relay"></span> Relayed: <strong id="lbl-relay-pct">--%</strong></span>
+                        </div>
+                    </div>
+                    <div class="insight-stat-box">
+                        <span class="insight-label">Avg Propagation Depth</span>
+                        <div class="insight-metric-val font-mono" id="lbl-avg-hops">--</div>
+                        <span class="insight-sub">Average Network Hop Count</span>
+                    </div>
+                    <div class="insight-stat-box">
+                        <span class="insight-label">Backbone Repeaters</span>
+                        <div class="insight-metric-val font-mono" id="lbl-backbone-count">--</div>
+                        <span class="insight-sub" id="lbl-top-relay">Top Relay: --</span>
+                    </div>
+                    <div class="insight-stat-box">
+                        <span class="insight-label">Mesh Loop / Storm Watch</span>
+                        <div class="insight-metric-val" id="lbl-storm-status"><span class="badge badge-green">Clear</span></div>
+                        <span class="insight-sub" id="lbl-storm-detail">0 Echo Storms</span>
+                    </div>
+                </div>
+
+                <div class="analytics-grid">
+                    <!-- Hop Count Distribution -->
+                    <div class="card glass-card">
+                        <div class="card-header">
+                            <h3>RF Hop Count Distribution</h3>
+                            <span class="badge badge-cyan">RF Proximity</span>
+                        </div>
+                        <div class="chart-container">
+                            <svg id="chart-hops" class="svg-chart" viewBox="0 0 420 180"></svg>
+                        </div>
+                        <div class="chart-legend" id="hops-legend"></div>
+                    </div>
+
+                    <!-- Channel Health Card -->
+                    <div class="card glass-card">
+                        <div class="card-header">
+                            <h3>Channel Health & Duty Cycle</h3>
+                            <span class="badge badge-amber">Spectrum</span>
+                        </div>
+                        <div class="gauge-duo">
+                            <div class="circular-gauge" id="gauge-chan-util">
+                                <svg viewBox="0 0 120 120" class="gauge-svg">
+                                    <circle class="gauge-bg" cx="60" cy="60" r="50"></circle>
+                                    <circle class="gauge-val gauge-amber" id="circle-chan-util" cx="60" cy="60" r="50"></circle>
+                                </svg>
+                                <div class="gauge-text">
+                                    <span class="gauge-num font-mono" id="num-chan-util">0%</span>
+                                    <span class="gauge-sub">Channel Util</span>
+                                </div>
+                            </div>
+                            <div class="circular-gauge" id="gauge-air-tx">
+                                <svg viewBox="0 0 120 120" class="gauge-svg">
+                                    <circle class="gauge-bg" cx="60" cy="60" r="50"></circle>
+                                    <circle class="gauge-val gauge-cyan" id="circle-air-tx" cx="60" cy="60" r="50"></circle>
+                                </svg>
+                                <div class="gauge-text">
+                                    <span class="gauge-num font-mono" id="num-air-tx">0%</span>
+                                    <span class="gauge-sub">Air Util Tx</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="metric-note" id="note-channel-stats">Calculating spectrum airtime metrics...</div>
+                    </div>
+
+                    <!-- Protocol & App Traffic Breakdown -->
+                    <div class="card glass-card">
+                        <div class="card-header">
+                            <h3>Meshtastic Protocol Breakdown</h3>
+                            <span class="badge badge-purple">App Ports</span>
+                        </div>
+                        <div class="app-dist-list" id="app-dist-container">
+                            <div class="empty-state">Aggregating protocol distribution...</div>
+                        </div>
+                    </div>
+
+                    <!-- Direct Line-of-Sight RF Neighbors (0-Hop Links) -->
+                    <div class="card glass-card">
+                        <div class="card-header">
+                            <h3>Direct RF Neighbors (0-Hop Line-of-Sight)</h3>
+                            <span class="badge badge-green">Direct Links</span>
+                        </div>
+                        <div class="table-responsive" style="max-height: 240px; overflow-y: auto;">
+                            <table class="data-table" id="table-neighbors">
+                                <thead>
+                                    <tr>
+                                        <th>Node</th>
+                                        <th>Name</th>
+                                        <th>Packets</th>
+                                        <th>Avg SNR</th>
+                                        <th>Avg RSSI</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="tbody-neighbors">
+                                    <tr><td colspan="5" class="empty-cell">Finding 0-hop neighbors...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Critical Repeaters Card -->
+                    <div class="card glass-card">
+                        <div class="card-header">
+                            <h3>Critical Mesh Repeaters (Backbone Infrastructure)</h3>
+                            <span class="badge badge-cyan">Relay Load</span>
+                        </div>
+                        <div class="table-responsive">
+                            <table class="data-table" id="table-repeaters">
+                                <thead>
+                                    <tr>
+                                        <th>Repeater Hex</th>
+                                        <th>Short Name</th>
+                                        <th>Relayed Packets</th>
+                                        <th>Avg SNR</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="tbody-repeaters">
+                                    <tr><td colspan="4" class="empty-cell">Identifying backbone repeaters...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Spatial Reach & Coverage Summary -->
+                    <div class="card glass-card spatial-summary-card">
+                        <div class="card-header">
+                            <h3>Geographic Reach & Spatial Topology</h3>
+                            <button class="btn-ctrl" id="btn-jump-spatial">
+                                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"></polygon></svg>
+                                Open Radar Map
+                            </button>
+                        </div>
+                        <div class="reach-stats-grid">
+                            <div class="reach-stat-item">
+                                <div class="reach-stat-val" id="spatial-val-farthest">-- km</div>
+                                <div class="reach-stat-lbl">Max Reach</div>
+                            </div>
+                            <div class="reach-stat-item">
+                                <div class="reach-stat-val" id="spatial-val-premise">--</div>
+                                <div class="reach-stat-lbl">On-Premise Nodes</div>
+                            </div>
+                            <div class="reach-stat-item">
+                                <div class="reach-stat-val" id="spatial-val-gps">--</div>
+                                <div class="reach-stat-lbl">GPS Positioned Nodes</div>
+                            </div>
+                        </div>
+                        <div class="metric-note" id="spatial-val-farthest-node">Farthest detected radio link: Calculating...</div>
+                    </div>
+
+                    <!-- Top Talkers Leaderboard -->
+                    <div class="card glass-card span-2">
+                        <div class="card-header">
+                            <h3>Top Mesh Talkers (Airtime Contributors)</h3>
+                            <span class="badge badge-purple">Traffic Rank</span>
+                        </div>
+                        <div class="table-responsive">
+                            <table class="data-table" id="table-top-talkers">
+                                <thead>
+                                    <tr>
+                                        <th>Node Hex</th>
+                                        <th>Short Name</th>
+                                        <th>Packets Sent</th>
+                                        <th>Payload Bytes</th>
+                                        <th>Avg SNR</th>
+                                        <th>Avg Hops</th>
+                                        <th>Last Seen</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="tbody-top-talkers">
+                                    <tr><td colspan="7" class="empty-cell">Calculating top talkers...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- TAB 4: HOMEMESH AUTOMATION -->
+            <section id="tab-automation" class="tab-pane">
+                <div class="automation-grid">
+                    <!-- MeshPump Card -->
+                    <div class="card glass-card auto-card" id="card-meshpump">
+                        <div class="card-header">
+                            <div class="auto-title">
+                                <span class="auto-icon">🌊</span>
+                                <div>
+                                    <h3>MeshPump</h3>
+                                    <span class="auto-node-id font-mono" id="pump-node-hex">!--------</span>
+                                </div>
+                            </div>
+                            <span class="status-pill offline" id="pump-status-pill">Offline</span>
+                        </div>
+                        <div class="auto-body">
+                            <div class="auto-stat-row">
+                                <span class="stat-label">Main Fish Pump:</span>
+                                <span class="stat-value" id="pump-val-fish">--</span>
+                            </div>
+                            <div class="auto-stat-row">
+                                <span class="stat-label">Upward Pump:</span>
+                                <span class="stat-value" id="pump-val-up">--</span>
+                            </div>
+                            <div class="auto-stat-row">
+                                <span class="stat-label">Cutoff Timer:</span>
+                                <span class="stat-value font-mono" id="pump-val-cutoff">-- sec</span>
+                            </div>
+                            <div class="auto-stat-row">
+                                <span class="stat-label">LED Display:</span>
+                                <span class="stat-value font-mono" id="pump-val-led">--</span>
+                            </div>
+                        </div>
+                        <div class="auto-actions">
+                            <button class="btn-ctrl btn-auth-guarded" data-cmd="PUMP_START" data-target="meshpump">
+                                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                                Start Up Pump
+                            </button>
+                            <button class="btn-ctrl btn-danger btn-auth-guarded" data-cmd="PUMP_STOP" data-target="meshpump">
+                                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect></svg>
+                                Stop
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- MeshRoof Card -->
+                    <div class="card glass-card auto-card" id="card-meshroof">
+                        <div class="card-header">
+                            <div class="auto-title">
+                                <span class="auto-icon">🏡</span>
+                                <div>
+                                    <h3>MeshRoof</h3>
+                                    <span class="auto-node-id font-mono" id="roof-node-hex">!--------</span>
+                                </div>
+                            </div>
+                            <span class="status-pill offline" id="roof-status-pill">Offline</span>
+                        </div>
+                        <div class="auto-body">
+                            <div class="auto-stat-row">
+                                <span class="stat-label">RF Amplifier:</span>
+                                <span class="stat-value" id="roof-val-amplify">--</span>
+                            </div>
+                            <div class="auto-stat-row">
+                                <span class="stat-label">WiFi Status:</span>
+                                <span class="stat-value" id="roof-val-wifi">--</span>
+                            </div>
+                            <div class="auto-stat-row">
+                                <span class="stat-label">IP Address:</span>
+                                <span class="stat-value font-mono" id="roof-val-ip">--</span>
+                            </div>
+                            <div class="auto-stat-row">
+                                <span class="stat-label">Board Temp:</span>
+                                <span class="stat-value font-mono" id="roof-val-temp">--°C</span>
+                            </div>
+                        </div>
+                        <div class="auto-actions">
+                            <button class="btn-ctrl btn-auth-guarded" data-cmd="ROOF_OPEN" data-target="meshroof">
+                                Open Roof
+                            </button>
+                            <button class="btn-ctrl btn-auth-guarded" data-cmd="ROOF_CLOSE" data-target="meshroof">
+                                Close Roof
+                            </button>
+                            <button class="btn-ctrl btn-danger btn-auth-guarded" data-cmd="ROOF_STOP" data-target="meshroof">
+                                Stop
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- MeshRoom Card -->
+                    <div class="card glass-card auto-card" id="card-meshroom">
+                        <div class="card-header">
+                            <div class="auto-title">
+                                <span class="auto-icon">🛋️</span>
+                                <div>
+                                    <h3>MeshRoom</h3>
+                                    <span class="auto-node-id font-mono" id="room-node-hex">!--------</span>
+                                </div>
+                            </div>
+                            <span class="status-pill offline" id="room-status-pill">Offline</span>
+                        </div>
+                        <div class="auto-body">
+                            <div class="auto-stat-row">
+                                <span class="stat-label">Room Temp:</span>
+                                <span class="stat-value font-mono highlight-temp" id="room-val-temp">--°C</span>
+                            </div>
+                            <div class="auto-stat-row">
+                                <span class="stat-label">Air Conditioner:</span>
+                                <span class="stat-value" id="room-val-ac-power">--</span>
+                            </div>
+                            <div class="auto-stat-row">
+                                <span class="stat-label">AC Target / Mode:</span>
+                                <span class="stat-value" id="room-val-ac-target">--</span>
+                            </div>
+                            <div class="auto-stat-row">
+                                <span class="stat-label">TV State:</span>
+                                <span class="stat-value" id="room-val-tv">--</span>
+                            </div>
+                        </div>
+                        <div class="auto-actions">
+                            <button class="btn-ctrl btn-auth-guarded" data-cmd="AC_TOGGLE" data-target="meshroom">
+                                Toggle AC
+                            </button>
+                            <button class="btn-ctrl btn-auth-guarded" data-cmd="TV_TOGGLE" data-target="meshroom">
+                                Toggle TV
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Recent Automation Event Log -->
+                <div class="card glass-card automation-log-card">
+                    <div class="card-header">
+                        <h3>Recent Automation Events & RTT Latency</h3>
+                        <span class="badge badge-magenta">LoRa Roundtrip</span>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="data-table" id="table-auto-history">
+                            <thead>
+                                <tr>
+                                    <th>Time</th>
+                                    <th>Device</th>
+                                    <th>Direction</th>
+                                    <th>Subsystem</th>
+                                    <th>Command</th>
+                                    <th>Status</th>
+                                    <th>Initiator</th>
+                                    <th>RTT Latency</th>
+                                </tr>
+                            </thead>
+                            <tbody id="tbody-auto-history">
+                                <tr><td colspan="8" class="empty-cell">No recent automation events</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <!-- TAB 5: MESH CHAT & AI -->
+            <section id="tab-messaging" class="tab-pane">
+                <div class="messaging-container glass-card">
+                    <div class="chat-header">
+                        <div class="chat-dest-selector">
+                            <label>Destination:</label>
+                            <select id="chat-dest-select" class="dropdown-filter">
+                                <option value="^all">Broadcast (^all)</option>
+                            </select>
+                            <label>Channel:</label>
+                            <select id="chat-channel-select" class="dropdown-filter">
+                                <option value="0">Primary (ch 0)</option>
+                                <option value="1">Secondary (ch 1)</option>
+                            </select>
+                        </div>
+                        <div class="chat-status-text" id="chat-lock-status">🔒 Unlock with password to transmit</div>
+                    </div>
+
+                    <div class="chat-messages" id="chat-messages-feed">
+                        <div class="empty-chat-state">Loading mesh message history...</div>
+                    </div>
+
+                    <form class="chat-input-bar" id="form-send-chat">
+                        <input type="text" id="input-chat-text" placeholder="Type a LoRa mesh message..." autocomplete="off">
+                        <button type="submit" id="btn-send-message" class="btn-send btn-auth-guarded" title="Transmit message over LoRa radio">
+                            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                            Send
+                        </button>
+                    </form>
+                </div>
+            </section>
+
+            <!-- TAB 6: SPATIAL RADAR -->
+            <section id="tab-spatial" class="tab-pane">
+                <div class="spatial-grid">
+                    <div class="card glass-card radar-view-card">
+                        <div class="card-header">
+                            <h3>Geographic Radar & Link Positions</h3>
+                            <span class="badge badge-cyan" id="spatial-ref-label">Origin: Gateway</span>
+                        </div>
+                        <div class="radar-container">
+                            <svg id="spatial-radar-svg" class="radar-svg" viewBox="-250 -250 500 500">
+                                <!-- Radar rings & axes -->
+                                <circle cx="0" cy="0" r="60" class="radar-ring"></circle>
+                                <circle cx="0" cy="0" r="130" class="radar-ring"></circle>
+                                <circle cx="0" cy="0" r="200" class="radar-ring"></circle>
+                                <line x1="-240" y1="0" x2="240" y2="0" class="radar-axis"></line>
+                                <line x1="0" y1="-240" x2="0" y2="240" class="radar-axis"></line>
+                                <text x="10" y="-190" class="radar-lbl font-mono">20 km</text>
+                                <text x="10" y="-120" class="radar-lbl font-mono">10 km</text>
+                                <text x="10" y="-50" class="radar-lbl font-mono">2 km</text>
+                                <circle cx="0" cy="0" r="5" class="radar-center-dot"></circle>
+                                <g id="radar-nodes-layer"></g>
+                            </svg>
+                        </div>
+                    </div>
+
+                    <div class="card glass-card spatial-stats-card">
+                        <div class="card-header">
+                            <h3>Distance & Premise Classification</h3>
+                        </div>
+                        <div class="spatial-stats-summary" id="spatial-summary-box">
+                            <div class="stat-tile">
+                                <span class="stat-num font-mono" id="spatial-total-gps">0</span>
+                                <span class="stat-lbl">Nodes with GPS</span>
+                            </div>
+                            <div class="stat-tile">
+                                <span class="stat-num font-mono" id="spatial-on-premise">0</span>
+                                <span class="stat-lbl">On Premise (&le;50m)</span>
+                            </div>
+                            <div class="stat-tile">
+                                <span class="stat-num font-mono" id="spatial-farthest-km">0.0 km</span>
+                                <span class="stat-lbl">Farthest Link</span>
+                            </div>
+                        </div>
+
+                        <div class="table-responsive">
+                            <table class="data-table" id="table-spatial-nodes">
+                                <thead>
+                                    <tr>
+                                        <th>Node</th>
+                                        <th>Distance</th>
+                                        <th>Coordinates</th>
+                                        <th>Altitude</th>
+                                        <th>Last Seen</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="tbody-spatial-nodes">
+                                    <tr><td colspan="5" class="empty-cell">Scanning spatial coordinates...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- TAB 7: SQL CONSOLE -->
+            <section id="tab-console" class="tab-pane">
+                <div class="card glass-card sql-console-card">
+                    <div class="card-header">
+                        <h3>SQLite Database Query Inspector</h3>
+                        <div class="sql-presets">
+                            <span class="preset-label">Presets:</span>
+                            <button class="btn-preset" data-sql="SELECT * FROM packets ORDER BY id DESC LIMIT 25;">Recent Packets</button>
+                            <button class="btn-preset" data-sql="SELECT * FROM telemetry ORDER BY id DESC LIMIT 25;">Telemetry Logs</button>
+                            <button class="btn-preset" data-sql="SELECT * FROM nodes ORDER BY last_seen DESC LIMIT 25;">Known Nodes</button>
+                            <button class="btn-preset" data-sql="SELECT * FROM text_messages ORDER BY id DESC LIMIT 25;">Text Messages</button>
+                            <button class="btn-preset" data-sql="SELECT * FROM automation_events ORDER BY id DESC LIMIT 25;">Automation Events</button>
+                        </div>
+                    </div>
+
+                    <div class="sql-editor-container">
+                        <textarea id="sql-query-input" class="font-mono" rows="3" placeholder="SELECT * FROM packets ORDER BY id DESC LIMIT 20;"></textarea>
+                        <div class="sql-actions-bar">
+                            <button id="btn-run-sql" class="btn-action btn-cyan btn-auth-guarded">
+                                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                                Execute Query
+                            </button>
+                            <span id="sql-execution-status" class="sql-status-text">Read-only console</span>
+                        </div>
+                    </div>
+
+                    <div class="table-responsive sql-results-wrapper">
+                        <table class="data-table" id="table-sql-results">
+                            <thead id="thead-sql"></thead>
+                            <tbody id="tbody-sql">
+                                <tr><td class="empty-cell">Enter a SELECT query and click Execute</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- Node Detail Slide-Out Modal -->
+        <div id="modal-node-detail" class="modal-backdrop hidden">
+            <div class="modal-card glass-card">
+                <div class="modal-header">
+                    <div class="modal-node-title">
+                        <h2 id="modal-node-name">Node Detail</h2>
+                        <span class="font-mono modal-hex" id="modal-node-hex">!00000000</span>
+                    </div>
+                    <button class="btn-close-modal" id="btn-close-node-modal">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="node-detail-stats-grid" id="modal-stats-grid"></div>
+                    <div class="fading-chart-section">
+                        <h4>24-Hour SNR & RSSI Link Fading</h4>
+                        <div class="fading-chart-container">
+                            <svg id="modal-fading-chart" class="svg-chart" viewBox="0 0 500 160"></svg>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Authentication Password Modal -->
+        <div id="modal-auth" class="modal-backdrop hidden">
+            <div class="modal-card modal-sm glass-card">
+                <div class="modal-header">
+                    <div class="modal-node-title">
+                        <h2>Admin Authentication</h2>
+                        <p class="modal-desc">Enter web password to unlock radio transmission and automation controls.</p>
+                    </div>
+                    <button class="btn-close-modal" id="btn-close-auth-modal">&times;</button>
+                </div>
+                <form id="form-auth-login" class="modal-form">
+                    <div class="form-group">
+                        <label for="auth-password-input">Password:</label>
+                        <input type="password" id="auth-password-input" class="input-styled" placeholder="Enter configured password..." autocomplete="current-password" required>
+                    </div>
+                    <div id="auth-error-msg" class="auth-error hidden">Invalid password</div>
+                    <div class="modal-footer-actions">
+                        <button type="button" id="btn-auth-cancel" class="btn-action">Cancel</button>
+                        <button type="submit" class="btn-action btn-cyan">Unlock Controls</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <footer class="app-footer">
+            <p>meshmon &bull; Meshtastic LoRa Gateway &bull; Host: fox (aarch64) &bull; Embedded C++17 Dashboard</p>
+        </footer>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

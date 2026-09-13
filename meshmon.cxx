@@ -31,6 +31,7 @@
 #include "Calibration.hxx"
 #include "MeshMonDb.hxx"
 #include "AimonGatewayClient.hxx"
+#include "WebServer.hxx"
 #include "version.h"
 
 using namespace libconfig;
@@ -42,6 +43,7 @@ static shared_ptr<MeshMonShell> stdioShell;
 static vector<shared_ptr<MeshMonShell>> netShells;
 static shared_ptr<MeshMonDb> g_db;
 static shared_ptr<AimonGatewayClient> gatewayClient;
+static shared_ptr<WebServer> g_webServer;
 static volatile sig_atomic_t g_stop = 0;
 static int g_stop_pipe[2] = { -1, -1 };
 
@@ -61,6 +63,9 @@ static void requestStop(void)
 {
     if (gatewayClient) {
         gatewayClient->stop();
+    }
+    if (g_webServer) {
+        g_webServer->stop();
     }
     for (vector< shared_ptr<MeshMon>>::iterator it = mons.begin();
          it != mons.end(); it++) {
@@ -120,6 +125,10 @@ static void addDevice(vector<string> &devices, const string &device)
 
 static void releaseMeshMons(void)
 {
+    if (g_webServer) {
+        g_webServer->stop();
+        g_webServer.reset();
+    }
     if (gatewayClient) {
         gatewayClient->stop();
         gatewayClient->join();
@@ -746,6 +755,41 @@ static bool readDatabaseConfig(Config &cfg, const string &cfgfile,
     return true;
 }
 
+static bool readWebConfig(Config &cfg, const string &cfgfile,
+                          WebConfig &webConfig)
+{
+    Setting &root = cfg.getRoot();
+
+    if (!root.exists("web")) {
+        return false;
+    }
+
+    try {
+        Setting &w = root["web"];
+
+        if (w.exists("enabled")) {
+            w.lookupValue("enabled", webConfig.enabled);
+        }
+        if (w.exists("port")) {
+            int p = 0;
+            if (w.lookupValue("port", p) && (p > 0) && (p <= 65535)) {
+                webConfig.port = static_cast<uint16_t>(p);
+            }
+        }
+        if (w.exists("host")) {
+            w.lookupValue("host", webConfig.host);
+        }
+        if (w.exists("password")) {
+            w.lookupValue("password", webConfig.password);
+        }
+    } catch (const SettingTypeException &) {
+        cerr << (cfgfile.empty() ? string("~/.meshmon") : cfgfile)
+             << ": web is not a group" << endl;
+    }
+
+    return true;
+}
+
 static void printUsage(const char *progname)
 {
     cout << "Usage: " << progname << " [options]" << endl
@@ -762,6 +806,9 @@ static void printUsage(const char *progname)
          << "      --no-gateway               Disable AIMON gateway client" << endl
          << "      --gateway-host <host>      AIMON gateway host (default: builder)" << endl
          << "      --gateway-port <port>      AIMON gateway port (default: 3885)" << endl
+         << "  -w, --web-port <port>      Embedded web dashboard port (default: 16880)" << endl
+         << "      --no-web               Disable embedded web dashboard" << endl
+         << "      --web-password <pass>  Set web admin authentication password" << endl
          << "  -h, --help                 Display this help message" << endl
          << "  -v, --version              Display version information" << endl;
 }
@@ -781,6 +828,9 @@ static const struct option long_options[] = {
     { "no-gateway", no_argument, NULL, 1004, },
     { "gateway-host", required_argument, NULL, 1005, },
     { "gateway-port", required_argument, NULL, 1006, },
+    { "web-port", required_argument, NULL, 'w', },
+    { "no-web", no_argument, NULL, 1007, },
+    { "web-password", required_argument, NULL, 1008, },
     { "help", no_argument, NULL, 'h', },
     { "version", no_argument, NULL, 'v', },
     { 0, 0, 0, 0 },
@@ -916,9 +966,12 @@ int main(int argc, char **argv)
 
     readGatewayConfig(cfg, cfgfile, gatewayEnabled, gatewayHost, gatewayPort);
 
+    WebConfig webConfig;
+    readWebConfig(cfg, cfgfile, webConfig);
+
     for (;;) {
         int option_index = 0;
-        int c = getopt_long(argc, argv, "d:sp:blD:hv",
+        int c = getopt_long(argc, argv, "d:sp:blD:hvw:",
                             long_options, &option_index);
         if (c == -1) {
             break;
@@ -969,6 +1022,19 @@ int main(int argc, char **argv)
                 exit(EXIT_FAILURE);
             }
             gatewayEnabled = true;
+            break;
+        case 'w':
+            if (!parsePort(optarg, webConfig.port)) {
+                cerr << "Invalid web port: " << optarg << endl;
+                exit(EXIT_FAILURE);
+            }
+            webConfig.enabled = true;
+            break;
+        case 1007:
+            webConfig.enabled = false;
+            break;
+        case 1008:
+            webConfig.password = string(optarg);
             break;
         case 'h':
             printUsage(argv[0]);
@@ -1176,6 +1242,18 @@ int main(int argc, char **argv)
         gatewayClient->start(gatewayHost, gatewayPort);
     }
 
+    if (webConfig.enabled && !mons.empty() && !g_stop) {
+        g_webServer = make_shared<WebServer>(mons[0], g_db, webConfig);
+        g_webServer->start(true);
+        weak_ptr<WebServer> weakWs = g_webServer;
+        mons[0]->addPacketListener([weakWs](const meshtastic_MeshPacket &pkt, time_t t) {
+            auto ws = weakWs.lock();
+            if (ws) {
+                ws->onPacketReceived(pkt, t);
+            }
+        });
+    }
+
     if (stdioShell && !g_stop) {
         // Attach last to let net shells print to stdout before we output
         // the prompt on stdio
@@ -1200,6 +1278,10 @@ int main(int argc, char **argv)
         if (gatewayClient) {
             gatewayClient->stop();
             gatewayClient->join();
+        }
+        if (g_webServer) {
+            g_webServer->stop();
+            g_webServer.reset();
         }
         cout << "Good-bye!" << endl;
     }

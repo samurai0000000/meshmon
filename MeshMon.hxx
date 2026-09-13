@@ -16,6 +16,7 @@
 #include <AutomationDevice.hxx>
 #include <map>
 #include <chrono>
+#include <functional>
 
 using namespace std;
 
@@ -121,6 +122,10 @@ public:
     float getCpuTempC(void);
     bool isSensorForwardAllowed(uint32_t nodeId) const;
     bool isRobotNode(uint32_t nodeId) const;
+
+    // Packet Listening Hook
+    using PacketListener = function<void(const meshtastic_MeshPacket &packet, time_t meshmonTime)>;
+    void addPacketListener(PacketListener listener);
 
     // HomeMesh Automation Fleet Access
     map<uint32_t, AutomationNode> getAutomationNodes(void) const;
@@ -278,6 +283,9 @@ private:
         chrono::steady_clock::time_point txTime;
     };
     map<uint32_t, PendingCommand> _pendingCommands;
+
+    mutable mutex _packetListenersMutex;
+    vector<PacketListener> _packetListeners;
 
 };
 

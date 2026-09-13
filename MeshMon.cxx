@@ -16,6 +16,7 @@
 #include <iostream>
 #include <iomanip>
 #include <algorithm>
+#include <fstream>
 #include <MqttClient.hxx>
 #include <MeshMon.hxx>
 
@@ -181,6 +182,17 @@ void MeshMon::join(void)
 
 float MeshMon::getCpuTempC(void)
 {
+    // Try standard Linux thermal zone first (world-readable on Raspberry Pi)
+    {
+        ifstream tf("/sys/class/thermal/thermal_zone0/temp");
+        if (tf.is_open()) {
+            long millideg = 0;
+            if (tf >> millideg && millideg > 0) {
+                return static_cast<float>(millideg) / 1000.0f;
+            }
+        }
+    }
+
 #define MAX_STRING        1024
 #define GET_GENCMD_RESULT 0x00030080
     float tempC = 0.0;
@@ -194,7 +206,6 @@ float MeshMon::getCpuTempC(void)
 
     fd = open("/dev/vcio", 0);
     if (fd == -1) {
-        fprintf(stderr, "open: %s!\n", strerror(errno));
         goto done;
     }
 
@@ -245,6 +256,14 @@ done:
     }
 
     return tempC;
+}
+
+void MeshMon::addPacketListener(PacketListener listener)
+{
+    if (listener) {
+        lock_guard<mutex> lock(_packetListenersMutex);
+        _packetListeners.push_back(listener);
+    }
 }
 
 void MeshMon::setOwnMqtt(const string &server, uint16_t port,
@@ -425,6 +444,13 @@ void MeshMon::gotPacket(const meshtastic_MeshPacket &packet)
     time_t meshmonTime = time(NULL);
     if (_db != NULL) {
         _db->enqueuePacket(packet, meshmonTime);
+    }
+
+    {
+        lock_guard<mutex> lock(_packetListenersMutex);
+        for (const auto &listener : _packetListeners) {
+            listener(packet, meshmonTime);
+        }
     }
 
     if (packet.from != 0 && isSensorForwardAllowed(packet.from)) {

@@ -14,7 +14,7 @@ all: default
 default: submodules $(TARGETS)
 
 submodules:
-	@if [ -f .gitmodules ] && [ ! -f third_party/json/include/nlohmann/json.hpp ]; then \
+	@if [ -f .gitmodules ] && { [ ! -f third_party/json/include/nlohmann/json.hpp ] || [ ! -f third_party/cpp-httplib/httplib.h ]; }; then \
 		git submodule update --init --recursive; \
 	fi
 
