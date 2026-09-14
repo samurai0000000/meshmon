@@ -183,21 +183,8 @@ static string g_lockPath;
 static string getLockFilePath(void)
 {
     string cfgDir = getConfigDir();
-    string xdgLock = cfgDir + "/meshmon.lock";
-    if (access(xdgLock.c_str(), F_OK) == 0) {
-        return xdgLock;
-    }
-
-    const char *homedir = getenv("HOME");
-    if ((homedir != NULL) && (homedir[0] != '\0')) {
-        string legacyLock = string(homedir) + "/.meshmon.lock";
-        if (access(legacyLock.c_str(), F_OK) == 0) {
-            return legacyLock;
-        }
-    }
-
     ensureConfigDirExists(cfgDir);
-    return xdgLock;
+    return cfgDir + "/meshmon.lock";
 }
 
 static bool acquirePidLock(void)
@@ -298,23 +285,8 @@ static void loadLibConfig(Config &cfg, string &path)
 
     if (path.empty()) {
         string cfgDir = getConfigDir();
-        string xdgCfg = cfgDir + "/meshmon.cfg";
-
-        if (access(xdgCfg.c_str(), F_OK) == 0) {
-            path = xdgCfg;
-        } else {
-            const char *homedir = getenv("HOME");
-            string legacyCfg;
-            if ((homedir != NULL) && (homedir[0] != '\0')) {
-                legacyCfg = string(homedir) + "/.meshmon";
-            }
-            if (!legacyCfg.empty() && (access(legacyCfg.c_str(), F_OK) == 0)) {
-                path = legacyCfg;
-            } else {
-                ensureConfigDirExists(cfgDir);
-                path = xdgCfg;
-            }
-        }
+        ensureConfigDirExists(cfgDir);
+        path = cfgDir + "/meshmon.cfg";
     }
 
     // 'touch' to test the path validity
@@ -354,7 +326,7 @@ static void loadLibConfig(Config &cfg, string &path)
 
 static void mqttCfgFail(const string &path, const string &msg)
 {
-    cerr << (path.empty() ? string("~/.meshmon") : path) << ": " << msg << endl;
+    cerr << (path.empty() ? string("~/.config/meshmon/meshmon.cfg") : path) << ": " << msg << endl;
     exit(EXIT_FAILURE);
 }
 
@@ -410,7 +382,7 @@ static bool readOwnMqttConfig(Config &cfg, const string &cfgfile,
 
 static void geminiCfgFail(const string &path, const string &msg)
 {
-    cerr << (path.empty() ? string("~/.meshmon") : path) << ": " << msg << endl;
+    cerr << (path.empty() ? string("~/.config/meshmon/meshmon.cfg") : path) << ": " << msg << endl;
     exit(EXIT_FAILURE);
 }
 
@@ -665,29 +637,8 @@ static bool readGeminiConfig(Config &cfg, const string &cfgfile,
 static string getDefaultDbPath(void)
 {
     string cfgDir = getConfigDir();
-    string xdgDb = cfgDir + "/meshmon.db";
-    if (access(xdgDb.c_str(), F_OK) == 0) {
-        return xdgDb;
-    }
-
-    const char *homedir = getenv("HOME");
-    if ((homedir != NULL) && (homedir[0] != '\0')) {
-        string legacyDb = string(homedir) + "/.meshmon.db";
-        if (access(legacyDb.c_str(), F_OK) == 0) {
-            return legacyDb;
-        }
-    }
-
-    struct passwd *pw = getpwuid(getuid());
-    if ((pw != NULL) && (pw->pw_dir != NULL) && (pw->pw_dir[0] != '\0')) {
-        string legacyDb = string(pw->pw_dir) + "/.meshmon.db";
-        if (access(legacyDb.c_str(), F_OK) == 0) {
-            return legacyDb;
-        }
-    }
-
     ensureConfigDirExists(cfgDir);
-    return xdgDb;
+    return cfgDir + "/meshmon.db";
 }
 
 static bool readGatewayConfig(Config &cfg, const string &cfgfile,
@@ -715,7 +666,7 @@ static bool readGatewayConfig(Config &cfg, const string &cfgfile,
             }
         }
     } catch (const SettingTypeException &) {
-        cerr << (cfgfile.empty() ? string("~/.meshmon") : cfgfile)
+        cerr << (cfgfile.empty() ? string("~/.config/meshmon/meshmon.cfg") : cfgfile)
              << ": gateway is not a group" << endl;
     }
 
@@ -748,7 +699,7 @@ static bool readDatabaseConfig(Config &cfg, const string &cfgfile,
             }
         }
     } catch (const SettingTypeException &) {
-        cerr << (cfgfile.empty() ? string("~/.meshmon") : cfgfile)
+        cerr << (cfgfile.empty() ? string("~/.config/meshmon/meshmon.cfg") : cfgfile)
              << ": database is not a group" << endl;
     }
 
@@ -783,7 +734,7 @@ static bool readWebConfig(Config &cfg, const string &cfgfile,
             w.lookupValue("password", webConfig.password);
         }
     } catch (const SettingTypeException &) {
-        cerr << (cfgfile.empty() ? string("~/.meshmon") : cfgfile)
+        cerr << (cfgfile.empty() ? string("~/.config/meshmon/meshmon.cfg") : cfgfile)
              << ": web is not a group" << endl;
     }
 

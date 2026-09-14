@@ -14,6 +14,7 @@
 #include <iostream>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <pwd.h>
 
 using namespace libconfig;
 
@@ -507,33 +508,21 @@ static string resolveConfigPath(const string &path, const string &storedPath)
     }
 
     const char *xdg = getenv("XDG_CONFIG_HOME");
-    string xdgPath;
-    if (xdg != NULL && xdg[0] != '\0') {
-        xdgPath = string(xdg) + "/meshmon/meshmon.calib";
-    } else {
-        const char *homedir = getenv("HOME");
-        if (homedir != NULL && homedir[0] != '\0') {
-            xdgPath = string(homedir) + "/.config/meshmon/meshmon.calib";
-        }
-    }
-
-    if (!xdgPath.empty() && (access(xdgPath.c_str(), F_OK) == 0)) {
-        return xdgPath;
+    if ((xdg != NULL) && (xdg[0] != '\0')) {
+        return string(xdg) + "/meshmon/meshmon.calib";
     }
 
     const char *homedir = getenv("HOME");
     if ((homedir != NULL) && (homedir[0] != '\0')) {
-        string legacyPath = string(homedir) + "/.meshmon.calib";
-        if (access(legacyPath.c_str(), F_OK) == 0) {
-            return legacyPath;
-        }
+        return string(homedir) + "/.config/meshmon/meshmon.calib";
     }
 
-    if (!xdgPath.empty()) {
-        return xdgPath;
+    struct passwd *pw = getpwuid(getuid());
+    if ((pw != NULL) && (pw->pw_dir != NULL) && (pw->pw_dir[0] != '\0')) {
+        return string(pw->pw_dir) + "/.config/meshmon/meshmon.calib";
     }
 
-    return ".meshmon.calib";
+    return "/tmp/meshmon/meshmon.calib";
 }
 
 bool Calibration::loadFile(const string &path)

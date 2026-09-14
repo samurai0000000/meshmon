@@ -58,9 +58,9 @@ When `meshmon` runs, it automatically handles all discovery and state synchroniz
 3. Ensure **Enable discovery** is checked (enabled by default).
 
 ### Step 3: Configure `meshmon` to Connect to MQTT
-Edit your `~/.meshmon` configuration file to enable the `mqtt` and `database` blocks:
+Edit your `~/.config/meshmon/meshmon.cfg` configuration file to enable the `mqtt` and `database` blocks:
 
-```text
+```libconfig
 mqtt = {
     server = "192.168.1.100";  // Home Assistant or Mosquitto broker IP
     port = 1883;
@@ -72,7 +72,6 @@ mqtt = {
 
 database = {
     enabled = true;
-    path = "~/.meshmon.db";
     retention_days = 90;
 };
 ```

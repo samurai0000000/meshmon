@@ -13,6 +13,9 @@
 #include <algorithm>
 #include <chrono>
 #include <iomanip>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <pwd.h>
 #include <ChatBot.hxx>
 
 #ifndef DEBUG_CHATBOT
@@ -743,11 +746,23 @@ static string resolveConfigPath(const string &path, const string &storedPath)
     if (!storedPath.empty()) {
         return storedPath;
     }
+
+    const char *xdg = getenv("XDG_CONFIG_HOME");
+    if ((xdg != NULL) && (xdg[0] != '\0')) {
+        return string(xdg) + "/meshmon/meshmon.sched";
+    }
+
     const char *homedir = getenv("HOME");
     if ((homedir != NULL) && (homedir[0] != '\0')) {
-        return string(homedir) + "/.meshmon.sched";
+        return string(homedir) + "/.config/meshmon/meshmon.sched";
     }
-    return ".meshmon.sched";
+
+    struct passwd *pw = getpwuid(getuid());
+    if ((pw != NULL) && (pw->pw_dir != NULL) && (pw->pw_dir[0] != '\0')) {
+        return string(pw->pw_dir) + "/.config/meshmon/meshmon.sched";
+    }
+
+    return "/tmp/meshmon/meshmon.sched";
 }
 
 bool ChatBot::loadTasksFromFile(const string &path)

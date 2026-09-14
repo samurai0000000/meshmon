@@ -44,7 +44,7 @@ LoRa nodes in the field frequently lack battery-backed Real-Time Clocks (RTC), l
   - Telemetry / Position row: ~70 bytes.
   - Typical suburban mesh (~1,000 pkts/day): **~65–75 MB / year**.
   - Active urban mesh (~10,000 pkts/day): **~650–750 MB / year**.
-- **Automated Retention Pruning**: Configurable via `database.retention_days` in `~/.meshmon` or `--retention-days <n>` CLI option.
+- **Automated Retention Pruning**: Configurable via `database.retention_days` in `~/.config/meshmon/meshmon.cfg` or `--retention-days <n>` CLI option.
 
 ---
 
@@ -247,12 +247,11 @@ Authorized mesh nodes can query the database directly over LoRa text messages:
 
 ## 6. Configuration
 
-Configure database settings in `~/.meshmon`:
+Configure database settings in `~/.config/meshmon/meshmon.cfg`:
 
-```text
+```libconfig
 database = {
     enabled = true;
-    path = "~/.meshmon.db";
     retention_days = 90; // Automatically prunes records older than 90 days (0 = unlimited)
 };
 ```

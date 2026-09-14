@@ -5,7 +5,7 @@
 ### 1.1 Overview
 **MeshMon** is a Linux daemon and monitoring gateway for [Meshtastic](https://meshtastic.org) LoRa mesh networks. It connects to one or more physical Meshtastic radio nodes via Serial (USB), TCP, or Bluetooth LE to provide continuous telemetry extraction, high-performance asynchronous packet logging, deep RF and network analytics, master clock synchronization broadcasts, smart device automation (HomeMesh), and Home Assistant MQTT integration.
 
-All configuration files adhere to `libconfig++` and standard XDG paths (`~/.config/meshmon/meshmon.cfg`), with automatic directory creation and fallback compatibility for legacy paths.
+All configuration files adhere to `libconfig++` and standard XDG paths (`~/.config/meshmon/meshmon.cfg`), with automatic directory creation.
 
 ### 1.2 Hardware Placement & Serial Radios
 `meshmon` is deployed on a Linux host physically connected to Meshtastic LoRa radios:
@@ -63,9 +63,10 @@ All configuration files adhere to `libconfig++` and standard XDG paths (`~/.conf
 ## 3. Configuration Standardization (`libconfig++` & XDG Paths)
 
 `meshmon` standardizes on `~/.config/meshmon/`:
-- **Configuration File**: `~/.config/meshmon/meshmon.cfg` (legacy: `$HOME/.meshmon`)
-- **Database File**: `~/.config/meshmon/meshmon.db` (legacy: `$HOME/.meshmon.db`)
-- **Calibration File**: `~/.config/meshmon/meshmon.calib` (legacy: `$HOME/.meshmon.calib`)
+- **Configuration File**: `~/.config/meshmon/meshmon.cfg`
+- **Database File**: `~/.config/meshmon/meshmon.db`
+- **Calibration File**: `~/.config/meshmon/meshmon.calib`
+- **Schedule File**: `~/.config/meshmon/meshmon.sched`
 
 The daemon automatically checks for and creates `~/.config/meshmon/` if missing.
 

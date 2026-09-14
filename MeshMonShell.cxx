@@ -939,7 +939,7 @@ int MeshMonShell::calib(int argc, char **argv)
         this->printf("  calib set <node> <sensor> <raw> <cal>  Set a calibration point\n");
         this->printf("  calib del <node> <sensor> <raw>        Delete a calibration point\n");
         this->printf("  calib clear <node> [<sensor>]          Clear calibration for a node\n");
-        this->printf("  calib reload                           Reload calibration from ~/.meshmon.calib\n");
+        this->printf("  calib reload                           Reload calibration from ~/.config/meshmon/meshmon.calib\n");
         this->printf("Sensors: temp (temperature, \u00b0C), hum (humidity, %%), press (pressure, hPa)\n");
         this->printf("Nodes: node shortname, hex ID (e.g. 2bf941d4, !2bf941d4) or 'default'\n");
         return 0;
@@ -1106,7 +1106,7 @@ int MeshMonShell::calib(int argc, char **argv)
     this->printf("  calib set <node> <sensor> <raw> <cal>  - Set a calibration point\n");
     this->printf("  calib del <node> <sensor> <raw>        - Delete a calibration point\n");
     this->printf("  calib clear <node> [<sensor>]          - Clear calibration for a node\n");
-    this->printf("  calib reload                           - Reload calibration from ~/.meshmon.calib\n");
+    this->printf("  calib reload                           - Reload calibration from ~/.config/meshmon/meshmon.calib\n");
     this->printf("Sensors: temp (temperature, \u00b0C), hum (humidity, %%), press (pressure, hPa)\n");
     this->printf("Nodes: node shortname, hex ID (e.g. 2bf941d4, !2bf941d4) or 'default'\n");
 
