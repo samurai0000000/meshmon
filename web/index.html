@@ -127,12 +127,21 @@
                     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"></polygon><line x1="8" y1="2" x2="8" y2="18"></line><line x1="16" y1="6" x2="16" y2="22"></line></svg>
                     Spatial Radar
                 </button>
+                <button class="tab-btn" data-tab="remote">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path><path d="M2 12h20"></path></svg>
+                    Remote Behavior
+                    <span class="tab-badge" id="badge-remote-count">0</span>
+                </button>
+                <button class="tab-btn" data-tab="topology">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"></circle><circle cx="6" cy="12" r="3"></circle><circle cx="18" cy="19" r="3"></circle><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line></svg>
+                    Mesh Topology
+                </button>
+            </div>
+            <div class="tabs-row tabs-row-secondary">
                 <button class="tab-btn" data-tab="fleet">
                     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
                     Fleet Nodes
                 </button>
-            </div>
-            <div class="tabs-row tabs-row-secondary">
                 <button class="tab-btn" data-tab="automation">
                     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
                     HomeMesh Automation
@@ -681,7 +690,266 @@
                 </div>
             </section>
 
-            <!-- TAB 7: SQL CONSOLE -->
+            <!-- TAB 7: REMOTE NODE BEHAVIOR -->
+            <section id="tab-remote" class="tab-pane">
+                <!-- KPI Stat Ribbon -->
+                <div class="kpi-ribbon glass-card">
+                    <div class="kpi-stat-box">
+                        <span class="kpi-label">Remote Nodes</span>
+                        <div class="kpi-value font-mono" id="remote-kpi-nodes">0</div>
+                        <span class="kpi-sub" id="remote-kpi-sub-gps">0 with GPS · 0 RF-Only</span>
+                    </div>
+                    <div class="kpi-stat-box">
+                        <span class="kpi-label">Remote Airtime Share</span>
+                        <div class="kpi-value font-mono" id="remote-kpi-airtime">0.0%</div>
+                        <span class="kpi-sub" id="remote-kpi-packets">0 remote packets</span>
+                    </div>
+                    <div class="kpi-stat-box">
+                        <span class="kpi-label">Average Distance</span>
+                        <div class="kpi-value font-mono" id="remote-kpi-avg-dist">0.0 km</div>
+                        <span class="kpi-sub">From gateway origin</span>
+                    </div>
+                    <div class="kpi-stat-box">
+                        <span class="kpi-label">Farthest Link</span>
+                        <div class="kpi-value font-mono" id="remote-kpi-farthest">0.0 km</div>
+                        <span class="kpi-sub" id="remote-kpi-farthest-node">--</span>
+                    </div>
+                    <div class="kpi-stat-box">
+                        <span class="kpi-label">Mobility Breakdown</span>
+                        <div class="kpi-value font-mono" id="remote-kpi-mobility">0 / 0</div>
+                        <span class="kpi-sub">Stationary / Trackers</span>
+                    </div>
+                </div>
+
+                <div class="analytics-grid-2col">
+                    <!-- Polar Bearing Radar -->
+                    <div class="card glass-card">
+                        <div class="card-header">
+                            <h3>Remote Spatial Bearing Radar</h3>
+                            <span class="badge badge-cyan" id="remote-radar-ref">Gateway Center</span>
+                        </div>
+                        <div class="radar-container polar-radar-container">
+                            <svg id="remote-polar-svg" class="radar-svg" viewBox="-260 -260 520 520">
+                                <!-- Concentric Range Rings: 1km, 5km, 15km, 30km, 50km -->
+                                <circle cx="0" cy="0" r="45" class="radar-ring"></circle>
+                                <circle cx="0" cy="0" r="95" class="radar-ring"></circle>
+                                <circle cx="0" cy="0" r="145" class="radar-ring"></circle>
+                                <circle cx="0" cy="0" r="195" class="radar-ring"></circle>
+                                <circle cx="0" cy="0" r="240" class="radar-ring ring-outer"></circle>
+
+                                <!-- Compass Axes -->
+                                <line x1="-240" y1="0" x2="240" y2="0" class="radar-axis"></line>
+                                <line x1="0" y1="-240" x2="0" y2="240" class="radar-axis"></line>
+                                <line x1="-170" y1="-170" x2="170" y2="170" class="radar-axis-diag"></line>
+                                <line x1="-170" y1="170" x2="170" y2="-170" class="radar-axis-diag"></line>
+
+                                <!-- Cardinal Labels -->
+                                <text x="0" y="-245" class="compass-lbl font-mono" text-anchor="middle">N 0°</text>
+                                <text x="248" y="4" class="compass-lbl font-mono">E 90°</text>
+                                <text x="0" y="255" class="compass-lbl font-mono" text-anchor="middle">S 180°</text>
+                                <text x="-248" y="4" class="compass-lbl font-mono" text-anchor="end">W 270°</text>
+                                <text x="175" y="-175" class="compass-lbl-sub font-mono">NE</text>
+                                <text x="175" y="180" class="compass-lbl-sub font-mono">SE</text>
+                                <text x="-175" y="180" class="compass-lbl-sub font-mono" text-anchor="end">SW</text>
+                                <text x="-175" y="-175" class="compass-lbl-sub font-mono" text-anchor="end">NW</text>
+
+                                <!-- Distance Ring Labels -->
+                                <text x="6" y="-47" class="radar-lbl font-mono">1 km</text>
+                                <text x="6" y="-97" class="radar-lbl font-mono">5 km</text>
+                                <text x="6" y="-147" class="radar-lbl font-mono">15 km</text>
+                                <text x="6" y="-197" class="radar-lbl font-mono">30 km</text>
+                                <text x="6" y="-242" class="radar-lbl font-mono">50 km</text>
+
+                                <circle cx="0" cy="0" r="5" class="radar-center-dot"></circle>
+                                <g id="remote-radar-blips"></g>
+                            </svg>
+                        </div>
+                    </div>
+
+                    <!-- RF Path Loss & Propagation Scatter View -->
+                    <div class="card glass-card">
+                        <div class="card-header">
+                            <h3>RF Propagation & Path Loss Profile</h3>
+                            <span class="badge badge-purple">SNR vs Distance</span>
+                        </div>
+                        <div class="scatter-container">
+                            <svg id="remote-scatter-svg" class="scatter-svg" viewBox="0 0 500 320">
+                                <!-- Axes & Grid -->
+                                <line x1="50" y1="20" x2="50" y2="280" class="scatter-axis"></line>
+                                <line x1="50" y1="280" x2="480" y2="280" class="scatter-axis"></line>
+                                <line x1="50" y1="150" x2="480" y2="150" class="scatter-grid-line"></line>
+                                <line x1="50" y1="70" x2="480" y2="70" class="scatter-grid-line"></line>
+
+                                <!-- Labels -->
+                                <text x="45" y="25" class="scatter-lbl font-mono" text-anchor="end">+15 dB</text>
+                                <text x="45" y="153" class="scatter-lbl font-mono" text-anchor="end">0 dB</text>
+                                <text x="45" y="283" class="scatter-lbl font-mono" text-anchor="end">-15 dB</text>
+                                <text x="50" y="302" class="scatter-lbl font-mono" text-anchor="middle">0 km</text>
+                                <text x="157" y="302" class="scatter-lbl font-mono" text-anchor="middle">10 km</text>
+                                <text x="265" y="302" class="scatter-lbl font-mono" text-anchor="middle">25 km</text>
+                                <text x="372" y="302" class="scatter-lbl font-mono" text-anchor="middle">40 km</text>
+                                <text x="480" y="302" class="scatter-lbl font-mono" text-anchor="middle">60 km</text>
+
+                                <!-- Free Space Path Loss Theoretical Curve -->
+                                <path d="M 55,40 Q 150,130 480,240" class="scatter-ideal-curve" fill="none"></path>
+
+                                <g id="remote-scatter-points"></g>
+                            </svg>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Deep Remote Node Table -->
+                <div class="card glass-card remote-table-card">
+                    <div class="card-header">
+                        <h3>Remote Node Behavioral Roster</h3>
+                        <div class="remote-filter-bar">
+                            <button class="filter-pill active" data-remote-filter="all">All Remote</button>
+                            <button class="filter-pill" data-remote-filter="gps">GPS Only</button>
+                            <button class="filter-pill" data-remote-filter="rf">RF-Only (No GPS)</button>
+                            <button class="filter-pill" data-remote-filter="mobile">Mobile Trackers</button>
+                            <button class="filter-pill" data-remote-filter="stationary">Stationary</button>
+                        </div>
+                    </div>
+
+                    <div class="table-responsive">
+                        <table class="data-table" id="table-remote-nodes">
+                            <thead>
+                                <tr>
+                                    <th>Node</th>
+                                    <th>Distance / Bearing</th>
+                                    <th>Altitude (Δ)</th>
+                                    <th>Avg SNR / RSSI</th>
+                                    <th>Hops / Ingestion</th>
+                                    <th>Packets</th>
+                                    <th>Mobility</th>
+                                    <th>Last Seen</th>
+                                </tr>
+                            </thead>
+                            <tbody id="tbody-remote-nodes">
+                                <tr><td colspan="8" class="empty-cell">Scanning remote node activity...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <!-- TAB 8: MESH TOPOLOGY & ROUTES -->
+            <section id="tab-topology" class="tab-pane">
+                <!-- Topology KPI Ribbon -->
+                <div class="kpi-ribbon glass-card">
+                    <div class="kpi-stat-box">
+                        <span class="kpi-label">Discovered Traceroutes</span>
+                        <div class="kpi-value font-mono" id="topo-kpi-routes">0</div>
+                        <span class="kpi-sub">Multi-hop route paths</span>
+                    </div>
+                    <div class="kpi-stat-box">
+                        <span class="kpi-label">Direct 0-Hop Neighbors</span>
+                        <div class="kpi-value font-mono" id="topo-kpi-neighbors">0</div>
+                        <span class="kpi-sub">Physical line-of-sight</span>
+                    </div>
+                    <div class="kpi-stat-box">
+                        <span class="kpi-label">Asymmetric Links</span>
+                        <div class="kpi-value font-mono" id="topo-kpi-asym">0</div>
+                        <span class="kpi-sub">>6 dB forward/reverse delta</span>
+                    </div>
+                    <div class="kpi-stat-box">
+                        <span class="kpi-label">RF-Only Centroids</span>
+                        <div class="kpi-value font-mono" id="topo-kpi-centroids">0</div>
+                        <span class="kpi-sub">Trilaterated estimates</span>
+                    </div>
+                </div>
+
+                <div class="analytics-grid-2col">
+                    <!-- Multi-Hop Route Visualizer -->
+                    <div class="card glass-card">
+                        <div class="card-header">
+                            <h3>Multi-Hop Traceroute Transmission Graph</h3>
+                            <span class="badge badge-cyan">Relay Chains</span>
+                        </div>
+                        <div class="route-graph-container">
+                            <svg id="topo-routes-svg" class="route-svg" viewBox="0 0 520 320">
+                                <g id="topo-routes-layer"></g>
+                            </svg>
+                        </div>
+                    </div>
+
+                    <!-- Link Asymmetry Diagnostic Matrix -->
+                    <div class="card glass-card">
+                        <div class="card-header">
+                            <h3>Link Asymmetry & Noise Floor Elevation</h3>
+                            <span class="badge badge-purple">Forward vs Reverse</span>
+                        </div>
+                        <div class="table-responsive asym-table-wrapper">
+                            <table class="data-table" id="table-topo-asymmetry">
+                                <thead>
+                                    <tr>
+                                        <th>Node</th>
+                                        <th>Forward SNR</th>
+                                        <th>Reverse SNR</th>
+                                        <th>Discrepancy (Δ)</th>
+                                        <th>Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="tbody-topo-asymmetry">
+                                    <tr><td colspan="5" class="empty-cell">Analyzing link symmetry...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="analytics-grid-2col">
+                    <!-- RF-Only Centroid Trilateration -->
+                    <div class="card glass-card">
+                        <div class="card-header">
+                            <h3>Centroid Trilateration for GPS-less Nodes</h3>
+                            <span class="badge badge-cyan">RF Proximity</span>
+                        </div>
+                        <div class="table-responsive">
+                            <table class="data-table" id="table-topo-centroids">
+                                <thead>
+                                    <tr>
+                                        <th>RF-Only Node</th>
+                                        <th>Estimated Coordinates</th>
+                                        <th>Confidence Radius</th>
+                                        <th>Hearing Neighbors</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="tbody-topo-centroids">
+                                    <tr><td colspan="4" class="empty-cell">Computing centroid estimates...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Traceroute History Log -->
+                    <div class="card glass-card">
+                        <div class="card-header">
+                            <h3>Traceroute History & Hop Sequence</h3>
+                            <span class="badge badge-purple">Route Hops</span>
+                        </div>
+                        <div class="table-responsive">
+                            <table class="data-table" id="table-topo-routes">
+                                <thead>
+                                    <tr>
+                                        <th>Origin</th>
+                                        <th>Destination</th>
+                                        <th>Hops</th>
+                                        <th>Route Chain</th>
+                                        <th>Time</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="tbody-topo-routes">
+                                    <tr><td colspan="5" class="empty-cell">No traceroutes recorded yet.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- TAB 9: SQL CONSOLE -->
             <section id="tab-console" class="tab-pane">
                 <div class="card glass-card sql-console-card">
                     <div class="card-header">

@@ -1027,7 +1027,16 @@ string AimonGatewayClient::toolGetSpatialAnalytics(int premiseThresholdM, int to
         sn.distMeters = haversineMeters(refLat, refLon, sn.lat, sn.lon);
         allNodes.push_back(sn);
 
-        if (sn.distMeters <= premiseThresholdM) {
+        bool isOnPremise = (sn.distMeters <= premiseThresholdM);
+        if (_mon != nullptr) {
+            if (sn.nodeId == _mon->whoami() ||
+                _mon->admins().find(sn.nodeId) != _mon->admins().end() ||
+                _mon->mates().find(sn.nodeId) != _mon->mates().end()) {
+                isOnPremise = true;
+            }
+        }
+
+        if (isOnPremise) {
             onPremise.push_back(sn);
         } else {
             offPremise.push_back(sn);

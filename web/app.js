@@ -14,6 +14,9 @@ const state = {
     automation: null,
     messages: [],
     spatial: null,
+    remote: null,
+    remoteFilter: 'all',
+    topology: null,
     auth: {
         authenticated: false,
         auth_required: false,
@@ -1100,6 +1103,422 @@ function renderSpatial(data) {
 }
 
 // ----------------------------------------------------------------------------
+// Remote Node Behavior Analytics
+// ----------------------------------------------------------------------------
+
+async function fetchRemoteAnalytics() {
+    try {
+        const [sumRes, nodesRes] = await Promise.all([
+            apiFetch('/api/remote/summary?premise_threshold=50'),
+            apiFetch('/api/remote/nodes?premise_threshold=50')
+        ]);
+
+        if (!sumRes || !nodesRes) return;
+        const sumData = await sumRes.json();
+        const nodesData = await nodesRes.json();
+
+        state.remote = {
+            summary: sumData,
+            nodes: nodesData.nodes || []
+        };
+
+        renderRemoteAnalytics(sumData, nodesData);
+    } catch (e) {
+        console.warn('fetchRemoteAnalytics error:', e);
+    }
+}
+
+function renderRemoteAnalytics(sumData, nodesData) {
+    if (!sumData || !nodesData) return;
+
+    const stats = sumData.stats || {};
+    const nodes = nodesData.nodes || [];
+
+    // Badge in navbar
+    const badge = document.getElementById('badge-remote-count');
+    if (badge) badge.textContent = stats.total_remote_nodes || nodes.length;
+
+    // KPI Ribbon
+    const elNodes = document.getElementById('remote-kpi-nodes');
+    const elSubGps = document.getElementById('remote-kpi-sub-gps');
+    const elAirtime = document.getElementById('remote-kpi-airtime');
+    const elPackets = document.getElementById('remote-kpi-packets');
+    const elAvgDist = document.getElementById('remote-kpi-avg-dist');
+    const elFarthest = document.getElementById('remote-kpi-farthest');
+    const elFarthestNode = document.getElementById('remote-kpi-farthest-node');
+    const elMobility = document.getElementById('remote-kpi-mobility');
+
+    if (elNodes) elNodes.textContent = stats.total_remote_nodes || nodes.length;
+    if (elSubGps) elSubGps.textContent = `${stats.remote_nodes_gps || 0} with GPS · ${stats.remote_nodes_rf_only || 0} RF-Only`;
+    if (elAirtime) elAirtime.textContent = `${(stats.remote_airtime_pct || 0).toFixed(1)}%`;
+    if (elPackets) elPackets.textContent = `${(stats.total_remote_packets || 0).toLocaleString()} remote packets`;
+    if (elAvgDist) elAvgDist.textContent = `${(stats.avg_distance_km || 0).toFixed(2)} km`;
+    if (elFarthest) elFarthest.textContent = `${(stats.farthest_distance_km || 0).toFixed(2)} km`;
+    if (elFarthestNode) elFarthestNode.textContent = stats.farthest_node || '--';
+    if (elMobility) elMobility.textContent = `${stats.stationary_count || 0} / ${stats.mobile_tracker_count || 0}`;
+
+    const radarRef = document.getElementById('remote-radar-ref');
+    if (radarRef && sumData.reference) {
+        radarRef.textContent = `Origin: ${sumData.reference.name}`;
+    }
+
+    renderRemoteRadar(nodes);
+    renderRemoteScatter(nodes);
+    renderRemoteTable(nodes);
+}
+
+function renderRemoteRadar(nodes) {
+    const blipsLayer = document.getElementById('remote-radar-blips');
+    if (!blipsLayer) return;
+
+    if (!nodes || nodes.length === 0) {
+        blipsLayer.innerHTML = '';
+        return;
+    }
+
+    // Map distance piecewise to radius pixels (0 to 240)
+    function distanceToRadius(dKm) {
+        if (dKm <= 1.0) return (dKm / 1.0) * 45;
+        if (dKm <= 5.0) return 45 + ((dKm - 1.0) / 4.0) * 50;
+        if (dKm <= 15.0) return 95 + ((dKm - 5.0) / 10.0) * 50;
+        if (dKm <= 30.0) return 145 + ((dKm - 15.0) / 15.0) * 50;
+        if (dKm <= 50.0) return 195 + ((dKm - 30.0) / 20.0) * 45;
+        return 245;
+    }
+
+    blipsLayer.innerHTML = nodes.filter(n => n.has_gps && n.distance_meters > 0).map(n => {
+        const dKm = n.distance_meters / 1000.0;
+        const r = distanceToRadius(dKm);
+        const theta = (n.bearing_deg || 0) * Math.PI / 180.0;
+
+        const cx = r * Math.sin(theta);
+        const cy = -r * Math.cos(theta);
+
+        let color = '#10b981'; // Good SNR
+        if (n.mobility === 'Mobile Tracker') {
+            color = '#06b6d4'; // Cyan
+        } else if (n.avg_snr < -5.0) {
+            color = '#ef4444'; // Red
+        } else if (n.avg_snr < 0.0) {
+            color = '#f59e0b'; // Amber
+        }
+
+        const title = `${escapeHtml(n.short_name)} (${n.node_hex})\nDist: ${dKm.toFixed(2)} km · Bearing: ${Math.round(n.bearing_deg)}° (${n.compass_dir})\nSNR: ${n.avg_snr.toFixed(1)} dB · RSSI: ${n.avg_rssi.toFixed(0)} dBm\nMobility: ${n.mobility}`;
+
+        return `
+            <circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="5" fill="${color}" stroke="#0b0f19" stroke-width="1.5" class="radar-node-blip">
+                <title>${title}</title>
+            </circle>
+            <text x="${(cx + 6).toFixed(1)}" y="${(cy + 3).toFixed(1)}" fill="#e5e7eb" font-size="9" font-family="JetBrains Mono">${escapeHtml(n.short_name)}</text>
+        `;
+    }).join('');
+}
+
+function renderRemoteScatter(nodes) {
+    const pointsLayer = document.getElementById('remote-scatter-points');
+    if (!pointsLayer) return;
+
+    if (!nodes || nodes.length === 0) {
+        pointsLayer.innerHTML = '';
+        return;
+    }
+
+    const gpsNodes = nodes.filter(n => n.has_gps && n.distance_meters > 0);
+    pointsLayer.innerHTML = gpsNodes.map(n => {
+        const dKm = Math.min(60.0, n.distance_meters / 1000.0);
+        const snr = Math.max(-15.0, Math.min(15.0, n.avg_snr));
+
+        // X: 0..60km -> 50..480px
+        const cx = 50 + (dKm / 60.0) * 430;
+        // Y: -15..+15dB -> 280..20px
+        const cy = 280 - ((snr - (-15.0)) / 30.0) * 260;
+
+        let color = '#10b981';
+        if (snr < -5.0) color = '#f87171';
+        else if (snr < 0.0) color = '#fbbf24';
+
+        const title = `${escapeHtml(n.short_name)} (${n.node_hex})\nDist: ${(n.distance_meters / 1000.0).toFixed(2)} km\nAvg SNR: ${n.avg_snr.toFixed(1)} dB\nRSSI: ${n.avg_rssi.toFixed(0)} dBm\nHops: ${n.avg_hops.toFixed(1)}`;
+
+        return `
+            <circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="5" fill="${color}" stroke="#0b0f19" stroke-width="1.5" class="scatter-point">
+                <title>${title}</title>
+            </circle>
+        `;
+    }).join('');
+}
+
+function renderRemoteTable(nodes) {
+    const tbody = document.getElementById('tbody-remote-nodes');
+    if (!tbody) return;
+
+    if (!nodes || nodes.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="8" class="empty-cell">No remote nodes identified yet.</td></tr>`;
+        return;
+    }
+
+    const filter = state.remoteFilter || 'all';
+    const filtered = nodes.filter(n => {
+        if (filter === 'gps') return n.has_gps;
+        if (filter === 'rf') return !n.has_gps;
+        if (filter === 'mobile') return n.mobility === 'Mobile Tracker';
+        if (filter === 'stationary') return n.mobility === 'Stationary';
+        return true;
+    });
+
+    if (filtered.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="8" class="empty-cell">No remote nodes match filter: ${escapeHtml(filter)}.</td></tr>`;
+        return;
+    }
+
+    tbody.innerHTML = filtered.map(n => {
+        const distStr = n.has_gps
+            ? `${(n.distance_meters / 1000.0).toFixed(2)} km <span style="color:var(--text-muted);">· ${Math.round(n.bearing_deg)}° (${n.compass_dir})</span>`
+            : `<span class="badge-rf-only">RF-Only (No GPS)</span>`;
+
+        const altStr = n.has_gps
+            ? `${n.alt}m <span style="color:var(--text-muted);font-size:0.75rem;">(${n.alt_delta_meters >= 0 ? '+' : ''}${n.alt_delta_meters}m)</span>`
+            : `--`;
+
+        let mobilityBadge = `<span class="badge-rf-only">RF-Only</span>`;
+        if (n.mobility === 'Stationary') {
+            mobilityBadge = `<span class="badge-stationary">Stationary</span>`;
+        } else if (n.mobility === 'Mobile Tracker') {
+            mobilityBadge = `<span class="badge-mobile">Mobile (${Math.round(n.max_displacement_m)}m)</span>`;
+        }
+
+        let snrColor = '#10b981';
+        if (n.avg_snr < -5.0) snrColor = '#f87171';
+        else if (n.avg_snr < 0.0) snrColor = '#fbbf24';
+
+        const hopsStr = `${n.avg_hops.toFixed(1)} <span style="color:var(--text-muted);font-size:0.75rem;">(${n.direct_packets} dir / ${n.relayed_packets} rel)</span>`;
+
+        return `
+            <tr class="font-mono">
+                <td>
+                    <span style="color:var(--cyan-glow);">${escapeHtml(n.node_hex)}</span>
+                    <span style="color:var(--text-main);margin-left:4px;">${escapeHtml(n.short_name)}</span>
+                </td>
+                <td>${distStr}</td>
+                <td>${altStr}</td>
+                <td>
+                    <span style="color:${snrColor};font-weight:600;">${n.avg_snr.toFixed(1)} dB</span>
+                    <span style="color:var(--text-muted);font-size:0.75rem;margin-left:4px;">(${n.avg_rssi.toFixed(0)} dBm)</span>
+                </td>
+                <td>${hopsStr}</td>
+                <td>${n.total_packets.toLocaleString()} <span style="color:var(--text-muted);font-size:0.75rem;">(${(n.total_bytes/1024).toFixed(1)} KB)</span></td>
+                <td>${mobilityBadge}</td>
+                <td>${formatRelativeTime(n.last_seen)}</td>
+            </tr>
+        `;
+    }).join('');
+}
+
+// ----------------------------------------------------------------------------
+// Mesh Topology & Routes Analytics
+// ----------------------------------------------------------------------------
+
+async function fetchTopologyAnalytics() {
+    try {
+        const [routesRes, asymRes, centroidsRes] = await Promise.all([
+            apiFetch('/api/topology/routes?limit=50'),
+            apiFetch('/api/topology/asymmetry'),
+            apiFetch('/api/topology/centroids')
+        ]);
+
+        if (!routesRes || !asymRes || !centroidsRes) return;
+        const routes = await routesRes.json();
+        const asym = await asymRes.json();
+        const centroids = await centroidsRes.json();
+
+        state.topology = { routes, asym, centroids };
+        renderTopologyAnalytics(routes, asym, centroids);
+    } catch (e) {
+        console.warn('fetchTopologyAnalytics error:', e);
+    }
+}
+
+function renderTopologyAnalytics(routes, asym, centroids) {
+    routes = routes || [];
+    asym = asym || [];
+    centroids = centroids || [];
+
+    // KPI Ribbon
+    const elRoutes = document.getElementById('topo-kpi-routes');
+    const elNeighbors = document.getElementById('topo-kpi-neighbors');
+    const elAsym = document.getElementById('topo-kpi-asym');
+    const elCentroids = document.getElementById('topo-kpi-centroids');
+
+    const asymCount = asym.filter(a => a.snr_delta > 6.0).length;
+
+    if (elRoutes) elRoutes.textContent = routes.length;
+    if (elNeighbors) elNeighbors.textContent = asym.length;
+    if (elAsym) elAsym.textContent = asymCount;
+    if (elCentroids) elCentroids.textContent = centroids.length;
+
+    renderTopologyRoutesGraph(routes);
+    renderTopologyAsymmetryTable(asym);
+    renderTopologyCentroidsTable(centroids);
+    renderTopologyRoutesTable(routes);
+}
+
+function renderTopologyRoutesGraph(routes) {
+    const layer = document.getElementById('topo-routes-layer');
+    if (!layer) return;
+
+    if (!routes || routes.length === 0) {
+        layer.innerHTML = `<text x="260" y="160" fill="var(--text-muted)" text-anchor="middle" font-family="JetBrains Mono" font-size="12">No multi-hop traceroutes recorded yet.</text>`;
+        return;
+    }
+
+    // Collect relays and destinations from recent routes
+    const relays = new Map();
+    const destinations = new Map();
+
+    routes.slice(0, 15).forEach(r => {
+        if (r.route_nodes && r.route_nodes.length > 0) {
+            r.route_nodes.forEach((rn, idx) => {
+                const hex = r.route_hexes[idx] || `!${rn.toString(16)}`;
+                const name = r.route_shorts[idx] || hex;
+                relays.set(rn, { hex, name, snr: r.route_snrs[idx] || 0.0 });
+            });
+        }
+        destinations.set(r.to_node, { hex: r.to_hex, name: r.to_short });
+    });
+
+    const relayList = Array.from(relays.values()).slice(0, 6);
+    const destList = Array.from(destinations.values()).slice(0, 6);
+
+    let svg = '';
+
+    // 1. Gateway node (Origin)
+    const gx = 60, gy = 160;
+    svg += `
+        <circle cx="${gx}" cy="${gy}" r="18" fill="#06b6d4" stroke="#ffffff" stroke-width="2" filter="drop-shadow(0 0 8px rgba(6,182,212,0.8))"></circle>
+        <text x="${gx}" y="${gy + 32}" fill="#06b6d4" font-weight="700" font-size="11" font-family="JetBrains Mono" text-anchor="middle">Gateway</text>
+    `;
+
+    // 2. Relays
+    const rx = 260;
+    const rSpacing = relayList.length > 1 ? 240 / (relayList.length - 1) : 0;
+    const rStartY = relayList.length > 1 ? 40 : 160;
+
+    relayList.forEach((rel, idx) => {
+        const ry = rStartY + idx * rSpacing;
+        // Connect Gateway -> Relay
+        svg += `
+            <path d="M ${gx + 18} ${gy} C 160 ${gy}, 160 ${ry}, ${rx - 14} ${ry}" stroke="rgba(6, 182, 212, 0.45)" stroke-width="2" fill="none" stroke-dasharray="4 2"></path>
+            <circle cx="${rx}" cy="${ry}" r="12" fill="#8b5cf6" stroke="#c084fc" stroke-width="1.5"></circle>
+            <text x="${rx}" y="${ry + 22}" fill="#c084fc" font-size="9" font-family="JetBrains Mono" text-anchor="middle">${escapeHtml(rel.name)}</text>
+            <text x="160" y="${((gy + ry) / 2) - 4}" fill="#34d399" font-size="8" font-family="JetBrains Mono" text-anchor="middle">${rel.snr > -100 ? `${rel.snr.toFixed(1)}dB` : ''}</text>
+        `;
+    });
+
+    // 3. Destinations
+    const dx = 450;
+    const dSpacing = destList.length > 1 ? 240 / (destList.length - 1) : 0;
+    const dStartY = destList.length > 1 ? 40 : 160;
+
+    destList.forEach((dst, idx) => {
+        const dy = dStartY + idx * dSpacing;
+        // Connect from intermediate relay or directly from gateway
+        const srcY = relayList.length > 0 ? (rStartY + (idx % relayList.length) * rSpacing) : gy;
+        const srcX = relayList.length > 0 ? rx : gx;
+
+        svg += `
+            <path d="M ${srcX + 12} ${srcY} C 360 ${srcY}, 360 ${dy}, ${dx - 14} ${dy}" stroke="rgba(168, 85, 247, 0.4)" stroke-width="1.5" fill="none"></path>
+            <circle cx="${dx}" cy="${dy}" r="12" fill="#10b981" stroke="#34d399" stroke-width="1.5"></circle>
+            <text x="${dx}" y="${dy + 22}" fill="#34d399" font-size="9" font-family="JetBrains Mono" text-anchor="middle">${escapeHtml(dst.name)}</text>
+        `;
+    });
+
+    layer.innerHTML = svg;
+}
+
+function renderTopologyAsymmetryTable(asym) {
+    const tbody = document.getElementById('tbody-topo-asymmetry');
+    if (!tbody) return;
+
+    if (!asym || asym.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="5" class="empty-cell">No 0-hop link SNR measurements available.</td></tr>`;
+        return;
+    }
+
+    tbody.innerHTML = asym.map(a => {
+        let statusBadge = `<span class="badge-asym-ok">Symmetric (OK)</span>`;
+        if (!a.has_reverse_measurement) {
+            statusBadge = `<span class="badge-rf-only">Forward Only</span>`;
+        } else if (a.snr_delta > 6.0) {
+            statusBadge = `<span class="badge-asym-alert">Elevated Noise (Δ > 6dB)</span>`;
+        } else if (a.snr_delta > 3.0) {
+            statusBadge = `<span class="badge-asym-warn">Moderate (Δ > 3dB)</span>`;
+        }
+
+        const revStr = a.has_reverse_measurement ? `${a.reverse_snr.toFixed(1)} dB` : `--`;
+        const deltaStr = a.has_reverse_measurement ? `${a.snr_delta.toFixed(1)} dB` : `--`;
+
+        return `
+            <tr class="font-mono">
+                <td><span style="color:var(--cyan-glow);">${escapeHtml(a.node_hex)}</span> (${escapeHtml(a.short_name)})</td>
+                <td style="color:#10b981;">${a.forward_snr.toFixed(1)} dB</td>
+                <td style="color:#8b5cf6;">${revStr}</td>
+                <td style="font-weight:600;">${deltaStr}</td>
+                <td>${statusBadge}</td>
+            </tr>
+        `;
+    }).join('');
+}
+
+function renderTopologyCentroidsTable(centroids) {
+    const tbody = document.getElementById('tbody-topo-centroids');
+    if (!tbody) return;
+
+    if (!centroids || centroids.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="4" class="empty-cell">No RF-only nodes with hearing neighbor fixes found.</td></tr>`;
+        return;
+    }
+
+    tbody.innerHTML = centroids.map(c => `
+        <tr class="font-mono">
+            <td><span style="color:var(--cyan-glow);">${escapeHtml(c.node_hex)}</span> (${escapeHtml(c.short_name)})</td>
+            <td>(${c.estimated_lat.toFixed(5)}, ${c.estimated_lon.toFixed(5)})</td>
+            <td>±${Math.round(c.confidence_radius_m)} meters</td>
+            <td>${c.neighbor_count} nodes</td>
+        </tr>
+    `).join('');
+}
+
+function renderTopologyRoutesTable(routes) {
+    const tbody = document.getElementById('tbody-topo-routes');
+    if (!tbody) return;
+
+    if (!routes || routes.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="5" class="empty-cell">No traceroutes recorded yet.</td></tr>`;
+        return;
+    }
+
+    tbody.innerHTML = routes.map(r => {
+        let chain = `<span style="color:var(--cyan-glow);">${escapeHtml(r.from_short)}</span>`;
+        if (r.route_shorts && r.route_shorts.length > 0) {
+            r.route_shorts.forEach((s, i) => {
+                const snrVal = (r.route_snrs && r.route_snrs[i] > -100) ? ` [${r.route_snrs[i].toFixed(1)}dB]` : '';
+                chain += ` &rarr; <span style="color:#c084fc;">${escapeHtml(s)}${snrVal}</span>`;
+            });
+        }
+        chain += ` &rarr; <span style="color:#34d399;">${escapeHtml(r.to_short)}</span>`;
+
+        return `
+            <tr class="font-mono">
+                <td>${escapeHtml(r.from_short)} (${escapeHtml(r.from_hex)})</td>
+                <td>${escapeHtml(r.to_short)} (${escapeHtml(r.to_hex)})</td>
+                <td>${r.route_count} hops</td>
+                <td>${chain}</td>
+                <td>${formatRelativeTime(r.timestamp)}</td>
+            </tr>
+        `;
+    }).join('');
+}
+
+// ----------------------------------------------------------------------------
 // SQL Query Console
 // ----------------------------------------------------------------------------
 
@@ -1236,6 +1655,8 @@ document.addEventListener('DOMContentLoaded', () => {
             else if (tabName === 'automation') fetchAutomation();
             else if (tabName === 'messaging') fetchMessages();
             else if (tabName === 'spatial') fetchSpatial();
+            else if (tabName === 'remote') fetchRemoteAnalytics();
+            else if (tabName === 'topology') fetchTopologyAnalytics();
         });
     });
 
@@ -1248,6 +1669,8 @@ document.addEventListener('DOMContentLoaded', () => {
         else if (state.currentTab === 'automation') fetchAutomation();
         else if (state.currentTab === 'messaging') fetchMessages();
         else if (state.currentTab === 'spatial') fetchSpatial();
+        else if (state.currentTab === 'remote') fetchRemoteAnalytics();
+        else if (state.currentTab === 'topology') fetchTopologyAnalytics();
     });
 
     // 6. Auth controls
@@ -1359,11 +1782,28 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // 13. Periodic Refresh
+    // 13. Remote Filter Pills
+    document.querySelectorAll('.filter-pill[data-remote-filter]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.filter-pill[data-remote-filter]').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            state.remoteFilter = btn.getAttribute('data-remote-filter') || 'all';
+            if (state.remote && state.remote.nodes) {
+                renderRemoteTable(state.remote.nodes);
+            }
+        });
+    });
+
+    // 14. Periodic Refresh
     pollTimer = setInterval(() => {
         fetchStatus();
         if (state.currentTab === 'analytics') fetchAnalytics();
         else if (state.currentTab === 'fleet') fetchNodes();
         else if (state.currentTab === 'automation') fetchAutomation();
+        else if (state.currentTab === 'remote') fetchRemoteAnalytics();
+        else if (state.currentTab === 'topology') fetchTopologyAnalytics();
     }, 5000);
+
+    // Initial background fetch to populate badge
+    fetchRemoteAnalytics();
 });

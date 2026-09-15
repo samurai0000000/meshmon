@@ -28,6 +28,7 @@ class Response;
 
 class MeshMon;
 class MeshMonDb;
+class SpatialAnalytics;
 
 struct WebConfig {
     bool enabled = true;
@@ -113,6 +114,11 @@ private:
     void handleGetAutomation(const httplib::Request &req, httplib::Response &res);
     void handleGetMessages(const httplib::Request &req, httplib::Response &res);
     void handleGetSpatial(const httplib::Request &req, httplib::Response &res);
+    void handleGetRemoteSummary(const httplib::Request &req, httplib::Response &res);
+    void handleGetRemoteNodes(const httplib::Request &req, httplib::Response &res);
+    void handleGetTopologyRoutes(const httplib::Request &req, httplib::Response &res);
+    void handleGetTopologyAsymmetry(const httplib::Request &req, httplib::Response &res);
+    void handleGetTopologyCentroids(const httplib::Request &req, httplib::Response &res);
 
     // Authenticated mutating handlers
     void handlePostAuthLogin(const httplib::Request &req, httplib::Response &res);
@@ -130,6 +136,7 @@ private:
 
     std::shared_ptr<MeshMon> _mon;
     std::shared_ptr<MeshMonDb> _db;
+    std::shared_ptr<SpatialAnalytics> _spatial;
     WebConfig _config;
 
     std::unique_ptr<httplib::Server> _server;

@@ -6,6 +6,7 @@
 
 #include "WebServer.hxx"
 #include "WebAssets.hxx"
+#include "SpatialAnalytics.hxx"
 #include "MeshMon.hxx"
 #include "MeshMonDb.hxx"
 #include "MeshMonShell.hxx"
@@ -35,19 +36,6 @@ namespace fs = std::filesystem;
 #define M_PI 3.14159265358979323846
 #endif
 
-static double haversineMeters(double lat1, double lon1, double lat2, double lon2)
-{
-    const double R = 6371000.0;
-    double phi1 = lat1 * M_PI / 180.0;
-    double phi2 = lat2 * M_PI / 180.0;
-    double dphi = (lat2 - lat1) * M_PI / 180.0;
-    double dlam = (lon2 - lon1) * M_PI / 180.0;
-    double a = sin(dphi / 2.0) * sin(dphi / 2.0) +
-               cos(phi1) * cos(phi2) * sin(dlam / 2.0) * sin(dlam / 2.0);
-    double c = 2.0 * atan2(sqrt(a), sqrt(1.0 - a));
-    return R * c;
-}
-
 static string formatNodeHex(uint32_t nodeId)
 {
     if (nodeId == 0) return "-";
@@ -75,6 +63,7 @@ WebServer::WebServer(shared_ptr<MeshMon> mon,
                      const WebConfig &config)
     : _mon(mon),
       _db(db),
+      _spatial(make_shared<SpatialAnalytics>(mon, db)),
       _config(config),
       _server(make_unique<httplib::Server>())
 {
@@ -325,6 +314,26 @@ void WebServer::setupRoutes(void)
 
     _server->Get("/api/spatial", [this](const httplib::Request &req, httplib::Response &res) {
         handleGetSpatial(req, res);
+    });
+
+    _server->Get("/api/remote/summary", [this](const httplib::Request &req, httplib::Response &res) {
+        handleGetRemoteSummary(req, res);
+    });
+
+    _server->Get("/api/remote/nodes", [this](const httplib::Request &req, httplib::Response &res) {
+        handleGetRemoteNodes(req, res);
+    });
+
+    _server->Get("/api/topology/routes", [this](const httplib::Request &req, httplib::Response &res) {
+        handleGetTopologyRoutes(req, res);
+    });
+
+    _server->Get("/api/topology/asymmetry", [this](const httplib::Request &req, httplib::Response &res) {
+        handleGetTopologyAsymmetry(req, res);
+    });
+
+    _server->Get("/api/topology/centroids", [this](const httplib::Request &req, httplib::Response &res) {
+        handleGetTopologyCentroids(req, res);
     });
 
     // Authentication Endpoints
@@ -1092,102 +1101,93 @@ void WebServer::handleGetMessages(const httplib::Request &req, httplib::Response
 
 void WebServer::handleGetSpatial(const httplib::Request &req, httplib::Response &res)
 {
-    if (!_db) {
+    if (!_db || !_spatial) {
         res.status = 503;
-        res.set_content("{\"error\":\"Database not available\"}", "application/json");
+        res.set_content("{\"error\":\"Spatial service or database not available\"}", "application/json");
         return;
     }
 
-    double refLat = 24.82176;
-    double refLon = 121.2383232;
-    string refName = "Gateway Reference";
-    int thresholdM = 50;
-
+    double thresholdM = 50.0;
     if (req.has_param("premise_threshold")) {
-        thresholdM = max(10, atoi(req.get_param_value("premise_threshold").c_str()));
+        thresholdM = max(10.0, atof(req.get_param_value("premise_threshold").c_str()));
     }
 
-    if (_mon != nullptr) {
-        uint32_t myNode = _mon->whoami();
-        if (myNode != 0) {
-            refName = formatNodeHex(myNode) + " (" + _mon->lookupShortName(myNode) + ")";
-            const map<uint32_t, meshtastic_Position> &pMap = _mon->positions();
-            auto it = pMap.find(myNode);
-            if (it != pMap.end() && it->second.latitude_i != 0 && it->second.longitude_i != 0) {
-                refLat = it->second.latitude_i * 1e-7;
-                refLon = it->second.longitude_i * 1e-7;
-            }
-        }
-    }
+    json j = _spatial->getSpatialJson(thresholdM);
+    res.set_content(j.dump(), "application/json");
+}
 
-    string sql =
-        "SELECT p.node_id, n.short_name, n.long_name, p.latitude, p.longitude, p.altitude, max(p.meshmon_time) "
-        "FROM positions p "
-        "LEFT JOIN nodes n ON p.node_id = n.node_id "
-        "WHERE p.latitude != 0 AND p.longitude != 0 "
-        "GROUP BY p.node_id;";
-
-    QueryResult qres;
-    if (!_db->executeRawQuery(sql, qres)) {
-        res.status = 500;
-        res.set_content("{\"error\":\"Spatial query failed: " + qres.error + "\"}", "application/json");
+void WebServer::handleGetRemoteSummary(const httplib::Request &req, httplib::Response &res)
+{
+    if (!_db || !_spatial) {
+        res.status = 503;
+        res.set_content("{\"error\":\"Spatial service or database not available\"}", "application/json");
         return;
     }
 
-    json j;
-    j["reference"] = {
-        {"name", refName},
-        {"lat", refLat},
-        {"lon", refLon},
-        {"premise_threshold_m", thresholdM}
-    };
-
-    json nodesArr = json::array();
-    double farthestDist = 0.0;
-    string farthestNode = "-";
-    size_t onPremiseCount = 0;
-
-    for (const auto &row : qres.rows) {
-        if (row.size() < 7) continue;
-        uint32_t nodeId = (uint32_t) strtoul(row[0].c_str(), nullptr, 10);
-        string shortName = (row[1] != "NULL" && !row[1].empty()) ? row[1] : "-";
-        string longName = (row[2] != "NULL" && !row[2].empty()) ? row[2] : "-";
-        double lat = strtod(row[3].c_str(), nullptr);
-        double lon = strtod(row[4].c_str(), nullptr);
-        int alt = (int) strtol(row[5].c_str(), nullptr, 10);
-        time_t lastSeen = (time_t) strtoul(row[6].c_str(), nullptr, 10);
-
-        double dist = haversineMeters(refLat, refLon, lat, lon);
-        bool onPremise = (dist <= thresholdM);
-        if (onPremise) onPremiseCount++;
-
-        if (dist > farthestDist) {
-            farthestDist = dist;
-            farthestNode = formatNodeHex(nodeId) + " (" + shortName + ")";
-        }
-
-        nodesArr.push_back({
-            {"node_id", nodeId},
-            {"node_hex", formatNodeHex(nodeId)},
-            {"short_name", shortName},
-            {"long_name", longName},
-            {"lat", lat},
-            {"lon", lon},
-            {"alt", alt},
-            {"distance_meters", dist},
-            {"on_premise", onPremise},
-            {"last_seen", lastSeen}
-        });
+    double thresholdM = 50.0;
+    if (req.has_param("premise_threshold")) {
+        thresholdM = max(10.0, atof(req.get_param_value("premise_threshold").c_str()));
     }
 
-    j["nodes"] = nodesArr;
-    j["stats"] = {
-        {"total_nodes_with_gps", nodesArr.size()},
-        {"on_premise_count", onPremiseCount},
-        {"farthest_distance_meters", farthestDist},
-        {"farthest_node", farthestNode}
-    };
+    json j = _spatial->getRemoteSummaryJson(thresholdM);
+    res.set_content(j.dump(), "application/json");
+}
 
+void WebServer::handleGetRemoteNodes(const httplib::Request &req, httplib::Response &res)
+{
+    if (!_db || !_spatial) {
+        res.status = 503;
+        res.set_content("{\"error\":\"Spatial service or database not available\"}", "application/json");
+        return;
+    }
+
+    double thresholdM = 50.0;
+    if (req.has_param("premise_threshold")) {
+        thresholdM = max(10.0, atof(req.get_param_value("premise_threshold").c_str()));
+    }
+
+    json j = _spatial->getRemoteNodesJson(thresholdM);
+    res.set_content(j.dump(), "application/json");
+}
+
+void WebServer::handleGetTopologyRoutes(const httplib::Request &req, httplib::Response &res)
+{
+    if (!_db || !_spatial) {
+        res.status = 503;
+        res.set_content("{\"error\":\"Spatial service or database not available\"}", "application/json");
+        return;
+    }
+
+    size_t limit = 50;
+    if (req.has_param("limit")) {
+        limit = (size_t) max(1, atoi(req.get_param_value("limit").c_str()));
+    }
+
+    json j = _spatial->getTopologyRoutesJson(limit);
+    res.set_content(j.dump(), "application/json");
+}
+
+void WebServer::handleGetTopologyAsymmetry(const httplib::Request &, httplib::Response &res)
+{
+    if (!_db || !_spatial) {
+        res.status = 503;
+        res.set_content("{\"error\":\"Spatial service or database not available\"}", "application/json");
+        return;
+    }
+
+    json j = _spatial->getTopologyAsymmetryJson();
+    res.set_content(j.dump(), "application/json");
+}
+
+void WebServer::handleGetTopologyCentroids(const httplib::Request &, httplib::Response &res)
+{
+    if (!_db || !_spatial) {
+        res.status = 503;
+        res.set_content("{\"error\":\"Spatial service or database not available\"}", "application/json");
+        return;
+    }
+
+    json j = _spatial->getTopologyCentroidsJson();
     res.set_content(j.dump(), "application/json");
 }
 
