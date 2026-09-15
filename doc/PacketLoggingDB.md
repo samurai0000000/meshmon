@@ -260,3 +260,9 @@ Or specify via command-line options:
 - `-D / --database <path>`: Specify database file path.
 - `--no-database` or `--no-db`: Disable SQLite packet logging.
 - `--retention-days <days>`: Override retention threshold.
+
+---
+
+## License & Copyright
+
+Copyright (C) 2026, Charles Chiou. All rights reserved.

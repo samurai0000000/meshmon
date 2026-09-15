@@ -625,3 +625,9 @@ fresh with the intended IDs. List the current IDs from Developer Tools
 5. **Loss-of-Signal Heartbeats & Proactive Probing**: MeshMon marks devices `OFFLINE` if no Meshtastic message, telemetry, or command reply is received within 15 minutes (900s). To prevent false offline transitions and maintain fresh operational telemetry, MeshMon's 1-minute crontab watchdog proactively probes silent nodes every 10 minutes (600s) using alternating subsystem queries (`AutomationDevice`: `MeshRoomDevice` $\rightarrow$ `ac`/`tv`, `MeshPumpDevice` $\rightarrow$ `pump`, `MeshRoofDevice` $\rightarrow$ `amplify`/`wifi`). Every probe verb must be one the firmware dispatches on at the top level; a sub-verb such as `fish` draws no reply and silently starves the node's state. Every probe response updates round-trip latency (RTT) and continuously advances live `uptimeSec`.
 6. **Airtime Duty Cycles**: LoRa channel airtime duty cycles are preserved by throttling rapid consecutive command state toggles.
 7. **Strict Robot Gating**: An `AutomationNode` is instantiated and published to Home Assistant or displayed in the `robot` CLI command ONLY if the node explicitly identifies with a supported robot application (`meshpump`, `meshroof`, `meshroom`). Casual chat, legacy firmware text, or raw telemetry from non-robot mates never create phantom robot records.
+
+---
+
+## License & Copyright
+
+Copyright (C) 2026, Charles Chiou. All rights reserved.

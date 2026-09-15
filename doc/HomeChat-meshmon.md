@@ -53,3 +53,9 @@ When SQLite packet logging is active, `meshmon` responds to on-air text queries 
 | `spof?`, `repeaters?` | Critical relay repeater discovery | `spof: !2bf941d4 relays 64% of 2+ hop mesh traffic` |
 | `drift?`, `clocks?` | Remote node clock drift analysis | `drift: !a1b2c3d4 off by +42s, !c4d5e6f7 off by -120s` |
 
+---
+
+## License & Copyright
+
+Copyright (C) 2026, Charles Chiou. All rights reserved.
+

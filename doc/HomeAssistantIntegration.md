@@ -500,3 +500,9 @@ cards:
       - entity: text.meshmon_2bf941d4_led_message
         name: LED Matrix Message
 ```
+
+---
+
+## License & Copyright
+
+Copyright (C) 2026, Charles Chiou. All rights reserved.

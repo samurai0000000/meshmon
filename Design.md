@@ -1,20 +1,17 @@
 # MeshMon: Architectural Design & Technical Specification
 
-> [!NOTE]
-> For the high-level root system architecture and quick reference, see [**`Design.md`**](../Design.md).
-
 ## 1. System Overview & Problem Statement
 
 ### 1.1 Overview
-**MeshMon** is a Linux daemon and monitoring gateway for [Meshtastic](https://meshtastic.org) LoRa mesh networks. It connects to one or more physical Meshtastic radio nodes via Serial (USB), TCP, or Bluetooth LE to provide continuous telemetry extraction, high-performance asynchronous packet logging, deep RF and network analytics, spatial behavior tracking, an embedded Web Command Center, smart device automation (HomeMesh), and Home Assistant MQTT integration.
+**MeshMon** is a Linux daemon and monitoring gateway for [Meshtastic](https://meshtastic.org) LoRa mesh networks. It interfaces directly with one or more physical Meshtastic radio transceivers via Serial (USB), TCP, or Bluetooth LE to provide continuous telemetry extraction, high-performance asynchronous packet logging, deep RF and network analytics, spatial behavior tracking, an embedded Web Command Center, smart device automation (HomeMesh), and bidirectional Home Assistant MQTT integration.
 
 All configuration files adhere to `libconfig++` and standard XDG paths (`~/.config/meshmon/meshmon.cfg`), with automatic directory creation.
 
-### 1.2 Hardware Placement & Serial Radios
+### 1.2 Hardware Placement & Radio Transceivers
 `meshmon` is deployed on a Linux host physically connected to Meshtastic LoRa radios:
-- **Physical Radios**: Attached via local USB serial interfaces (`/dev/ttyACM*`, `/dev/ttyUSB*`), TCP network streams, or BLE.
+- **Physical Radios**: Attached via local USB serial interfaces (`/dev/ttyACM*`, `/dev/ttyUSB*`), TCP network endpoints, or BLE.
 - **Compilation**: Standard native compilation via top-level `Makefile` (`make -j$(nproc)`).
-- **Runtime Environment**: Runs as an interactive terminal daemon or headless background service.
+- **Runtime Environment**: Operates as an interactive terminal shell (`--stdio`), headless background daemon (`--daemon`), and embedded web server (`--web-port 16880`).
 
 ---
 
@@ -118,83 +115,88 @@ Every packet received by `meshmon` is logged with two distinct timestamps:
 
 This dual-time logging enables precise detection of remote RTC drift and relay transit latencies. Logging runs on an asynchronous worker thread with SQLite WAL mode to guarantee zero dropped packets during radio bursts.
 
-### 4.2 Deep RF & Spatial Topology Analytics
-- **Echo Storm Detection**: Detects packet duplication ratios and identifies flooding culprits loopback routing.
-- **Critical Repeater (SPOF) Discovery**: Computes relay traffic centrality to isolate single points of failure across the physical mesh.
-- **Link Asymmetry & Noise Floor Elevation**: Contrasts forward vs. reverse packet SNR and RSSI across 0-hop neighbors to diagnose localized RF interference or antenna degradation.
-- **Polar Radar & Bearing Visualizer**: Maps remote node azimuth and distance relative to the base station coordinates.
-- **Centroid Trilateration for GPS-less Nodes**: Estimates the location of non-GPS nodes from the known locations of hearing neighbors.
-- **Mobility Classification**: Tracks position variance over time to classify nodes as Stationary, Mobile Tracker, or RF-Only.
+### 4.2 Spatial Analytics & Remote Behavior Engine
+`SpatialAnalytics` provides geographic and RF behavioral profiling of remote nodes:
+- **Haversine Distance & Polar Bearing**: Computes relative displacement and cardinal azimuth from reference base station coordinates.
+- **Polar Radar Visualizer**: Maps active nodes onto a polar radar canvas indexed by compass direction and distance rings.
+- **Mobility Classification**: Evaluates position variance over time to categorize nodes into:
+  - `Stationary`: Fixed repeaters, base stations, and static sensor nodes.
+  - `Mobile Tracker`: Moving vehicles, handheld assets, or wandering personnel.
+  - `RF-Only`: Non-GPS transmitting nodes tracked purely via RF telemetry.
+- **Link Asymmetry & Noise Floor Analysis**: Contrasts forward vs. reverse packet SNR and RSSI across 0-hop neighbors to identify local RF interference, desense, or antenna mismatch.
+- **Centroid Trilateration for GPS-less Nodes**: Estimates the geographic location of non-GPS nodes based on the known positions of hearing neighbor nodes.
+- **Echo Storm & SPOF Discovery**: Computes relay traffic centrality to isolate single points of failure across the mesh and flags packet loopback floods.
 
 ### 4.3 Embedded Web Server & Command Center
-- Runs on port 16880 by default (`--web-port 16880`).
-- Provides real-time Server-Sent Events (`/events`) streaming ingested packets live to web dashboards.
-- Features dark glassmorphic responsive UI, polar radar canvas, SNR scatter plots, interactive SQL console, and HomeMesh controls.
+`WebServer` runs an embedded HTTP server (using `cpp-httplib` and `nlohmann/json`) on port 16880:
+- **Real-Time SSE Stream (`/events`)**: Streams live packet ingestion events directly to connected browsers without polling.
+- **REST API Subsystem**:
+  - `GET /api/status`: Daemon health, uptime, node counts, and memory stats.
+  - `GET /api/nodes`: List of all discovered mesh nodes with RF and battery status.
+  - `GET /api/packets`: Recent packet ring buffer inspection.
+  - `GET /api/analytics`: RF health, echo storm ratios, and SPOF repeater metrics.
+  - `GET /api/spatial`: Geographic coordinates, polar bearings, and distances.
+  - `GET /api/remote/summary`: Aggregated remote node counts, mobility states, and RF link stats.
+  - `GET /api/remote/nodes`: Detailed per-node RF behavioral profiles.
+  - `GET /api/topology/routes`: Hop-by-hop traceroute paths and route SNR.
+  - `GET /api/topology/asymmetry`: Forward vs. reverse SNR delta table.
+  - `GET /api/topology/centroids`: Trilaterated centroid estimates for GPS-less nodes.
+- **Authenticated Command Endpoints**:
+  - `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/status`
+  - `POST /api/send`: Send direct or broadcast text messages.
+  - `POST /api/automation/command`: Dispatch HomeMesh device commands.
+  - `POST /api/db/query`: Execute read-only SQL queries against SQLite `MeshMonDb`.
+- **Embedded Asset Serving**: HTML/CSS/JS bundled in `WebAssets.hxx` with fallback to local `web/` directory for live developer edits.
 
-### 4.4 HomeMesh Device Automation
-Monitors and controls smart IoT mesh devices (`meshpump`, `meshroof`, `meshroom`) using calibration curves (`Calibration.hxx`), audit logging (`automation_events`), and bidirectional MQTT state tracking.
+### 4.4 HomeMesh Device Automation & Home Assistant Integration
+Monitors and controls smart IoT mesh devices (`meshpump`, `meshroof`, `meshroom`) using calibration curves (`Calibration.hxx`), audit logging (`automation_events`), and bidirectional Home Assistant MQTT state publishing.
 
 ---
 
 ## 5. AI Toolset Integration via `aimon` Gateway
 
-`meshmon` integrates an **`AimonGatewayClient`**:
+`meshmon` integrates an **`AimonGatewayClient`** that establishes an outbound TCP connection to the central AI gateway on port `3885`.
 
-1. **Outbound TCP Connection**: Connects to `aimon` gateway at port `3885` (or configured host/port). Reconnects automatically on disconnection.
-2. **Dynamic Toolset Registration**: Upon connection, registers the following 6 MCP tools:
-   - `meshmon_get_node_status`: Queries current state, battery percentage, SNR, and last-seen timestamps for mesh nodes.
-   - `meshmon_query_telemetry_history`: Queries SQLite `MeshMonDb` for sensor metrics (temperature, humidity, voltage, channel utilization).
-   - `meshmon_send_message`: Transmits direct or broadcast text messages over the mesh.
-   - `meshmon_get_rf_analytics`: Returns current health metrics, echo storm ratio, and SPOF repeater analysis.
-   - `meshmon_query_db`: Executes read-only SQL queries against `MeshMonDb` with schema validation.
-   - `meshmon_get_spatial_analytics`: Returns polar coordinates, distance, mobility states, centroid estimates, and link asymmetry.
-3. **RPC Execution**: Receives `tools/call` JSON-RPC requests from `aimon`, executes the query against in-memory state or `MeshMonDb`, and returns markdown-formatted results.
-
----
-
-## 6. Build & Execution
-
-- **Compile**: Native compilation via top-level `Makefile`:
-  ```bash
-  make -j$(nproc)
-  ```
-- **Running the Daemon**:
-  ```bash
-  ./build/$(uname -m)/meshmon -d /dev/ttyACM0 -D ~/.config/meshmon/meshmon.db -w 16880
-  ```
-- **Interactive Shell Commands**:
-  When running the interactive CLI shell, type `help` to list available radio control commands, node telemetry queries, and database status.
-
----
-
-## 7. AI Toolset Matrix: Analytics, Management & Workflow Automation
-
-`meshmon` exports a focused suite of MCP tools designed for real-time mesh RF observability, sensor history querying, direct on-air message dispatch, and spatial analytics:
+### Dynamic Toolset Registration
+Upon connection, the client registers the following 6 MCP tools:
 
 | Tool Name | Operation Mode | Utility Description |
 | :--- | :--- | :--- |
-| `meshmon_get_node_status` | **Analytics** | Returns current list of known nodes, node names, hardware models, battery %, SNR, and last-seen timestamps. |
-| `meshmon_query_telemetry_history` | **Analytics** | Queries SQLite `MeshMonDb` for sensor metrics (battery, voltage, temperature, humidity, channel utilization) over a given time window (e.g. last 6h / 24h). |
+| `meshmon_get_node_status` | **Analytics** | Current list of known nodes, node names, hardware models, battery %, SNR, and last-seen timestamps. |
+| `meshmon_query_telemetry_history` | **Analytics** | Historical sensor metrics (battery, voltage, temperature, humidity, channel utilization) over a given time window. |
 | `meshmon_get_rf_analytics` | **Analytics** | Analyzes mesh health: duplicate packet ratios, echo storm culprits, single-point-of-failure (SPOF) repeaters, and average hop counts. |
-| `meshmon_send_message` | **Management & Workflow** | Transmits a direct text message to a specific node or broadcasts to the entire mesh (`^all`). |
-| `meshmon_query_db` | **Analytics** | Executes read-only SQL queries against `MeshMonDb` SQLite database with diagnostic presets and query guards. |
-| `meshmon_get_spatial_analytics` | **Analytics** | Returns spatial profiles: polar radar coordinates, mobility classification, centroid trilateration, and link asymmetry. |
+| `meshmon_send_message` | **Management** | Transmits a direct text message to a specific node or broadcasts to the entire mesh (`^all`). |
+| `meshmon_query_db` | **Analytics** | Executes read-only SQL queries against `MeshMonDb` SQLite database with schema security guards and parameterization. |
+| `meshmon_get_spatial_analytics` | **Analytics** | Spatial metrics: polar coordinates, distance, mobility classification, centroid trilaterations, and link asymmetry. |
 
-### Practical Agent Usage Scenarios
-- **Analytics**:
-  - *"Which nodes in the mesh are currently reporting battery levels below 20% or have not transmitted in the last 2 hours?"*
-  - *"Plot the temperature and solar voltage curve for node '!1234abcd' over the last 24 hours from the database."*
-  - *"Is there an echo storm or packet looping issue degrading the mesh channel right now?"*
-  - *"Which nodes are showing severe RF link asymmetry, indicating local noise floor elevation?"*
-- **Management & Operational Intervention**:
-  - *"Broadcast a weather warning message to all nodes on the primary channel."*
-  - *"Ping the roof repeater node to test direct 0-hop RF link quality."*
-- **Spatial Tracking & Topology**:
-  - *"What are the polar radar coordinates and estimated distance of tracker node '!5678ef01' relative to base station?"*
-  - *"Compute centroid position estimates for GPS-less nodes based on hearing neighbors."*
-- **Workflow Automation**:
-  - **Scheduled RF Audit**: An automated cron agent queries `meshmon_get_rf_analytics` every morning, detects if any repeater node has become a single point of failure (centrality > 70%), and notifies the operator.
-  - **Battery & Environmental Alerting**: Autonomous agents inspect `meshmon_query_telemetry_history` periodically to detect failing solar charging circuits before nodes experience complete power loss.
+---
+
+## 6. Build & Execution Workflow
+
+### Build Targets
+Build strictly via the top-level `Makefile` wrapper:
+
+```bash
+# Compile meshmon natively:
+make -j$(nproc)
+
+# Clean compiled objects:
+make clean
+
+# Remove build directory:
+make distclean
+```
+
+The output binary is placed at `build/$(uname -m)/meshmon`.
+
+### Running the Service
+```bash
+# Interactive mode with SQLite database and web dashboard:
+./build/$(uname -m)/meshmon -d /dev/ttyACM0 -D ~/.config/meshmon/meshmon.db -w 16880
+
+# Background daemon mode:
+./build/$(uname -m)/meshmon -d /dev/ttyACM0 -b -D ~/.config/meshmon/meshmon.db --gateway
+```
 
 ---
 
