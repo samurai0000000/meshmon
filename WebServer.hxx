@@ -35,6 +35,7 @@ struct WebConfig {
     uint16_t port = 16880;
     std::string host = "0.0.0.0";
     std::string password = "admin";
+    bool endpointsEnabled = false;
 };
 
 struct PacketLogEntry {
@@ -104,6 +105,8 @@ private:
     void revokeSessionToken(const std::string &token);
     void purgeExpiredTokens(void);
     std::string extractToken(const httplib::Request &req) const;
+    bool isValidUiSession(const httplib::Request &req) const;
+    static std::string getMcpHintForPath(const std::string &path, const std::string &body);
 
     // JSON API handlers
     void handleGetStatus(const httplib::Request &req, httplib::Response &res);

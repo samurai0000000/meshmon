@@ -733,6 +733,9 @@ static bool readWebConfig(Config &cfg, const string &cfgfile,
         if (w.exists("password")) {
             w.lookupValue("password", webConfig.password);
         }
+        if (w.exists("endpoints_enabled")) {
+            w.lookupValue("endpoints_enabled", webConfig.endpointsEnabled);
+        }
     } catch (const SettingTypeException &) {
         cerr << (cfgfile.empty() ? string("~/.config/meshmon/meshmon.cfg") : cfgfile)
              << ": web is not a group" << endl;

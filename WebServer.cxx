@@ -83,6 +83,9 @@ bool WebServer::start(bool async)
 
     setupRoutes();
 
+    _server->set_read_timeout(1, 0);
+    _server->set_write_timeout(5, 0);
+
     _running = true;
     cout << "[WebServer] Initializing embedded HTTP server on "
          << _config.host << ":" << _config.port << endl;
@@ -257,13 +260,98 @@ bool WebServer::checkAuth(const httplib::Request &req) const
     return validateSessionToken(token);
 }
 
+bool WebServer::isValidUiSession(const httplib::Request &req) const
+{
+    if (req.has_header("User-Agent")) {
+        string ua = req.get_header_value("User-Agent");
+        for (char &c : ua) c = tolower(c);
+        if (ua.find("curl/") != string::npos ||
+            ua.find("python") != string::npos ||
+            ua.find("wget/") != string::npos ||
+            ua.find("httpie") != string::npos ||
+            ua.find("aiohttp") != string::npos ||
+            ua.find("go-http-client") != string::npos) {
+            return false;
+        }
+    } else {
+        return false;
+    }
+
+    string token = extractToken(req);
+    if (token.empty() && req.has_header("X-UI-Session")) {
+        token = req.get_header_value("X-UI-Session");
+    }
+    if (token.empty() && req.has_header("Cookie")) {
+        string cookie = req.get_header_value("Cookie");
+        size_t pos = cookie.find("meshmon_session=");
+        if (pos != string::npos) {
+            size_t start = pos + 16;
+            size_t end = cookie.find(';', start);
+            token = (end == string::npos) ? cookie.substr(start) : cookie.substr(start, end - start);
+        }
+    }
+
+    if (token.empty()) {
+        return false;
+    }
+
+    return validateSessionToken(token);
+}
+
+string WebServer::getMcpHintForPath(const string &path, const string &body)
+{
+    (void)body;
+    if (path == "/api/status" || path == "/api/nodes" || path == "/api/node") {
+        return "Use official MCP tool 'meshmon_get_node_status'.";
+    }
+    if (path.find("/stats") != string::npos || path.find("/events") != string::npos) {
+        return "Use official MCP tool 'meshmon_get_rf_analytics' or 'meshmon_get_node_status' with argument {\"node_id\": \"<id>\"}.";
+    }
+    if (path == "/api/analytics") {
+        return "Use official MCP tool 'meshmon_get_rf_analytics' with argument {\"hours\": 24}.";
+    }
+    if (path == "/api/packets") {
+        return "Use official MCP tool 'meshmon_query_telemetry_history' or 'meshmon_get_rf_analytics'.";
+    }
+    if (path == "/api/spatial") {
+        return "Use official MCP tool 'meshmon_get_spatial_analytics'.";
+    }
+    if (path == "/api/messages/send" || path == "/api/messages") {
+        return "Use official MCP tool 'meshmon_send_message' with argument {\"text\": \"...\"}.";
+    }
+    if (path == "/api/db/query") {
+        return "Use official MCP tool 'meshmon_query_db' with argument {\"query\": \"...\"}.";
+    }
+    return "Use official MCP tools ('meshmon_*'). Direct REST API access is disabled.";
+}
+
 void WebServer::setupRoutes(void)
 {
+    // Gate REST API endpoints if disabled by configuration, unless request is from an authenticated Web UI session
+    if (!_config.endpointsEnabled) {
+        _server->set_pre_routing_handler([this](const httplib::Request &req, httplib::Response &res) {
+            if (req.path == "/api" || req.path.rfind("/api/", 0) == 0) {
+                if (!isValidUiSession(req)) {
+                    res.status = 403;
+                    string hint = getMcpHintForPath(req.path, req.body);
+                    json err = {
+                        {"error", "Direct REST API endpoint access is disabled by configuration."},
+                        {"hint", hint},
+                        {"daemon", "meshmon"}
+                    };
+                    res.set_content(err.dump(2), "application/json");
+                    return httplib::Server::HandlerResponse::Handled;
+                }
+            }
+            return httplib::Server::HandlerResponse::Unhandled;
+        });
+    }
+
     // Enable CORS for API routes
     _server->set_default_headers({
         {"Access-Control-Allow-Origin", "*"},
         {"Access-Control-Allow-Methods", "GET, POST, OPTIONS"},
-        {"Access-Control-Allow-Headers", "Content-Type, Authorization, X-Auth-Token"}
+        {"Access-Control-Allow-Headers", "Content-Type, Authorization, X-Auth-Token, X-UI-Session"}
     });
 
     _server->Options(".*", [](const httplib::Request&, httplib::Response &res) {
@@ -272,7 +360,49 @@ void WebServer::setupRoutes(void)
 
     // Static Web Dashboard Assets
     _server->Get("/", [this](const httplib::Request&, httplib::Response &res) {
-        serveStaticFileOrFallback("web/index.html", assets::INDEX_HTML, "text/html", res);
+        string token = createSessionToken();
+        res.set_header("Set-Cookie", "meshmon_session=" + token + "; Path=/; SameSite=Strict");
+
+        string html;
+        if (fs::exists("web/index.html")) {
+            ifstream f("web/index.html");
+            if (f.is_open()) {
+                html = string((istreambuf_iterator<char>(f)), istreambuf_iterator<char>());
+            }
+        }
+        if (html.empty()) {
+            html = assets::INDEX_HTML;
+        }
+
+        string sessionScript = "<script>\n"
+            "window.__UI_SESSION_TOKEN__ = \"" + token + "\";\n"
+            "(function() {\n"
+            "    const originalFetch = window.fetch;\n"
+            "    window.fetch = function(url, options) {\n"
+            "        options = options || {};\n"
+            "        options.headers = options.headers || {};\n"
+            "        if (window.__UI_SESSION_TOKEN__) {\n"
+            "            if (options.headers instanceof Headers) {\n"
+            "                options.headers.set('X-UI-Session', window.__UI_SESSION_TOKEN__);\n"
+            "            } else if (Array.isArray(options.headers)) {\n"
+            "                options.headers.push(['X-UI-Session', window.__UI_SESSION_TOKEN__]);\n"
+            "            } else {\n"
+            "                options.headers['X-UI-Session'] = window.__UI_SESSION_TOKEN__;\n"
+            "            }\n"
+            "        }\n"
+            "        return originalFetch(url, options);\n"
+            "    };\n"
+            "})();\n"
+            "</script>\n";
+
+        size_t headPos = html.find("</head>");
+        if (headPos != string::npos) {
+            html.insert(headPos, sessionScript);
+        } else {
+            html = sessionScript + html;
+        }
+
+        res.set_content(html, "text/html");
     });
 
     _server->Get("/style.css", [this](const httplib::Request&, httplib::Response &res) {
