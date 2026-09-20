@@ -34,6 +34,9 @@ public:
 
     bool isConnected(void) const;
 
+    void setWebPort(uint16_t port) { _webPort = port; }
+    uint16_t getWebPort(void) const { return _webPort; }
+
 private:
 
     void run(void);
@@ -62,6 +65,7 @@ private:
 
     std::string _host;
     uint16_t _port;
+    uint16_t _webPort = 0;
 
     std::atomic<bool> _running;
     std::atomic<bool> _connected;

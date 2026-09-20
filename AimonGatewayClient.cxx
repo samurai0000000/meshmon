@@ -185,6 +185,11 @@ bool AimonGatewayClient::sendRegistration(void)
         {"params", {
             {"subsystem", "meshmon"},
             {"name", "meshmon"},
+            {"display_name", "Mesh Monitor"},
+            {"short_name", "MeshMon"},
+            {"priority", 20},
+            {"web_port", _webPort > 0 ? _webPort : 16880},
+            {"web_path", "/"},
             {"description", "Meshtastic mesh network monitor, packet logger, and telemetry engine"},
             {"tools", json::array({
                 {

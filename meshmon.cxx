@@ -1193,6 +1193,9 @@ int main(int argc, char **argv)
 
     if (gatewayEnabled && !mons.empty() && !g_stop) {
         gatewayClient = make_shared<AimonGatewayClient>(mons[0], g_db);
+        if (webConfig.enabled) {
+            gatewayClient->setWebPort(webConfig.port);
+        }
         gatewayClient->start(gatewayHost, gatewayPort);
     }
 
