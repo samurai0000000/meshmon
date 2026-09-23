@@ -28,7 +28,7 @@ public:
     void setMeshMon(std::shared_ptr<MeshMon> mon);
     void setDb(std::shared_ptr<MeshMonDb> db);
 
-    bool start(const std::string &host = "builder", uint16_t port = 3885);
+    bool start(const std::string &host = "127.0.0.1", uint16_t port = 3885);
     void stop(void);
     void join(void);
 

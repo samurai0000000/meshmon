@@ -758,7 +758,7 @@ static void printUsage(const char *progname)
          << "      --retention-days <days> Prune database records older than N days" << endl
          << "      --gateway                  Enable AIMON gateway client" << endl
          << "      --no-gateway               Disable AIMON gateway client" << endl
-         << "      --gateway-host <host>      AIMON gateway host (default: builder)" << endl
+         << "      --gateway-host <host>      AIMON gateway host (default: 127.0.0.1)" << endl
          << "      --gateway-port <port>      AIMON gateway port (default: 3885)" << endl
          << "  -w, --web-port <port>      Embedded web dashboard port (default: 16880)" << endl
          << "      --no-web               Disable embedded web dashboard" << endl
@@ -915,7 +915,7 @@ int main(int argc, char **argv)
     readDatabaseConfig(cfg, cfgfile, dbPath, dbEnabled, dbRetentionDays);
 
     bool gatewayEnabled = false;
-    string gatewayHost = "builder";
+    string gatewayHost = "127.0.0.1";
     uint16_t gatewayPort = 3885;
 
     readGatewayConfig(cfg, cfgfile, gatewayEnabled, gatewayHost, gatewayPort);

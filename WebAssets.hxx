@@ -1044,7 +1044,7 @@ inline constexpr const char* INDEX_HTML = R"raw_asset(
         </div>
 
         <footer class="app-footer">
-            <p>meshmon &bull; Meshtastic LoRa Gateway &bull; Host: fox (aarch64) &bull; Embedded C++17 Dashboard</p>
+            <p>meshmon &bull; Meshtastic LoRa Gateway &bull; Embedded C++17 Dashboard</p>
         </footer>
     </div>
 

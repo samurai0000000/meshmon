@@ -34,7 +34,7 @@ AimonGatewayClient::AimonGatewayClient(shared_ptr<MeshMon> mon,
                                        shared_ptr<MeshMonDb> db)
     : _mon(mon),
       _db(db),
-      _host("builder"),
+      _host("127.0.0.1"),
       _port(3885),
       _running(false),
       _connected(false),
