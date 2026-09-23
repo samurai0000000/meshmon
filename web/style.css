@@ -45,6 +45,8 @@ body {
     display: flex;
     justify-content: center;
     -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+    width: 100%;
 }
 
 .font-mono {
@@ -58,6 +60,7 @@ body {
     display: flex;
     flex-direction: column;
     gap: 18px;
+    overflow-x: hidden;
 }
 
 /* Glass Card Utility */
@@ -255,7 +258,7 @@ body {
 /* Top Metrics Ribbon */
 .metrics-ribbon {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
     gap: 14px;
 }
 
@@ -306,25 +309,32 @@ body {
     color: var(--text-secondary);
 }
 
-/* Tabs Navigation - Structured Two Rows (No Horizontal Scrollbar) */
+/* Tabs Navigation - Single-Row Horizontal Touch Scroll */
 .tabs-nav {
     display: flex;
-    flex-direction: column;
+    flex-direction: row;
     gap: 8px;
     padding: 10px 14px;
     border-radius: 14px;
-    overflow-x: hidden;
+    overflow-x: auto;
     overflow-y: hidden;
+    white-space: nowrap;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
 }
 
+.tabs-nav::-webkit-scrollbar {
+    display: none;
+}
+
+/* Legacy two-row wrappers: flatten into the single row */
 .tabs-row {
-    display: flex;
-    gap: 8px;
-    width: 100%;
+    display: contents;
 }
 
-.tabs-row .tab-btn {
-    flex: 1 1 0;
+.tabs-row .tab-btn,
+.tabs-nav > .tab-btn {
+    flex: 0 0 auto;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -342,21 +352,24 @@ body {
     text-align: center;
 }
 
-.tabs-row .tab-btn:hover {
+.tabs-row .tab-btn:hover,
+.tabs-nav > .tab-btn:hover {
     color: var(--text-primary);
     background: rgba(255, 255, 255, 0.07);
     border-color: rgba(255, 255, 255, 0.12);
     transform: translateY(-1px);
 }
 
-.tabs-row .tab-btn.active {
+.tabs-row .tab-btn.active,
+.tabs-nav > .tab-btn.active {
     color: #ffffff;
     background: linear-gradient(135deg, rgba(0, 242, 254, 0.2), rgba(79, 70, 229, 0.2));
     border-color: rgba(0, 242, 254, 0.45);
     box-shadow: 0 2px 12px rgba(0, 242, 254, 0.15);
 }
 
-.tabs-row .tab-btn.active svg {
+.tabs-row .tab-btn.active svg,
+.tabs-nav > .tab-btn.active svg {
     color: var(--cyan-glow);
     filter: drop-shadow(0 0 6px var(--cyan-glow));
 }
@@ -644,7 +657,7 @@ body {
 
 .insights-summary-banner {
     display: grid;
-    grid-template-columns: 1.5fr 1fr 1fr 1fr;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
     gap: 16px;
     padding: 16px 20px;
     border-radius: 14px;
@@ -791,7 +804,7 @@ body {
 /* Spatial Reach Callout */
 .reach-stats-grid {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 140px), 1fr));
     gap: 12px;
     margin-bottom: 14px;
 }
@@ -916,7 +929,7 @@ body {
 /* HomeMesh Automation */
 .automation-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
     gap: 16px;
 }
 
@@ -1079,7 +1092,7 @@ body {
 /* Spatial Radar */
 .spatial-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 400px), 1fr));
     gap: 16px;
 }
 
@@ -1131,7 +1144,7 @@ body {
 
 .spatial-stats-summary {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 140px), 1fr));
     gap: 10px;
     margin-bottom: 14px;
 }
@@ -1325,12 +1338,246 @@ button.disabled-guarded {
     cursor: not-allowed !important;
 }
 
+/* View-Only Toast */
+.view-only-toast {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%) translateY(100px);
+    background: rgba(17, 24, 39, 0.95);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(245, 158, 11, 0.35);
+    color: #fcd34d;
+    padding: 12px 24px;
+    border-radius: 12px;
+    font-size: 0.85rem;
+    font-weight: 500;
+    z-index: 9998;
+    pointer-events: none;
+    opacity: 0;
+    transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.35s ease;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    white-space: nowrap;
+    max-width: 92vw;
+    text-overflow: ellipsis;
+    overflow: hidden;
+}
+
+.view-only-toast.show {
+    transform: translateX(-50%) translateY(0);
+    opacity: 1;
+}
+
 @media (max-width: 1024px) {
     .analytics-grid, .spatial-grid {
         grid-template-columns: 1fr;
     }
     .span-2 {
         grid-column: span 1;
+    }
+}
+
+@media (max-width: 768px) {
+    .app-container {
+        padding: 10px 10px 24px;
+        gap: 12px;
+    }
+
+    /* Navbar: wrap into stacked layout */
+    .navbar {
+        flex-wrap: wrap;
+        gap: 10px;
+        padding: 10px 14px;
+    }
+    .header-center {
+        order: 3;
+        width: 100%;
+        justify-content: center;
+        flex-wrap: wrap;
+        gap: 6px;
+    }
+    .header-actions {
+        gap: 8px;
+    }
+    .status-chip {
+        font-size: 0.72rem;
+        padding: 4px 8px;
+    }
+    .brand-text h1 {
+        font-size: 1.2rem;
+    }
+    .last-updated {
+        display: none;
+    }
+
+    /* Metrics ribbon: 2-column on tablet */
+    .metrics-ribbon {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 10px;
+    }
+    .metric-card {
+        padding: 10px 12px;
+        gap: 10px;
+    }
+    .metric-icon {
+        width: 36px;
+        height: 36px;
+        font-size: 1.1rem;
+    }
+    .metric-value {
+        font-size: 1.05rem;
+    }
+
+    /* Insights banner */
+    .insights-summary-banner {
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+        padding: 12px 14px;
+    }
+    .insight-stat-box {
+        border-right: none;
+        padding-right: 0;
+    }
+    .insight-metric-val {
+        font-size: 1.3rem;
+    }
+
+    /* Analytics grid: single column */
+    .analytics-grid {
+        grid-template-columns: 1fr;
+    }
+    .span-2 {
+        grid-column: span 1;
+    }
+    .analytics-grid-2col {
+        grid-template-columns: 1fr;
+    }
+
+    /* Pane toolbar: stack */
+    .pane-toolbar {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 10px;
+    }
+    .search-box {
+        min-width: unset;
+    }
+    .toolbar-title-group h2 {
+        font-size: 1rem;
+    }
+
+    /* Chat */
+    .messaging-container {
+        height: 500px;
+    }
+    .chat-header {
+        flex-direction: column;
+        gap: 8px;
+        align-items: flex-start;
+    }
+    .chat-dest-selector {
+        flex-wrap: wrap;
+    }
+
+    /* KPI ribbon */
+    .kpi-ribbon {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 10px;
+        padding: 12px 14px;
+    }
+}
+
+@media (max-width: 480px) {
+    .app-container {
+        padding: 6px 6px 18px;
+        gap: 10px;
+    }
+
+    .navbar {
+        padding: 8px 10px;
+    }
+    .brand-text h1 {
+        font-size: 1.05rem;
+    }
+    .badge-sub {
+        font-size: 0.65rem;
+    }
+
+    /* Metrics: single column on phone */
+    .metrics-ribbon {
+        grid-template-columns: 1fr;
+        gap: 8px;
+    }
+
+    /* Insights: single column */
+    .insights-summary-banner {
+        grid-template-columns: 1fr;
+        gap: 10px;
+        padding: 10px 12px;
+    }
+    .insight-metric-val {
+        font-size: 1.15rem;
+    }
+
+    /* Tabs: compact */
+    .tabs-nav {
+        padding: 6px 8px;
+        gap: 6px;
+    }
+    .tabs-row .tab-btn,
+    .tabs-nav > .tab-btn {
+        padding: 7px 10px;
+        font-size: 0.78rem;
+        gap: 5px;
+    }
+    .tabs-row .tab-btn svg,
+    .tabs-nav > .tab-btn svg {
+        width: 13px;
+        height: 13px;
+    }
+
+    /* KPI ribbon: single column */
+    .kpi-ribbon {
+        grid-template-columns: 1fr;
+        gap: 8px;
+        padding: 10px 12px;
+    }
+
+    /* Auto actions: wrap */
+    .auto-actions {
+        flex-wrap: wrap;
+    }
+
+    /* Chat input */
+    .messaging-container {
+        height: 420px;
+    }
+    .chat-input-bar {
+        padding: 10px 12px;
+    }
+
+    /* Tables: compact */
+    .data-table th,
+    .data-table td {
+        padding: 6px 8px;
+        font-size: 0.75rem;
+    }
+
+    /* Card header */
+    .card-header h3 {
+        font-size: 0.92rem;
+    }
+
+    /* Filter group */
+    .filter-group {
+        flex-wrap: wrap;
+    }
+
+    /* Sniffer controls */
+    .sniffer-controls {
+        flex-wrap: wrap;
+        gap: 6px;
     }
 }
 

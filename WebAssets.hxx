@@ -9,7 +9,8 @@
 
 namespace assets {
 
-inline constexpr const char* INDEX_HTML = R"raw_asset(<!DOCTYPE html>
+inline constexpr const char* INDEX_HTML = R"raw_asset(
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -131,8 +132,7 @@ inline constexpr const char* INDEX_HTML = R"raw_asset(<!DOCTYPE html>
                 </button>
                 <button class="tab-btn" data-tab="sniffer">
                     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
-                    Live Packet Sniffer
-                    <span class="tab-badge" id="sniffer-counter">0</span>
+                    Live Packet Sniffer <span class="tab-badge" id="sniffer-counter">0</span>
                 </button>
                 <button class="tab-btn" data-tab="spatial">
                     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"></polygon><line x1="8" y1="2" x2="8" y2="18"></line><line x1="16" y1="6" x2="16" y2="22"></line></svg>
@@ -140,8 +140,7 @@ inline constexpr const char* INDEX_HTML = R"raw_asset(<!DOCTYPE html>
                 </button>
                 <button class="tab-btn" data-tab="remote">
                     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path><path d="M2 12h20"></path></svg>
-                    Remote Behavior
-                    <span class="tab-badge" id="badge-remote-count">0</span>
+                    Remote Behavior <span class="tab-badge" id="badge-remote-count">0</span>
                 </button>
                 <button class="tab-btn" data-tab="topology">
                     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"></circle><circle cx="6" cy="12" r="3"></circle><circle cx="18" cy="19" r="3"></circle><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line></svg>
@@ -1054,7 +1053,8 @@ inline constexpr const char* INDEX_HTML = R"raw_asset(<!DOCTYPE html>
 </html>
 )raw_asset";
 
-inline constexpr const char* STYLE_CSS = R"raw_asset(/*
+inline constexpr const char* STYLE_CSS = R"raw_asset(
+/*
  * meshmon web dashboard style
  *
  * Copyright (C) 2026, Charles Chiou
@@ -1101,6 +1101,8 @@ body {
     display: flex;
     justify-content: center;
     -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+    width: 100%;
 }
 
 .font-mono {
@@ -1114,6 +1116,7 @@ body {
     display: flex;
     flex-direction: column;
     gap: 18px;
+    overflow-x: hidden;
 }
 
 /* Glass Card Utility */
@@ -1311,7 +1314,7 @@ body {
 /* Top Metrics Ribbon */
 .metrics-ribbon {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
     gap: 14px;
 }
 
@@ -1362,25 +1365,32 @@ body {
     color: var(--text-secondary);
 }
 
-/* Tabs Navigation - Structured Two Rows (No Horizontal Scrollbar) */
+/* Tabs Navigation - Single-Row Horizontal Touch Scroll */
 .tabs-nav {
     display: flex;
-    flex-direction: column;
+    flex-direction: row;
     gap: 8px;
     padding: 10px 14px;
     border-radius: 14px;
-    overflow-x: hidden;
+    overflow-x: auto;
     overflow-y: hidden;
+    white-space: nowrap;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
 }
 
+.tabs-nav::-webkit-scrollbar {
+    display: none;
+}
+
+/* Legacy two-row wrappers: flatten into the single row */
 .tabs-row {
-    display: flex;
-    gap: 8px;
-    width: 100%;
+    display: contents;
 }
 
-.tabs-row .tab-btn {
-    flex: 1 1 0;
+.tabs-row .tab-btn,
+.tabs-nav > .tab-btn {
+    flex: 0 0 auto;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -1398,21 +1408,24 @@ body {
     text-align: center;
 }
 
-.tabs-row .tab-btn:hover {
+.tabs-row .tab-btn:hover,
+.tabs-nav > .tab-btn:hover {
     color: var(--text-primary);
     background: rgba(255, 255, 255, 0.07);
     border-color: rgba(255, 255, 255, 0.12);
     transform: translateY(-1px);
 }
 
-.tabs-row .tab-btn.active {
+.tabs-row .tab-btn.active,
+.tabs-nav > .tab-btn.active {
     color: #ffffff;
     background: linear-gradient(135deg, rgba(0, 242, 254, 0.2), rgba(79, 70, 229, 0.2));
     border-color: rgba(0, 242, 254, 0.45);
     box-shadow: 0 2px 12px rgba(0, 242, 254, 0.15);
 }
 
-.tabs-row .tab-btn.active svg {
+.tabs-row .tab-btn.active svg,
+.tabs-nav > .tab-btn.active svg {
     color: var(--cyan-glow);
     filter: drop-shadow(0 0 6px var(--cyan-glow));
 }
@@ -1700,7 +1713,7 @@ body {
 
 .insights-summary-banner {
     display: grid;
-    grid-template-columns: 1.5fr 1fr 1fr 1fr;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
     gap: 16px;
     padding: 16px 20px;
     border-radius: 14px;
@@ -1847,7 +1860,7 @@ body {
 /* Spatial Reach Callout */
 .reach-stats-grid {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 140px), 1fr));
     gap: 12px;
     margin-bottom: 14px;
 }
@@ -1972,7 +1985,7 @@ body {
 /* HomeMesh Automation */
 .automation-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
     gap: 16px;
 }
 
@@ -2135,7 +2148,7 @@ body {
 /* Spatial Radar */
 .spatial-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 400px), 1fr));
     gap: 16px;
 }
 
@@ -2187,7 +2200,7 @@ body {
 
 .spatial-stats-summary {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 140px), 1fr));
     gap: 10px;
     margin-bottom: 14px;
 }
@@ -2381,12 +2394,246 @@ button.disabled-guarded {
     cursor: not-allowed !important;
 }
 
+/* View-Only Toast */
+.view-only-toast {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%) translateY(100px);
+    background: rgba(17, 24, 39, 0.95);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(245, 158, 11, 0.35);
+    color: #fcd34d;
+    padding: 12px 24px;
+    border-radius: 12px;
+    font-size: 0.85rem;
+    font-weight: 500;
+    z-index: 9998;
+    pointer-events: none;
+    opacity: 0;
+    transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.35s ease;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    white-space: nowrap;
+    max-width: 92vw;
+    text-overflow: ellipsis;
+    overflow: hidden;
+}
+
+.view-only-toast.show {
+    transform: translateX(-50%) translateY(0);
+    opacity: 1;
+}
+
 @media (max-width: 1024px) {
     .analytics-grid, .spatial-grid {
         grid-template-columns: 1fr;
     }
     .span-2 {
         grid-column: span 1;
+    }
+}
+
+@media (max-width: 768px) {
+    .app-container {
+        padding: 10px 10px 24px;
+        gap: 12px;
+    }
+
+    /* Navbar: wrap into stacked layout */
+    .navbar {
+        flex-wrap: wrap;
+        gap: 10px;
+        padding: 10px 14px;
+    }
+    .header-center {
+        order: 3;
+        width: 100%;
+        justify-content: center;
+        flex-wrap: wrap;
+        gap: 6px;
+    }
+    .header-actions {
+        gap: 8px;
+    }
+    .status-chip {
+        font-size: 0.72rem;
+        padding: 4px 8px;
+    }
+    .brand-text h1 {
+        font-size: 1.2rem;
+    }
+    .last-updated {
+        display: none;
+    }
+
+    /* Metrics ribbon: 2-column on tablet */
+    .metrics-ribbon {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 10px;
+    }
+    .metric-card {
+        padding: 10px 12px;
+        gap: 10px;
+    }
+    .metric-icon {
+        width: 36px;
+        height: 36px;
+        font-size: 1.1rem;
+    }
+    .metric-value {
+        font-size: 1.05rem;
+    }
+
+    /* Insights banner */
+    .insights-summary-banner {
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+        padding: 12px 14px;
+    }
+    .insight-stat-box {
+        border-right: none;
+        padding-right: 0;
+    }
+    .insight-metric-val {
+        font-size: 1.3rem;
+    }
+
+    /* Analytics grid: single column */
+    .analytics-grid {
+        grid-template-columns: 1fr;
+    }
+    .span-2 {
+        grid-column: span 1;
+    }
+    .analytics-grid-2col {
+        grid-template-columns: 1fr;
+    }
+
+    /* Pane toolbar: stack */
+    .pane-toolbar {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 10px;
+    }
+    .search-box {
+        min-width: unset;
+    }
+    .toolbar-title-group h2 {
+        font-size: 1rem;
+    }
+
+    /* Chat */
+    .messaging-container {
+        height: 500px;
+    }
+    .chat-header {
+        flex-direction: column;
+        gap: 8px;
+        align-items: flex-start;
+    }
+    .chat-dest-selector {
+        flex-wrap: wrap;
+    }
+
+    /* KPI ribbon */
+    .kpi-ribbon {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 10px;
+        padding: 12px 14px;
+    }
+}
+
+@media (max-width: 480px) {
+    .app-container {
+        padding: 6px 6px 18px;
+        gap: 10px;
+    }
+
+    .navbar {
+        padding: 8px 10px;
+    }
+    .brand-text h1 {
+        font-size: 1.05rem;
+    }
+    .badge-sub {
+        font-size: 0.65rem;
+    }
+
+    /* Metrics: single column on phone */
+    .metrics-ribbon {
+        grid-template-columns: 1fr;
+        gap: 8px;
+    }
+
+    /* Insights: single column */
+    .insights-summary-banner {
+        grid-template-columns: 1fr;
+        gap: 10px;
+        padding: 10px 12px;
+    }
+    .insight-metric-val {
+        font-size: 1.15rem;
+    }
+
+    /* Tabs: compact */
+    .tabs-nav {
+        padding: 6px 8px;
+        gap: 6px;
+    }
+    .tabs-row .tab-btn,
+    .tabs-nav > .tab-btn {
+        padding: 7px 10px;
+        font-size: 0.78rem;
+        gap: 5px;
+    }
+    .tabs-row .tab-btn svg,
+    .tabs-nav > .tab-btn svg {
+        width: 13px;
+        height: 13px;
+    }
+
+    /* KPI ribbon: single column */
+    .kpi-ribbon {
+        grid-template-columns: 1fr;
+        gap: 8px;
+        padding: 10px 12px;
+    }
+
+    /* Auto actions: wrap */
+    .auto-actions {
+        flex-wrap: wrap;
+    }
+
+    /* Chat input */
+    .messaging-container {
+        height: 420px;
+    }
+    .chat-input-bar {
+        padding: 10px 12px;
+    }
+
+    /* Tables: compact */
+    .data-table th,
+    .data-table td {
+        padding: 6px 8px;
+        font-size: 0.75rem;
+    }
+
+    /* Card header */
+    .card-header h3 {
+        font-size: 0.92rem;
+    }
+
+    /* Filter group */
+    .filter-group {
+        flex-wrap: wrap;
+    }
+
+    /* Sniffer controls */
+    .sniffer-controls {
+        flex-wrap: wrap;
+        gap: 6px;
     }
 }
 
@@ -2620,7 +2867,8 @@ button.disabled-guarded {
 }
 )raw_asset";
 
-inline constexpr const char* APP_JS = R"raw_asset(/*
+inline constexpr const char* APP_JS = R"raw_asset(
+/*
  * meshmon web dashboard application logic
  *
  * Copyright (C) 2026, Charles Chiou
@@ -2784,6 +3032,24 @@ function updateAuthBadge() {
     }
 }
 
+let _viewOnlyToastTimeout = null;
+function showViewOnlyToast() {
+    let toast = document.querySelector('.view-only-toast');
+    if (!toast) {
+        toast = document.createElement('div');
+        toast.className = 'view-only-toast';
+        toast.textContent = '🔒 Click "View Only" in the top navbar to authenticate and unlock controls.';
+        document.body.appendChild(toast);
+    }
+    if (_viewOnlyToastTimeout) clearTimeout(_viewOnlyToastTimeout);
+    requestAnimationFrame(() => {
+        toast.classList.add('show');
+    });
+    _viewOnlyToastTimeout = setTimeout(() => {
+        toast.classList.remove('show');
+    }, 3500);
+}
+
 function openAuthModal(msg = '') {
     const modal = document.getElementById('modal-auth');
     const errMsg = document.getElementById('auth-error-msg');
@@ -2908,7 +3174,7 @@ function renderStatus(data) {
     const dbRecsEl = document.getElementById('ribbon-db-records');
     if (dbSizeEl && data.db) {
         dbSizeEl.textContent = formatBytes(data.db.size_bytes);
-        dbRecsEl.textContent = `${(data.db.total_packets || 0).toLocaleString()} pkts &bull; ${(data.db.total_nodes || 0)} nodes`;
+        dbRecsEl.textContent = `${(data.db.total_packets || 0).toLocaleString()} pkts • ${(data.db.total_nodes || 0)} nodes`;
     }
 
     const updatedEl = document.getElementById('last-updated');
@@ -3184,8 +3450,13 @@ function renderAnalytics(data) {
     // 1. High-Level Insights Hero Banner
     if (data.traffic) {
         const tf = data.traffic;
-        const directPct = tf.direct_pct || 0;
-        const relayPct = tf.broadcast_pct || (100 - directPct);
+        const total = tf.total_packets || 0;
+        let directPct = 0;
+        let relayPct = 0;
+        if (total > 0) {
+            directPct = Math.min(100, Math.max(0, tf.direct_pct || 0));
+            relayPct = Math.max(0, 100 - directPct);
+        }
 
         const bDirect = document.getElementById('bar-direct-pct');
         const bRelay = document.getElementById('bar-relay-pct');
@@ -3193,11 +3464,11 @@ function renderAnalytics(data) {
         const lRelay = document.getElementById('lbl-relay-pct');
         const lAvgHops = document.getElementById('lbl-avg-hops');
 
-        if (bDirect) bDirect.style.width = `${Math.min(100, Math.max(0, directPct))}%`;
-        if (bRelay) bRelay.style.width = `${Math.min(100, Math.max(0, relayPct))}%`;
-        if (lDirect) lDirect.textContent = `${directPct.toFixed(1)}%`;
-        if (lRelay) lRelay.textContent = `${relayPct.toFixed(1)}%`;
-        if (lAvgHops) lAvgHops.textContent = `${(tf.avg_hops || 0).toFixed(2)}`;
+        if (bDirect) bDirect.style.width = total > 0 ? `${directPct}%` : '0%';
+        if (bRelay) bRelay.style.width = total > 0 ? `${relayPct}%` : '0%';
+        if (lDirect) lDirect.textContent = total > 0 ? `${directPct.toFixed(1)}%` : '--%';
+        if (lRelay) lRelay.textContent = total > 0 ? `${relayPct.toFixed(1)}%` : '--%';
+        if (lAvgHops) lAvgHops.textContent = total > 0 ? `${(tf.avg_hops || 0).toFixed(2)}` : '--';
     }
 
     // Critical Repeaters & Backbone Count
@@ -3387,36 +3658,44 @@ function renderSpatialReach(stats) {
 
 function renderHopsChart(hopsList) {
     const svg = document.getElementById('chart-hops');
-    const legend = document.getElementById('hops-legend');
     if (!svg) return;
 
-    if (hopsList.length === 0) {
-        svg.innerHTML = `<text x="210" y="90" text-anchor="middle" fill="#6b7280" font-size="12">No hop data available</text>`;
+    if (!hopsList || hopsList.length === 0) {
+        svg.innerHTML = `
+            <line x1="20" y1="140" x2="400" y2="140" stroke="rgba(255,255,255,0.1)" />
+            <text x="210" y="85" text-anchor="middle" fill="#6b7280" font-size="12" font-family="Inter, sans-serif">No hop propagation data in this window</text>
+        `;
         return;
     }
 
     const maxCount = Math.max(...hopsList.map(h => h.packet_count), 1);
-    const barWidth = 48;
-    const gap = 32;
-    const startX = 50;
-    const chartHeight = 130;
+    const n = hopsList.length;
+    const totalW = 360; // usable width between x=30 and x=390
+    const barWidth = Math.min(48, Math.max(20, Math.floor((totalW - (n - 1) * 12) / n)));
+    const totalBarsWidth = n * barWidth;
+    const gap = n > 1 ? Math.floor((totalW - totalBarsWidth) / (n - 1)) : 0;
+    const startX = 30 + Math.floor((totalW - (totalBarsWidth + (n - 1) * gap)) / 2);
+    const chartHeight = 110;
+    const baselineY = 140;
 
     let svgHtml = `
-        <line x1="30" y1="${chartHeight + 20}" x2="390" y2="${chartHeight + 20}" stroke="rgba(255,255,255,0.1)" />
+        <line x1="20" y1="${baselineY}" x2="400" y2="${baselineY}" stroke="rgba(255,255,255,0.1)" />
     `;
 
     hopsList.forEach((h, idx) => {
         const x = startX + idx * (barWidth + gap);
-        const hHeight = ((h.packet_count / maxCount) * chartHeight);
-        const y = chartHeight + 20 - hHeight;
+        const hHeight = Math.max(4, Math.round((h.packet_count / maxCount) * chartHeight));
+        const y = baselineY - hHeight;
 
         const label = (h.hops === 0) ? '0 (Direct)' : `${h.hops} Hop${h.hops > 1 ? 's' : ''}`;
         const color = (h.hops === 0) ? '#00f2fe' : (h.hops === 1 ? '#10b981' : (h.hops === 2 ? '#f59e0b' : '#ec4899'));
 
         svgHtml += `
-            <rect x="${x}" y="${y}" width="${barWidth}" height="${hHeight}" rx="4" fill="${color}" opacity="0.85" />
-            <text x="${x + barWidth/2}" y="${y - 6}" fill="#f3f4f6" font-size="11" font-family="JetBrains Mono" text-anchor="middle">${h.packet_count}</text>
-            <text x="${x + barWidth/2}" y="${chartHeight + 36}" fill="#9ca3af" font-size="10" text-anchor="middle">${label}</text>
+            <rect x="${x}" y="${y}" width="${barWidth}" height="${hHeight}" rx="4" fill="${color}" opacity="0.85">
+                <title>${label}: ${h.packet_count.toLocaleString()} pkts (${(h.pct || 0).toFixed(1)}%)</title>
+            </rect>
+            <text x="${x + barWidth/2}" y="${Math.max(14, y - 6)}" fill="#f3f4f6" font-size="11" font-family="JetBrains Mono" text-anchor="middle">${h.packet_count}</text>
+            <text x="${x + barWidth/2}" y="${baselineY + 18}" fill="#9ca3af" font-size="10" font-family="Inter, sans-serif" text-anchor="middle">${label}</text>
         `;
     });
 
@@ -3503,7 +3782,7 @@ function renderAutomation(data) {
         }
         if (roomTemp) roomTemp.textContent = `${(room.room_temp_c || 0).toFixed(1)}°C`;
         if (roomAcPower) roomAcPower.textContent = room.ac_power ? '🟢 Powered ON' : '⚪ OFF';
-        if (roomAcTarget) roomAcTarget.textContent = `${room.ac_target_temp || 24}°C &bull; ${room.ac_mode || 'cool'} &bull; ${room.ac_fan || 'auto'}`;
+        if (roomAcTarget) roomAcTarget.textContent = `${room.ac_target_temp || 24}°C • ${room.ac_mode || 'cool'} • ${room.ac_fan || 'auto'}`;
         if (roomTv) roomTv.textContent = room.tv_power ? `ON (Vol: ${room.tv_volume}, In: ${room.tv_input})` : 'OFF';
     }
 
@@ -3530,6 +3809,10 @@ function renderAutomation(data) {
 }
 
 async function sendAutomationCommand(deviceType, cmd) {
+    if (state.auth.auth_required && !state.auth.authenticated) {
+        showViewOnlyToast();
+        return;
+    }
     if (!state.automation || !state.automation.nodes) return;
     const node = state.automation.nodes.find(n => n.device_type === deviceType);
     if (!node) {
@@ -4368,6 +4651,15 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
+    // 9b. View-Only toast for all guarded buttons
+    document.querySelectorAll('.btn-auth-guarded').forEach(btn => {
+        btn.addEventListener('click', () => {
+            if (state.auth.auth_required && !state.auth.authenticated) {
+                showViewOnlyToast();
+            }
+        });
+    });
+
     // 10. Chat form
     document.getElementById('form-send-chat').addEventListener('submit', handleSendMessage);
 
@@ -4433,14 +4725,4 @@ document.addEventListener('DOMContentLoaded', () => {
 
 } // namespace assets
 
-#endif /* WEBASSETS_HXX */
-
-/*
- * Local variables:
- * mode: C++
- * c-file-style: "BSD"
- * c-basic-offset: 4
- * tab-width: 4
- * indent-tabs-mode: nil
- * End:
- */
+#endif // WEBASSETS_HXX

@@ -162,6 +162,24 @@ function updateAuthBadge() {
     }
 }
 
+let _viewOnlyToastTimeout = null;
+function showViewOnlyToast() {
+    let toast = document.querySelector('.view-only-toast');
+    if (!toast) {
+        toast = document.createElement('div');
+        toast.className = 'view-only-toast';
+        toast.textContent = '🔒 Click "View Only" in the top navbar to authenticate and unlock controls.';
+        document.body.appendChild(toast);
+    }
+    if (_viewOnlyToastTimeout) clearTimeout(_viewOnlyToastTimeout);
+    requestAnimationFrame(() => {
+        toast.classList.add('show');
+    });
+    _viewOnlyToastTimeout = setTimeout(() => {
+        toast.classList.remove('show');
+    }, 3500);
+}
+
 function openAuthModal(msg = '') {
     const modal = document.getElementById('modal-auth');
     const errMsg = document.getElementById('auth-error-msg');
@@ -286,7 +304,7 @@ function renderStatus(data) {
     const dbRecsEl = document.getElementById('ribbon-db-records');
     if (dbSizeEl && data.db) {
         dbSizeEl.textContent = formatBytes(data.db.size_bytes);
-        dbRecsEl.textContent = `${(data.db.total_packets || 0).toLocaleString()} pkts &bull; ${(data.db.total_nodes || 0)} nodes`;
+        dbRecsEl.textContent = `${(data.db.total_packets || 0).toLocaleString()} pkts • ${(data.db.total_nodes || 0)} nodes`;
     }
 
     const updatedEl = document.getElementById('last-updated');
@@ -562,8 +580,13 @@ function renderAnalytics(data) {
     // 1. High-Level Insights Hero Banner
     if (data.traffic) {
         const tf = data.traffic;
-        const directPct = tf.direct_pct || 0;
-        const relayPct = tf.broadcast_pct || (100 - directPct);
+        const total = tf.total_packets || 0;
+        let directPct = 0;
+        let relayPct = 0;
+        if (total > 0) {
+            directPct = Math.min(100, Math.max(0, tf.direct_pct || 0));
+            relayPct = Math.max(0, 100 - directPct);
+        }
 
         const bDirect = document.getElementById('bar-direct-pct');
         const bRelay = document.getElementById('bar-relay-pct');
@@ -571,11 +594,11 @@ function renderAnalytics(data) {
         const lRelay = document.getElementById('lbl-relay-pct');
         const lAvgHops = document.getElementById('lbl-avg-hops');
 
-        if (bDirect) bDirect.style.width = `${Math.min(100, Math.max(0, directPct))}%`;
-        if (bRelay) bRelay.style.width = `${Math.min(100, Math.max(0, relayPct))}%`;
-        if (lDirect) lDirect.textContent = `${directPct.toFixed(1)}%`;
-        if (lRelay) lRelay.textContent = `${relayPct.toFixed(1)}%`;
-        if (lAvgHops) lAvgHops.textContent = `${(tf.avg_hops || 0).toFixed(2)}`;
+        if (bDirect) bDirect.style.width = total > 0 ? `${directPct}%` : '0%';
+        if (bRelay) bRelay.style.width = total > 0 ? `${relayPct}%` : '0%';
+        if (lDirect) lDirect.textContent = total > 0 ? `${directPct.toFixed(1)}%` : '--%';
+        if (lRelay) lRelay.textContent = total > 0 ? `${relayPct.toFixed(1)}%` : '--%';
+        if (lAvgHops) lAvgHops.textContent = total > 0 ? `${(tf.avg_hops || 0).toFixed(2)}` : '--';
     }
 
     // Critical Repeaters & Backbone Count
@@ -765,36 +788,44 @@ function renderSpatialReach(stats) {
 
 function renderHopsChart(hopsList) {
     const svg = document.getElementById('chart-hops');
-    const legend = document.getElementById('hops-legend');
     if (!svg) return;
 
-    if (hopsList.length === 0) {
-        svg.innerHTML = `<text x="210" y="90" text-anchor="middle" fill="#6b7280" font-size="12">No hop data available</text>`;
+    if (!hopsList || hopsList.length === 0) {
+        svg.innerHTML = `
+            <line x1="20" y1="140" x2="400" y2="140" stroke="rgba(255,255,255,0.1)" />
+            <text x="210" y="85" text-anchor="middle" fill="#6b7280" font-size="12" font-family="Inter, sans-serif">No hop propagation data in this window</text>
+        `;
         return;
     }
 
     const maxCount = Math.max(...hopsList.map(h => h.packet_count), 1);
-    const barWidth = 48;
-    const gap = 32;
-    const startX = 50;
-    const chartHeight = 130;
+    const n = hopsList.length;
+    const totalW = 360; // usable width between x=30 and x=390
+    const barWidth = Math.min(48, Math.max(20, Math.floor((totalW - (n - 1) * 12) / n)));
+    const totalBarsWidth = n * barWidth;
+    const gap = n > 1 ? Math.floor((totalW - totalBarsWidth) / (n - 1)) : 0;
+    const startX = 30 + Math.floor((totalW - (totalBarsWidth + (n - 1) * gap)) / 2);
+    const chartHeight = 110;
+    const baselineY = 140;
 
     let svgHtml = `
-        <line x1="30" y1="${chartHeight + 20}" x2="390" y2="${chartHeight + 20}" stroke="rgba(255,255,255,0.1)" />
+        <line x1="20" y1="${baselineY}" x2="400" y2="${baselineY}" stroke="rgba(255,255,255,0.1)" />
     `;
 
     hopsList.forEach((h, idx) => {
         const x = startX + idx * (barWidth + gap);
-        const hHeight = ((h.packet_count / maxCount) * chartHeight);
-        const y = chartHeight + 20 - hHeight;
+        const hHeight = Math.max(4, Math.round((h.packet_count / maxCount) * chartHeight));
+        const y = baselineY - hHeight;
 
         const label = (h.hops === 0) ? '0 (Direct)' : `${h.hops} Hop${h.hops > 1 ? 's' : ''}`;
         const color = (h.hops === 0) ? '#00f2fe' : (h.hops === 1 ? '#10b981' : (h.hops === 2 ? '#f59e0b' : '#ec4899'));
 
         svgHtml += `
-            <rect x="${x}" y="${y}" width="${barWidth}" height="${hHeight}" rx="4" fill="${color}" opacity="0.85" />
-            <text x="${x + barWidth/2}" y="${y - 6}" fill="#f3f4f6" font-size="11" font-family="JetBrains Mono" text-anchor="middle">${h.packet_count}</text>
-            <text x="${x + barWidth/2}" y="${chartHeight + 36}" fill="#9ca3af" font-size="10" text-anchor="middle">${label}</text>
+            <rect x="${x}" y="${y}" width="${barWidth}" height="${hHeight}" rx="4" fill="${color}" opacity="0.85">
+                <title>${label}: ${h.packet_count.toLocaleString()} pkts (${(h.pct || 0).toFixed(1)}%)</title>
+            </rect>
+            <text x="${x + barWidth/2}" y="${Math.max(14, y - 6)}" fill="#f3f4f6" font-size="11" font-family="JetBrains Mono" text-anchor="middle">${h.packet_count}</text>
+            <text x="${x + barWidth/2}" y="${baselineY + 18}" fill="#9ca3af" font-size="10" font-family="Inter, sans-serif" text-anchor="middle">${label}</text>
         `;
     });
 
@@ -881,7 +912,7 @@ function renderAutomation(data) {
         }
         if (roomTemp) roomTemp.textContent = `${(room.room_temp_c || 0).toFixed(1)}°C`;
         if (roomAcPower) roomAcPower.textContent = room.ac_power ? '🟢 Powered ON' : '⚪ OFF';
-        if (roomAcTarget) roomAcTarget.textContent = `${room.ac_target_temp || 24}°C &bull; ${room.ac_mode || 'cool'} &bull; ${room.ac_fan || 'auto'}`;
+        if (roomAcTarget) roomAcTarget.textContent = `${room.ac_target_temp || 24}°C • ${room.ac_mode || 'cool'} • ${room.ac_fan || 'auto'}`;
         if (roomTv) roomTv.textContent = room.tv_power ? `ON (Vol: ${room.tv_volume}, In: ${room.tv_input})` : 'OFF';
     }
 
@@ -908,6 +939,10 @@ function renderAutomation(data) {
 }
 
 async function sendAutomationCommand(deviceType, cmd) {
+    if (state.auth.auth_required && !state.auth.authenticated) {
+        showViewOnlyToast();
+        return;
+    }
     if (!state.automation || !state.automation.nodes) return;
     const node = state.automation.nodes.find(n => n.device_type === deviceType);
     if (!node) {
@@ -1742,6 +1777,15 @@ document.addEventListener('DOMContentLoaded', () => {
             const target = btn.getAttribute('data-target');
             if (cmd && target) {
                 sendAutomationCommand(target, cmd);
+            }
+        });
+    });
+
+    // 9b. View-Only toast for all guarded buttons
+    document.querySelectorAll('.btn-auth-guarded').forEach(btn => {
+        btn.addEventListener('click', () => {
+            if (state.auth.auth_required && !state.auth.authenticated) {
+                showViewOnlyToast();
             }
         });
     });
