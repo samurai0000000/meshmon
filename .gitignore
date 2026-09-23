@@ -1,4 +1,5 @@
 build/
 .cursor
 .agents
-plan/
+plan/*
+!plan/done/
