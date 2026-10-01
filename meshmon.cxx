@@ -32,6 +32,8 @@
 #include "MeshMonDb.hxx"
 #include "AimonGatewayClient.hxx"
 #include "WebServer.hxx"
+#include "InstanceLock.hxx"
+#include "NcursesConsole.hxx"
 #include "version.h"
 
 using namespace libconfig;
@@ -52,6 +54,9 @@ void sighandler(int signum)
     char c = 1;
 
     (void)(signum);
+    if (NcursesConsole::getInstance().isRunning()) {
+        NcursesConsole::getInstance().shutdown();
+    }
     g_stop = 1;
     if (g_stop_pipe[1] != -1) {
         ssize_t ret = write(g_stop_pipe[1], &c, 1);
@@ -177,104 +182,14 @@ static void ensureConfigDirExists(const string &dir)
     }
 }
 
-static int g_lockFd = -1;
-static string g_lockPath;
-
-static string getLockFilePath(void)
-{
-    string cfgDir = getConfigDir();
-    ensureConfigDirExists(cfgDir);
-    return cfgDir + "/meshmon.lock";
-}
-
-static bool acquirePidLock(void)
-{
-    g_lockPath = getLockFilePath();
-
-    g_lockFd = open(g_lockPath.c_str(), O_RDWR | O_CREAT, 0644);
-    if (g_lockFd == -1) {
-        cerr << g_lockPath << ": " << strerror(errno) << endl;
-        return false;
-    }
-
-    fcntl(g_lockFd, F_SETFD, FD_CLOEXEC);
-
-    if (flock(g_lockFd, LOCK_EX | LOCK_NB) == -1) {
-        if ((errno == EWOULDBLOCK) || (errno == EAGAIN)) {
-            char buf[64];
-            memset(buf, 0, sizeof(buf));
-            ssize_t n = read(g_lockFd, buf, sizeof(buf) - 1);
-            if (n > 0) {
-                while ((n > 0) &&
-                       ((buf[n - 1] == '\n') || (buf[n - 1] == '\r') ||
-                        (buf[n - 1] == ' '))) {
-                    buf[--n] = '\0';
-                }
-                cerr << "Another instance of meshmon is already running (PID "
-                     << buf << ")" << endl;
-            } else {
-                cerr << "Another instance of meshmon is already running"
-                     << endl;
-            }
-        } else {
-            cerr << "Failed to lock " << g_lockPath << ": "
-                 << strerror(errno) << endl;
-        }
-        close(g_lockFd);
-        g_lockFd = -1;
-        return false;
-    }
-
-    if ((ftruncate(g_lockFd, 0) == -1) ||
-        (lseek(g_lockFd, 0, SEEK_SET) == -1)) {
-        cerr << "Failed to truncate " << g_lockPath << ": "
-             << strerror(errno) << endl;
-        close(g_lockFd);
-        g_lockFd = -1;
-        return false;
-    }
-
-    string pidStr = to_string((long) getpid()) + "\n";
-    if (write(g_lockFd, pidStr.c_str(), pidStr.size()) == -1) {
-        cerr << "Failed to write PID to " << g_lockPath << ": "
-             << strerror(errno) << endl;
-        close(g_lockFd);
-        g_lockFd = -1;
-        return false;
-    }
-    fsync(g_lockFd);
-
-    return true;
-}
-
-static void updatePidLock(void)
-{
-    if (g_lockFd != -1) {
-        if ((ftruncate(g_lockFd, 0) != -1) &&
-            (lseek(g_lockFd, 0, SEEK_SET) != -1)) {
-            string pidStr = to_string((long) getpid()) + "\n";
-            ssize_t n = write(g_lockFd, pidStr.c_str(), pidStr.size());
-            (void) n;
-            fsync(g_lockFd);
-        }
-    }
-}
-
-static void releasePidLock(void)
-{
-    if (g_lockFd != -1) {
-        if (!g_lockPath.empty()) {
-            unlink(g_lockPath.c_str());
-        }
-        flock(g_lockFd, LOCK_UN);
-        close(g_lockFd);
-        g_lockFd = -1;
-    }
-}
+static InstanceLock g_instanceLock;
 
 void cleanup(void)
 {
-    releasePidLock();
+    if (NcursesConsole::getInstance().isRunning()) {
+        NcursesConsole::getInstance().shutdown();
+    }
+    g_instanceLock.release();
     mosquitto_lib_cleanup();
     curl_global_cleanup();
 }
@@ -1012,7 +927,11 @@ int main(int argc, char **argv)
         devices.push_back(string(DEFAULT_DEVICE));
     }
 
-    if (!acquirePidLock()) {
+    if (!g_instanceLock.acquire()) {
+        cerr << "Another instance of meshmon is already running on host '"
+             << g_instanceLock.getHostname() << "' (PID "
+             << g_instanceLock.getExistingPid() << ")" << endl
+             << "Lock file: " << g_instanceLock.getLockFilePath() << endl;
         exit(EXIT_FAILURE);
     }
 
@@ -1028,16 +947,16 @@ int main(int argc, char **argv)
         pid = fork();
         if (pid == -1) {
             cerr << "fork failed!" << endl;
-            releasePidLock();
+            g_instanceLock.release();
             exit(EXIT_FAILURE);
         } else if (pid != 0) {
             exit(EXIT_SUCCESS);
         }
 
-        updatePidLock();
+        g_instanceLock.updatePid();
 
         if (setsid() == -1) {
-            releasePidLock();
+            g_instanceLock.release();
             exit(EXIT_FAILURE);
         }
 
@@ -1069,14 +988,14 @@ int main(int argc, char **argv)
     ret = mosquitto_lib_init();
     if (ret != MOSQ_ERR_SUCCESS) {
         fprintf(stderr, "mosquitto_lib_init failed (%d)!\n", ret);
-        releasePidLock();
+        g_instanceLock.release();
         exit(EXIT_FAILURE);
     }
 
     ret = curl_global_init(CURL_GLOBAL_DEFAULT);
     if (ret != CURLE_OK) {
         fprintf(stderr, "curl_global_init failed (%d)!\n", ret);
-        releasePidLock();
+        g_instanceLock.release();
         exit(EXIT_FAILURE);
     }
 
@@ -1176,14 +1095,13 @@ int main(int argc, char **argv)
             shell->setClient(mon);
             shell->setNvm(mon);
             shell->setDb(g_db);
-            if (shell->bindPort(port)) {
-                netShells.push_back(shell);
+            if (!shell->bindPort(port)) {
+                cerr << "Failed to bind CLI shell to port " << port << endl;
+                ret = EXIT_FAILURE;
+                g_stop = 1;
+                break;
             }
-            if (port < 65535) {
-                port++;
-            } else {
-                port = 0;
-            }
+            netShells.push_back(shell);
         }
     }
 
@@ -1201,17 +1119,46 @@ int main(int argc, char **argv)
 
     if (webConfig.enabled && !mons.empty() && !g_stop) {
         g_webServer = make_shared<WebServer>(mons[0], g_db, webConfig);
-        g_webServer->start(true);
-        weak_ptr<WebServer> weakWs = g_webServer;
-        mons[0]->addPacketListener([weakWs](const meshtastic_MeshPacket &pkt, time_t t) {
-            auto ws = weakWs.lock();
-            if (ws) {
-                ws->onPacketReceived(pkt, t);
-            }
-        });
+        if (!g_webServer->start(true)) {
+            cerr << "Failed to start WebServer on " << webConfig.host
+                 << ":" << webConfig.port << endl;
+            ret = EXIT_FAILURE;
+            g_stop = 1;
+        } else {
+            weak_ptr<WebServer> weakWs = g_webServer;
+            mons[0]->addPacketListener([weakWs](const meshtastic_MeshPacket &pkt, time_t t) {
+                auto ws = weakWs.lock();
+                if (ws) {
+                    ws->onPacketReceived(pkt, t);
+                }
+            });
+        }
     }
 
-    if (stdioShell && !g_stop) {
+    bool useNcurses = (useStdioShell && isatty(STDIN_FILENO) && !daemon && !g_stop);
+    if (useNcurses) {
+        NcursesConsole::getInstance().setShutdownCallback([]() {
+            g_stop = 1;
+            if (g_stop_pipe[1] != -1) {
+                char c = 1;
+                ssize_t ret = write(g_stop_pipe[1], &c, 1);
+                (void) ret;
+            }
+        });
+        NcursesConsole::getInstance().setShell(stdioShell);
+        if (!mons.empty()) {
+            NcursesConsole::getInstance().setMon(mons[0]);
+        }
+        NcursesConsole::getInstance().setDb(g_db);
+        if (!NcursesConsole::getInstance().init()) {
+            useNcurses = false;
+        }
+    }
+
+    if (useNcurses) {
+        NcursesConsole::getInstance().run();
+        NcursesConsole::getInstance().shutdown();
+    } else if (stdioShell && !g_stop) {
         // Attach last to let net shells print to stdout before we output
         // the prompt on stdio
         stdioShell->attachStdio();

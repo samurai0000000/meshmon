@@ -15,10 +15,13 @@
 #include <cerrno>
 
 #include <ctime>
+#include <iostream>
 #include <string>
 
 MeshMonShell::MeshMonShell(shared_ptr<MeshClient> client)
     : MeshShell(client)
+    , _ncursesMode(false)
+    , _isExecutingCommand(false)
 {
     _help_list.push_back("calib");
     _help_list.push_back("chatbot");
@@ -36,10 +39,44 @@ void MeshMonShell::setDb(shared_ptr<MeshMonDb> db)
     _db = db;
 }
 
+void MeshMonShell::setNcursesMode(bool enabled)
+{
+    _ncursesMode = enabled;
+}
+
+int MeshMonShell::executeCommand(const std::string &cmdline)
+{
+    _isExecutingCommand = true;
+    char buf[512];
+    strncpy(buf, cmdline.c_str(), sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+    int ret = this->exec(buf);
+    _isExecutingCommand = false;
+    return ret;
+}
+
+int MeshMonShell::vprintf(const char *format, va_list ap)
+{
+    if (_ncursesMode) {
+        if (_isExecutingCommand) {
+            char pbuf[2048];
+            int ret = vsnprintf(pbuf, sizeof(pbuf), format, ap);
+            if (ret > 0) {
+                std::cout << pbuf;
+            }
+            return ret;
+        }
+        return 0;
+    }
+
+    return MeshShell::vprintf(format, ap);
+}
+
 shared_ptr<MeshShell> MeshMonShell::newInstance(void)
 {
     shared_ptr<MeshMonShell> shell = make_shared<MeshMonShell>();
     shell->setDb(_db);
+    shell->setNcursesMode(_ncursesMode);
     return shell;
 }
 

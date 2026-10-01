@@ -85,6 +85,17 @@ bool WebServer::start(bool async)
 
     _server->set_read_timeout(1, 0);
     _server->set_write_timeout(5, 0);
+    _server->set_socket_options([](socket_t sock) {
+        int val = 1;
+        setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (const void *) &val, sizeof(val));
+    });
+
+    if (!_server->bind_to_port(_config.host.c_str(), _config.port)) {
+        cerr << "[WebServer] Error: Failed to bind to "
+             << _config.host << ":" << _config.port << " ("
+             << strerror(errno) << ")" << endl;
+        return false;
+    }
 
     _running = true;
     cout << "[WebServer] Initializing embedded HTTP server on "
@@ -92,16 +103,16 @@ bool WebServer::start(bool async)
 
     if (async) {
         _thread = make_unique<thread>([this]() {
-            if (!_server->listen(_config.host.c_str(), _config.port)) {
-                cerr << "[WebServer] Error: Failed to bind or listen on "
+            if (!_server->listen_after_bind()) {
+                cerr << "[WebServer] Error: Failed to listen on "
                      << _config.host << ":" << _config.port << endl;
                 _running = false;
             }
         });
-        this_thread::sleep_for(chrono::milliseconds(50));
+        _server->wait_until_ready();
         return _running;
     } else {
-        return _server->listen(_config.host.c_str(), _config.port);
+        return _server->listen_after_bind();
     }
 }
 

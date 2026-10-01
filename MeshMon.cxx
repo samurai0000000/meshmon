@@ -19,6 +19,7 @@
 #include <fstream>
 #include <MqttClient.hxx>
 #include <MeshMon.hxx>
+#include <NcursesConsole.hxx>
 
 #ifndef DEBUG_CHATBOT
 #define DEBUG_CHATBOT 0
@@ -1943,6 +1944,21 @@ static inline int stdio_vprintf(const char *format, va_list ap)
 
 int MeshMon::vprintf(const char *format, va_list ap) const
 {
+    if (NcursesConsole::getInstance().isRunning()) {
+        char buf[2048];
+        int n = vsnprintf(buf, sizeof(buf), format, ap);
+        if (n > 0) {
+            std::string s(buf, n);
+            while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) {
+                s.pop_back();
+            }
+            if (!s.empty()) {
+                NcursesConsole::getInstance().logServer(s, NcursesConsole::PAIR_MUTED);
+            }
+        }
+        return n;
+    }
+
     return stdio_vprintf(format, ap);
 }
 

@@ -25,6 +25,13 @@ public:
         return _db;
     }
 
+    void setNcursesMode(bool enabled);
+    inline bool isNcursesMode(void) const {
+        return _ncursesMode;
+    }
+
+    int executeCommand(const std::string &cmdline);
+
     static string formatRelativeTime(time_t timestamp);
     static const char *hardwareModelString(meshtastic_HardwareModel model);
     static const char *roleString(meshtastic_Config_DeviceConfig_Role role);
@@ -33,6 +40,7 @@ public:
 protected:
 
     virtual shared_ptr<MeshShell> newInstance(void);
+    virtual int vprintf(const char *format, va_list ap);
     virtual int help(int argc, char **argv);
     virtual int system(int argc, char **argv);
     virtual int status(int argc, char **argv);
@@ -62,6 +70,8 @@ private:
     void printNodeStatus(uint32_t nodeId);
 
     shared_ptr<MeshMonDb> _db;
+    bool _ncursesMode;
+    std::atomic<bool> _isExecutingCommand;
 
 };
 

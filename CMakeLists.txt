@@ -4,7 +4,7 @@
 
 cmake_minimum_required(VERSION 3.13)
 
-project(meshmon VERSION 2.1.19 LANGUAGES C CXX ASM)
+project(meshmon VERSION 2.1.20 LANGUAGES C CXX ASM)
 
 find_package(SQLite3 REQUIRED)
 find_package(Mosquitto QUIET)
@@ -92,15 +92,18 @@ configure_file(
   )
 
 find_package(Threads REQUIRED)
+find_package(Curses REQUIRED)
 
 add_executable(meshmon meshmon.cxx MeshMon.cxx MeshMonShell.cxx MqttClient.cxx
   ChatBot.cxx GeminiChat.cxx Calibration.cxx MeshMonDb.cxx
   AutomationDevice.cxx MeshPumpDevice.cxx MeshRoofDevice.cxx MeshRoomDevice.cxx
-  AimonGatewayClient.cxx WebServer.cxx SpatialAnalytics.cxx)
+  AimonGatewayClient.cxx WebServer.cxx SpatialAnalytics.cxx InstanceLock.cxx
+  NcursesConsole.cxx)
 target_include_directories(meshmon PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
 target_include_directories(meshmon PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/json/include
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/cpp-httplib
+  ${CURSES_INCLUDE_DIRS}
   ${SQLite3_INCLUDE_DIRS}
   ${MOSQUITTO_INCLUDE_DIR}
   ${CONFIG++_INCLUDE_DIR}
@@ -108,6 +111,7 @@ target_include_directories(meshmon PRIVATE
 target_link_libraries(meshmon PRIVATE
   libmeshtastic
   Threads::Threads
+  ${CURSES_LIBRARIES}
   ${SQLite3_LIBRARIES}
   ${MOSQUITTO_LIBRARY}
   ${CONFIG++_LIBRARY})

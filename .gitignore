@@ -3,3 +3,4 @@ build/
 .agents
 plan/*
 !plan/done/
+.claude
