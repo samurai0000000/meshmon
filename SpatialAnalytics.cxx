@@ -45,6 +45,7 @@ void SpatialAnalytics::getReferenceCoords(double &refLat, double &refLon, int &r
     refName = "Gateway Reference";
 
     if (_mon != nullptr) {
+        SimpleClient::ScopedLock lock(_mon);
         uint32_t myNode = _mon->whoami();
         if (myNode != 0) {
             string shortName = _mon->lookupShortName(myNode);
@@ -115,15 +116,16 @@ bool SpatialAnalytics::isNodeOnPremise(uint32_t nodeId, double lat, double lon, 
 
     // 1. Attached Radio (Gateway) is always On-Premise
     if (_mon != nullptr) {
+        SimpleClient::ScopedLock lock(_mon);
         if (nodeId == _mon->whoami()) {
             return true;
         }
 
         // 2. Administrators & Mates are unconditionally On-Premise
-        if (_mon->admins().find(nodeId) != _mon->admins().end()) {
+        if (_mon->admins().count(nodeId) > 0) {
             return true;
         }
-        if (_mon->mates().find(nodeId) != _mon->mates().end()) {
+        if (_mon->mates().count(nodeId) > 0) {
             return true;
         }
     }
@@ -220,16 +222,9 @@ json SpatialAnalytics::getSpatialJson(double thresholdM)
         return j;
     }
 
-    string sql =
-        "SELECT p.node_id, n.short_name, n.long_name, p.latitude, p.longitude, p.altitude, max(p.meshmon_time) "
-        "FROM positions p "
-        "LEFT JOIN nodes n ON p.node_id = n.node_id "
-        "WHERE p.latitude != 0 AND p.longitude != 0 "
-        "GROUP BY p.node_id;";
-
-    QueryResult qres;
-    if (!_db->executeRawQuery(sql, qres)) {
-        j["error"] = qres.error;
+    vector<RemoteNodeAnalyticsRow> rows;
+    if (!_db->getRemoteNodeAnalytics(rows)) {
+        j["error"] = "Failed to query remote node analytics";
         return j;
     }
 
@@ -238,23 +233,26 @@ json SpatialAnalytics::getSpatialJson(double thresholdM)
     string farthestNode = "-";
     size_t onPremiseCount = 0;
 
-    for (const auto &row : qres.rows) {
-        if (row.size() < 7) continue;
-        uint32_t nodeId = (uint32_t) strtoul(row[0].c_str(), nullptr, 10);
-        string shortName = (row[1] != "NULL" && !row[1].empty()) ? row[1] : "-";
-        string longName = (row[2] != "NULL" && !row[2].empty()) ? row[2] : "-";
-        double lat = strtod(row[3].c_str(), nullptr);
-        double lon = strtod(row[4].c_str(), nullptr);
-        int alt = (int) strtol(row[5].c_str(), nullptr, 10);
-        time_t lastSeen = (time_t) strtoul(row[6].c_str(), nullptr, 10);
+    for (const auto &row : rows) {
+        if (!row.hasGps) {
+            continue;
+        }
+        uint32_t nodeId = row.nodeId;
+        const string &shortName = row.shortName;
+        const string &longName = row.longName;
+        double lat = row.lat;
+        double lon = row.lon;
+        int alt = row.alt;
+        time_t lastSeen = (row.lastPosTime > 0) ? row.lastPosTime : row.lastSeen;
 
         double dist = haversineMeters(refLat, refLon, lat, lon);
         double bearing = calculateBearing(refLat, refLon, lat, lon);
         string compass = bearingToCompass(bearing);
 
-        // Use authoritative classification (respects mates & admins)
         bool onPremise = isNodeOnPremise(nodeId, lat, lon, thresholdM);
-        if (onPremise) onPremiseCount++;
+        if (onPremise) {
+            onPremiseCount++;
+        }
 
         if (dist > farthestDist) {
             farthestDist = dist;
@@ -323,23 +321,10 @@ json SpatialAnalytics::getRemoteSummaryJson(double thresholdM)
         return j;
     }
 
-    // Get total mesh packet count for airtime share calculation
     uint64_t totalMeshPackets = _db->getTotalPacketCount();
-
-    // Query all nodes with their latest GPS positions and first/last seen
-    string sql =
-        "SELECT n.node_id, coalesce(n.short_name, ''), coalesce(n.long_name, ''), "
-        "coalesce(n.hw_model, 0), coalesce(n.role, 0), "
-        "coalesce(p.latitude, 0.0), coalesce(p.longitude, 0.0), coalesce(p.altitude, 0), "
-        "coalesce(n.first_seen, 0), coalesce(n.last_seen, 0) "
-        "FROM nodes n "
-        "LEFT JOIN (SELECT node_id, latitude, longitude, altitude, max(meshmon_time) "
-        "           FROM positions WHERE latitude != 0 AND longitude != 0 GROUP BY node_id) p "
-        "ON n.node_id = p.node_id;";
-
-    QueryResult qres;
-    if (!_db->executeRawQuery(sql, qres)) {
-        j["error"] = qres.error;
+    vector<RemoteNodeAnalyticsRow> rows;
+    if (!_db->getRemoteNodeAnalytics(rows)) {
+        j["error"] = "Failed to query remote node analytics";
         return j;
     }
 
@@ -352,33 +337,21 @@ json SpatialAnalytics::getRemoteSummaryJson(double thresholdM)
     double farthestDistance = 0.0;
     string farthestNode = "-";
 
-    for (const auto &row : qres.rows) {
-        if (row.size() < 10) continue;
-        uint32_t nodeId = (uint32_t) strtoul(row[0].c_str(), nullptr, 10);
-        string shortName = (row[1] != "NULL" && !row[1].empty()) ? row[1] : "-";
-        double lat = strtod(row[5].c_str(), nullptr);
-        double lon = strtod(row[6].c_str(), nullptr);
-
-        // Check if On-Premise
-        if (isNodeOnPremise(nodeId, lat, lon, thresholdM)) {
-            continue; // Skip On-Premise
+    for (const auto &row : rows) {
+        if (isNodeOnPremise(row.nodeId, row.lat, row.lon, thresholdM)) {
+            continue;
         }
 
-        // Node is Off-Premise (Remote)
-        bool hasGps = (lat != 0.0 && lon != 0.0);
-        if (hasGps) {
+        if (row.hasGps) {
             remoteGpsCount++;
-            double dist = haversineMeters(refLat, refLon, lat, lon);
+            double dist = haversineMeters(refLat, refLon, row.lat, row.lon);
             sumDistance += dist;
             if (dist > farthestDistance) {
                 farthestDistance = dist;
-                farthestNode = formatNodeHex(nodeId) + " (" + shortName + ")";
+                farthestNode = formatNodeHex(row.nodeId) + " (" + row.shortName + ")";
             }
 
-            string mobility;
-            double displacement = 0.0;
-            calculateNodeMobility(nodeId, mobility, displacement);
-            if (mobility == "Mobile Tracker") {
+            if (row.mobility == "Mobile Tracker") {
                 mobileCount++;
             } else {
                 stationaryCount++;
@@ -387,12 +360,7 @@ json SpatialAnalytics::getRemoteSummaryJson(double thresholdM)
             remoteRfOnlyCount++;
         }
 
-        // Query packet count for this remote node
-        string pktSql = "SELECT count(*) FROM packets WHERE from_node = " + to_string(nodeId) + ";";
-        QueryResult pktRes;
-        if (_db->executeRawQuery(pktSql, pktRes) && !pktRes.rows.empty()) {
-            remotePackets += (uint64_t) strtoull(pktRes.rows[0][0].c_str(), nullptr, 10);
-        }
+        remotePackets += row.totalPackets;
     }
 
     size_t totalRemote = remoteGpsCount + remoteRfOnlyCount;
@@ -440,66 +408,51 @@ json SpatialAnalytics::getRemoteNodesJson(double thresholdM)
         return j;
     }
 
-    string sql =
-        "SELECT n.node_id, coalesce(n.short_name, ''), coalesce(n.long_name, ''), "
-        "coalesce(n.hw_model, 0), coalesce(n.role, 0), "
-        "coalesce(p.latitude, 0.0), coalesce(p.longitude, 0.0), coalesce(p.altitude, 0), "
-        "coalesce(n.first_seen, 0), coalesce(n.last_seen, 0) "
-        "FROM nodes n "
-        "LEFT JOIN (SELECT node_id, latitude, longitude, altitude, max(meshmon_time) "
-        "           FROM positions WHERE latitude != 0 AND longitude != 0 GROUP BY node_id) p "
-        "ON n.node_id = p.node_id;";
-
-    QueryResult qres;
-    if (!_db->executeRawQuery(sql, qres)) {
-        j["error"] = qres.error;
+    vector<RemoteNodeAnalyticsRow> rows;
+    if (!_db->getRemoteNodeAnalytics(rows)) {
+        j["error"] = "Failed to query remote node analytics";
         return j;
     }
 
     json nodesArr = json::array();
 
-    for (const auto &row : qres.rows) {
-        if (row.size() < 10) continue;
-        uint32_t nodeId = (uint32_t) strtoul(row[0].c_str(), nullptr, 10);
-        string shortName = (row[1] != "NULL" && !row[1].empty()) ? row[1] : "-";
-        string longName = (row[2] != "NULL" && !row[2].empty()) ? row[2] : "-";
-        int hwModel = (int) strtol(row[3].c_str(), nullptr, 10);
-        int role = (int) strtol(row[4].c_str(), nullptr, 10);
-        double lat = strtod(row[5].c_str(), nullptr);
-        double lon = strtod(row[6].c_str(), nullptr);
-        int alt = (int) strtol(row[7].c_str(), nullptr, 10);
-        time_t firstSeen = (time_t) strtoul(row[8].c_str(), nullptr, 10);
-        time_t lastSeen = (time_t) strtoul(row[9].c_str(), nullptr, 10);
-
-        // Exclude On-Premise nodes
-        if (isNodeOnPremise(nodeId, lat, lon, thresholdM)) {
+    for (const auto &row : rows) {
+        if (isNodeOnPremise(row.nodeId, row.lat, row.lon, thresholdM)) {
             continue;
         }
 
         RemoteNodeProfile prof;
-        prof.nodeId = nodeId;
-        prof.nodeHex = formatNodeHex(nodeId);
-        prof.shortName = shortName;
-        prof.longName = longName;
-        prof.hwModel = hwModel;
-        prof.role = role;
-        prof.firstSeen = firstSeen;
-        prof.lastSeen = lastSeen;
+        prof.nodeId = row.nodeId;
+        prof.nodeHex = formatNodeHex(row.nodeId);
+        prof.shortName = row.shortName;
+        prof.longName = row.longName;
+        prof.hwModel = row.hwModel;
+        prof.role = row.role;
+        prof.firstSeen = row.firstSeen;
+        prof.lastSeen = row.lastSeen;
+        prof.hasGps = row.hasGps;
+        prof.lat = row.lat;
+        prof.lon = row.lon;
+        prof.alt = row.alt;
+        prof.totalPackets = row.totalPackets;
+        prof.totalBytes = row.totalBytes;
+        prof.avgHops = row.avgHops;
+        prof.avgSnr = row.avgSnr;
+        prof.minSnr = row.minSnr;
+        prof.maxSnr = row.maxSnr;
+        prof.avgRssi = row.avgRssi;
+        prof.directPackets = row.directPackets;
+        prof.relayedPackets = row.relayedPackets;
 
-        bool hasGps = (lat != 0.0 && lon != 0.0);
-        prof.hasGps = hasGps;
-        prof.lat = lat;
-        prof.lon = lon;
-        prof.alt = alt;
-
-        if (hasGps) {
-            prof.distanceMeters = haversineMeters(refLat, refLon, lat, lon);
-            prof.bearingDeg = calculateBearing(refLat, refLon, lat, lon);
+        if (row.hasGps) {
+            prof.distanceMeters = haversineMeters(refLat, refLon, row.lat, row.lon);
+            prof.bearingDeg = calculateBearing(refLat, refLon, row.lat, row.lon);
             prof.compassDir = bearingToCompass(prof.bearingDeg);
-            prof.altDeltaMeters = alt - refAlt;
-            calculateNodeMobility(nodeId, prof.mobility, prof.maxDisplacementM);
+            prof.altDeltaMeters = row.alt - refAlt;
+            prof.mobility = row.mobility;
+            prof.maxDisplacementM = row.maxDisplacementM;
         } else {
-            prof.distanceMeters = -1.0; // Indicates RF-Only
+            prof.distanceMeters = -1.0;
             prof.bearingDeg = -1.0;
             prof.compassDir = "--";
             prof.altDeltaMeters = 0;
@@ -507,39 +460,9 @@ json SpatialAnalytics::getRemoteNodesJson(double thresholdM)
             prof.maxDisplacementM = 0.0;
         }
 
-        // Query packet metrics for this node
-        string pktSql =
-            "SELECT count(*), coalesce(sum(payload_size), 0), coalesce(avg(hops), 0.0), "
-            "coalesce(avg(rx_snr), 0.0), coalesce(min(rx_snr), 0.0), coalesce(max(rx_snr), 0.0), "
-            "coalesce(avg(rx_rssi), 0.0), "
-            "coalesce(sum(case when hops = 0 then 1 else 0 end), 0), "
-            "coalesce(sum(case when hops > 0 then 1 else 0 end), 0) "
-            "FROM packets WHERE from_node = " + to_string(nodeId) + ";";
-
-        QueryResult pRes;
-        if (_db->executeRawQuery(pktSql, pRes) && !pRes.rows.empty()) {
-            const auto &prow = pRes.rows[0];
-            prof.totalPackets = (uint32_t) strtoul(prow[0].c_str(), nullptr, 10);
-            prof.totalBytes = (uint64_t) strtoull(prow[1].c_str(), nullptr, 10);
-            prof.avgHops = (float) strtod(prow[2].c_str(), nullptr);
-            prof.avgSnr = (float) strtod(prow[3].c_str(), nullptr);
-            prof.minSnr = (float) strtod(prow[4].c_str(), nullptr);
-            prof.maxSnr = (float) strtod(prow[5].c_str(), nullptr);
-            prof.avgRssi = (float) strtod(prow[6].c_str(), nullptr);
-            prof.directPackets = (uint32_t) strtoul(prow[7].c_str(), nullptr, 10);
-            prof.relayedPackets = (uint32_t) strtoul(prow[8].c_str(), nullptr, 10);
-        }
-
-        // Application spectrum (portnums)
-        string appSql = "SELECT portnum, count(*) FROM packets WHERE from_node = " +
-                        to_string(nodeId) + " GROUP BY portnum;";
-        QueryResult aRes;
         json appObj = json::object();
-        if (_db->executeRawQuery(appSql, aRes)) {
-            for (const auto &arow : aRes.rows) {
-                if (arow.size() < 2) continue;
-                appObj[arow[0]] = (uint32_t) strtoul(arow[1].c_str(), nullptr, 10);
-            }
+        for (const auto &kv : row.portnumCounts) {
+            appObj[to_string(kv.first)] = kv.second;
         }
 
         nodesArr.push_back({
@@ -574,7 +497,6 @@ json SpatialAnalytics::getRemoteNodesJson(double thresholdM)
         });
     }
 
-    // Sort descending by total packets (top talkers first)
     sort(nodesArr.begin(), nodesArr.end(), [](const json &a, const json &b) {
         return a["total_packets"].get<uint32_t>() > b["total_packets"].get<uint32_t>();
     });
@@ -592,65 +514,57 @@ json SpatialAnalytics::getTopologyRoutesJson(size_t limit)
         return j;
     }
 
-    string sql =
-        "SELECT t.id, t.meshmon_time, t.from_node, t.to_node, t.route_count, "
-        "t.route_nodes, t.route_snrs, coalesce(nf.short_name, ''), coalesce(nt.short_name, '') "
-        "FROM traceroutes t "
-        "LEFT JOIN nodes nf ON t.from_node = nf.node_id "
-        "LEFT JOIN nodes nt ON t.to_node = nt.node_id "
-        "ORDER BY t.meshmon_time DESC LIMIT " + to_string(limit) + ";";
-
-    QueryResult qres;
-    if (!_db->executeRawQuery(sql, qres)) {
+    vector<TopologyRouteRow> rows;
+    if (!_db->getTopologyRoutes(limit, rows)) {
         return j;
     }
 
-    for (const auto &row : qres.rows) {
-        if (row.size() < 9) continue;
-        int64_t id = strtoll(row[0].c_str(), nullptr, 10);
-        time_t ts = (time_t) strtoul(row[1].c_str(), nullptr, 10);
-        uint32_t fromNode = (uint32_t) strtoul(row[2].c_str(), nullptr, 10);
-        uint32_t toNode = (uint32_t) strtoul(row[3].c_str(), nullptr, 10);
-        int routeCount = (int) strtol(row[4].c_str(), nullptr, 10);
-        string routeNodesStr = row[5];
-        string routeSnrsStr = row[6];
-        string fromShort = (!row[7].empty() && row[7] != "NULL") ? row[7] : formatNodeHex(fromNode);
-        string toShort = (!row[8].empty() && row[8] != "NULL") ? row[8] : formatNodeHex(toNode);
+    for (const auto &row : rows) {
+        string fromShort = !row.fromShort.empty() ? row.fromShort : formatNodeHex(row.fromNode);
+        string toShort = !row.toShort.empty() ? row.toShort : formatNodeHex(row.toNode);
 
-        // Parse comma/space separated route nodes & SNRs
         vector<uint32_t> rNodes;
         vector<string> rHexes;
         vector<string> rShorts;
         vector<float> rSnrs;
 
-        stringstream ssNodes(routeNodesStr);
+        stringstream ssNodes(row.routeNodes);
         string item;
         while (getline(ssNodes, item, ',')) {
             if (item.empty()) continue;
-            uint32_t nId = (uint32_t) strtoul(item.c_str(), nullptr, 10);
+            uint32_t nId = 0;
+            if (item[0] == '!') {
+                nId = (uint32_t) strtoul(item.c_str() + 1, nullptr, 16);
+            } else {
+                nId = (uint32_t) strtoul(item.c_str(), nullptr, 10);
+            }
             rNodes.push_back(nId);
             rHexes.push_back(formatNodeHex(nId));
-            string sName = (_mon != nullptr) ? _mon->lookupShortName(nId) : "";
+            string sName;
+            if (_mon != nullptr) {
+                SimpleClient::ScopedLock mLock(_mon);
+                sName = _mon->lookupShortName(nId);
+            }
             if (sName.empty()) sName = formatNodeHex(nId);
             rShorts.push_back(sName);
         }
 
-        stringstream ssSnrs(routeSnrsStr);
+        stringstream ssSnrs(row.routeSnrs);
         while (getline(ssSnrs, item, ',')) {
             if (item.empty()) continue;
             rSnrs.push_back((float) strtod(item.c_str(), nullptr));
         }
 
         j.push_back({
-            {"id", id},
-            {"timestamp", ts},
-            {"from_node", fromNode},
-            {"from_hex", formatNodeHex(fromNode)},
+            {"id", row.id},
+            {"timestamp", row.meshmonTime},
+            {"from_node", row.fromNode},
+            {"from_hex", formatNodeHex(row.fromNode)},
             {"from_short", fromShort},
-            {"to_node", toNode},
-            {"to_hex", (toNode == 0xffffffffU) ? "^all" : formatNodeHex(toNode)},
+            {"to_node", row.toNode},
+            {"to_hex", (row.toNode == 0xffffffffU) ? "^all" : formatNodeHex(row.toNode)},
             {"to_short", toShort},
-            {"route_count", routeCount},
+            {"route_count", row.routeCount},
             {"route_nodes", rNodes},
             {"route_hexes", rHexes},
             {"route_shorts", rShorts},
@@ -670,46 +584,27 @@ json SpatialAnalytics::getTopologyAsymmetryJson()
         return j;
     }
 
-    // Contrasts 0-hop direct forward packet SNR against reverse link indicators
-    string sql =
-        "SELECT p.from_node, coalesce(n.short_name, ''), "
-        "avg(p.rx_snr) AS fwd_snr, avg(p.rx_rssi) AS fwd_rssi, count(*) AS sample_cnt "
-        "FROM packets p "
-        "LEFT JOIN nodes n ON p.from_node = n.node_id "
-        "WHERE p.hops = 0 AND p.rx_snr IS NOT NULL "
-        "GROUP BY p.from_node "
-        "HAVING count(*) >= 3 "
-        "ORDER BY sample_cnt DESC LIMIT 30;";
-
-    QueryResult qres;
-    if (!_db->executeRawQuery(sql, qres)) {
+    vector<TopologyAsymmetryRow> rows;
+    if (!_db->getTopologyAsymmetry(30, rows)) {
         return j;
     }
 
-    for (const auto &row : qres.rows) {
-        if (row.size() < 5) continue;
-        uint32_t nodeId = (uint32_t) strtoul(row[0].c_str(), nullptr, 10);
-        string shortName = (!row[1].empty() && row[1] != "NULL") ? row[1] : formatNodeHex(nodeId);
-        float fwdSnr = (float) strtod(row[2].c_str(), nullptr);
-        float fwdRssi = (float) strtod(row[3].c_str(), nullptr);
-        uint32_t count = (uint32_t) strtoul(row[4].c_str(), nullptr, 10);
+    for (const auto &row : rows) {
+        uint32_t nodeId = row.nodeId;
+        string shortName = !row.shortName.empty() ? row.shortName : formatNodeHex(nodeId);
+        float fwdSnr = row.forwardSnr;
+        float fwdRssi = row.forwardRssi;
+        uint32_t count = row.sampleCount;
 
-        // Check if there is a reverse SNR recorded in traceroutes where this node was destination or relay
-        float revSnr = fwdSnr; // Fallback parity
+        float revSnr = fwdSnr;
         bool hasReverse = false;
-
-        string trSql =
-            "SELECT route_snrs FROM traceroutes WHERE from_node = " + to_string(nodeId) +
-            " OR to_node = " + to_string(nodeId) + " ORDER BY meshmon_time DESC LIMIT 1;";
-        QueryResult trRes;
-        if (_db->executeRawQuery(trSql, trRes) && !trRes.rows.empty()) {
-            string snrStr = trRes.rows[0][0];
-            size_t comma = snrStr.find(',');
+        if (!row.reverseSnrs.empty()) {
+            size_t comma = row.reverseSnrs.find(',');
             if (comma != string::npos) {
-                revSnr = (float) strtod(snrStr.substr(0, comma).c_str(), nullptr);
+                revSnr = (float) strtod(row.reverseSnrs.substr(0, comma).c_str(), nullptr);
                 hasReverse = true;
-            } else if (!snrStr.empty()) {
-                revSnr = (float) strtod(snrStr.c_str(), nullptr);
+            } else {
+                revSnr = (float) strtod(row.reverseSnrs.c_str(), nullptr);
                 hasReverse = true;
             }
         }
@@ -741,61 +636,29 @@ json SpatialAnalytics::getTopologyCentroidsJson()
         return j;
     }
 
-    // Find nodes without GPS coordinates that have transmitted packets
-    string sql =
-        "SELECT n.node_id, coalesce(n.short_name, '') "
-        "FROM nodes n "
-        "WHERE n.node_id NOT IN (SELECT DISTINCT node_id FROM positions WHERE latitude != 0 AND longitude != 0) "
-        "AND n.node_id IN (SELECT DISTINCT from_node FROM packets) "
-        "LIMIT 20;";
-
-    QueryResult qres;
-    if (!_db->executeRawQuery(sql, qres)) {
+    vector<TopologyCentroidRow> rows;
+    if (!_db->getTopologyCentroids(20, rows)) {
         return j;
     }
 
-    for (const auto &row : qres.rows) {
-        if (row.size() < 2) continue;
-        uint32_t nodeId = (uint32_t) strtoul(row[0].c_str(), nullptr, 10);
-        string shortName = (!row[1].empty() && row[1] != "NULL") ? row[1] : formatNodeHex(nodeId);
-
-        // Find hearing neighbors that have GPS
-        string nSql =
-            "SELECT p.latitude, p.longitude "
-            "FROM packets pkt "
-            "JOIN positions p ON (pkt.to_node = p.node_id OR pkt.from_node = p.node_id) "
-            "WHERE (pkt.from_node = " + to_string(nodeId) + " OR pkt.to_node = " + to_string(nodeId) + ") "
-            "AND p.latitude != 0 AND p.longitude != 0 "
-            "GROUP BY p.node_id;";
-
-        QueryResult nRes;
-        double sumLat = 0.0, sumLon = 0.0;
-        int count = 0;
-        if (_db->executeRawQuery(nSql, nRes) && !nRes.rows.empty()) {
-            for (const auto &nrow : nRes.rows) {
-                if (nrow.size() < 2) continue;
-                sumLat += strtod(nrow[0].c_str(), nullptr);
-                sumLon += strtod(nrow[1].c_str(), nullptr);
-                count++;
-            }
+    for (const auto &row : rows) {
+        if (row.neighborCount <= 0) {
+            continue;
         }
+        uint32_t nodeId = row.nodeId;
+        string shortName = !row.shortName.empty() ? row.shortName : formatNodeHex(nodeId);
+        int count = row.neighborCount;
+        double estRadiusM = (count == 1) ? 2500.0 : (count == 2 ? 1500.0 : 800.0);
 
-        if (count > 0) {
-            double estLat = sumLat / count;
-            double estLon = sumLon / count;
-            // Estimated radius based on RF typical range
-            double estRadiusM = (count == 1) ? 2500.0 : (count == 2 ? 1500.0 : 800.0);
-
-            j.push_back({
-                {"node_id", nodeId},
-                {"node_hex", formatNodeHex(nodeId)},
-                {"short_name", shortName},
-                {"estimated_lat", estLat},
-                {"estimated_lon", estLon},
-                {"confidence_radius_m", estRadiusM},
-                {"neighbor_count", count}
-            });
-        }
+        j.push_back({
+            {"node_id", nodeId},
+            {"node_hex", formatNodeHex(nodeId)},
+            {"short_name", shortName},
+            {"estimated_lat", row.estLat},
+            {"estimated_lon", row.estLon},
+            {"confidence_radius_m", estRadiusM},
+            {"neighbor_count", count}
+        });
     }
 
     return j;

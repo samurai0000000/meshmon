@@ -75,10 +75,14 @@ class ChatBot {
 
 public:
 
+    static constexpr size_t MAX_QUEUE_SIZE = 64;
+    static constexpr size_t MAX_CONVERSATIONS = 128;
+
     ChatBot(shared_ptr<MeshClient> client = NULL);
     virtual ~ChatBot();
 
     virtual void setClient(shared_ptr<MeshClient> client);
+    shared_ptr<MeshClient> getClient(void) const;
     virtual void setEnabled(bool enable);
     virtual bool enabled(void) const;
 
@@ -89,6 +93,8 @@ public:
     uint32_t getIdleTimeout(void) const;
 
     void clearConversations(uint32_t nodeId = 0);
+    void setConversation(uint32_t from, const vector<ChatTurn> &turns);
+    vector<ChatTurn> getConversation(uint32_t from) const;
 
     ChatBotStats getStats(void) const;
     void resetStats(void);
@@ -134,10 +140,6 @@ protected:
 
     string truncateToMesh(const string &text) const;
 
-    inline shared_ptr<MeshClient> getClient(void) const {
-        return _client;
-    }
-
     uint8_t resolveChannel(const string &channelQuery, uint8_t defaultChannel = 0) const;
     uint32_t resolveNodeId(const string &nodeQuery) const;
 
@@ -150,6 +152,7 @@ protected:
     virtual string toolCancelTask(uint32_t from, const string &argsJson);
     virtual string executeTool(const string &name, const string &argsJson,
                                uint32_t from = 0, uint32_t dest = 0, uint8_t channel = 0);
+    void processDueTasks(time_t now);
 
 private:
 
@@ -171,7 +174,6 @@ private:
     static void thread_function(ChatBot *bot);
     void run(void);
     void processJob(const ChatJob &job);
-    void processDueTasks(time_t now);
     void expireIdle(time_t now);
 
 private:
@@ -189,7 +191,7 @@ private:
     vector<ScheduledTask> _tasks;
     uint32_t _nextTaskId;
     ChatBotStats _stats;
-    bool _enabled;
+    atomic<bool> _enabled;
     size_t _maxHistoryTurns;
     uint32_t _idleTimeoutSec;
 

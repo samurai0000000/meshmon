@@ -78,6 +78,10 @@ class WebServer {
 
 public:
 
+    static constexpr size_t MAX_UI_SESSIONS = 256;
+    static constexpr size_t MAX_AUTH_SESSIONS = 64;
+    static constexpr size_t MAX_SSE_QUEUE_SIZE = 128;
+
     WebServer(std::shared_ptr<MeshMon> mon,
               std::shared_ptr<MeshMonDb> db,
               const WebConfig &config);
@@ -85,7 +89,10 @@ public:
 
     bool start(bool async = true);
     void stop(void);
+    void join(void);
     bool isRunning(void) const;
+
+    void setAdminPassword(const std::string &password);
 
     void onPacketReceived(const meshtastic_MeshPacket &packet, time_t meshmonTime);
     void broadcastSseEvent(const std::string &eventType, const std::string &jsonData);
@@ -100,10 +107,16 @@ private:
 
     // Authentication helpers
     bool checkAuth(const httplib::Request &req) const;
+    bool checkUiSession(const httplib::Request &req) const;
+    bool checkBasicAuth(const httplib::Request &req) const;
+    std::string createUiSessionToken(void);
+    std::string createAuthSessionToken(void);
     std::string createSessionToken(void);
+    bool validateUiSessionToken(const std::string &token) const;
+    bool validateAuthSessionToken(const std::string &token) const;
     bool validateSessionToken(const std::string &token) const;
     void revokeSessionToken(const std::string &token);
-    void purgeExpiredTokens(void);
+    void purgeExpiredTokens(void) const;
     std::string extractToken(const httplib::Request &req) const;
     bool isValidUiSession(const httplib::Request &req) const;
     static std::string getMcpHintForPath(const std::string &path, const std::string &body);
@@ -157,9 +170,12 @@ private:
     size_t _maxRecentPackets = 150;
     uint32_t _nextPacketId = 1;
 
-    // Auth sessions
+    // Dual-tier session maps (_uiSessions for read-only UI, _authSessions for admin)
     mutable std::mutex _authMutex;
-    std::map<std::string, AuthSession> _authSessions;
+    mutable std::map<std::string, time_t> _uiSessions;
+    mutable std::deque<std::string> _uiSessionOrder;
+    mutable std::map<std::string, time_t> _authSessions;
+    mutable std::deque<std::string> _authSessionOrder;
 
 };
 

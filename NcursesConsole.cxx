@@ -40,7 +40,7 @@ NcursesStreamBuf::int_type NcursesStreamBuf::overflow(int_type c) {
             }
         }
         if (hasLine) {
-            if (_toServerLog) {
+            if (_toServerLog && !_console.isCommandWorkerThread()) {
                 _console.logServer(line, _colorPair);
             } else {
                 _console.logOutput(line, _colorPair, false);
@@ -62,7 +62,7 @@ int NcursesStreamBuf::sync() {
         }
     }
     if (hasLine) {
-        if (_toServerLog) {
+        if (_toServerLog && !_console.isCommandWorkerThread()) {
             _console.logServer(line, _colorPair);
         } else {
             _console.logOutput(line, _colorPair, false);
@@ -88,8 +88,18 @@ NcursesConsole::~NcursesConsole() {
     shutdown();
 }
 
+void NcursesConsole::requestStop() {
+    _running.store(false);
+}
+
 bool NcursesConsole::isRunning() const {
     return _running.load();
+}
+
+bool NcursesConsole::isCommandWorkerThread() const {
+    std::lock_guard<std::mutex> lock(_workerThreadMutex);
+    return (_cmdWorkerId != std::thread::id() &&
+            std::this_thread::get_id() == _cmdWorkerId);
 }
 
 NcursesConsole::InputState NcursesConsole::getInputState() const {
@@ -380,8 +390,12 @@ void NcursesConsole::logOutput(const std::string &text, int colorPair, bool isBo
     for (const auto &w : wrapped) {
         addOutputLine(w, colorPair, isBold);
     }
-    renderMiddlePanel();
-    redrawInputLine();
+    _dirtyOutput.store(true);
+    if (!_running.load() || std::this_thread::get_id() == _uiThreadId) {
+        _dirtyOutput.store(false);
+        renderMiddlePanel();
+        redrawInputLine();
+    }
 }
 
 void NcursesConsole::logServer(const std::string &text, int colorPair) {
@@ -397,8 +411,12 @@ void NcursesConsole::logServer(const std::string &text, int colorPair) {
             _serverLogHistory.pop_front();
         }
     }
-    renderLogPanel();
-    redrawInputLine();
+    _dirtyLog.store(true);
+    if (!_running.load() || std::this_thread::get_id() == _uiThreadId) {
+        _dirtyLog.store(false);
+        renderLogPanel();
+        redrawInputLine();
+    }
 }
 
 void NcursesConsole::renderLogPanel() {
@@ -555,22 +573,42 @@ void NcursesConsole::processCommand(const std::string &line) {
         _cmdWorker->join();
     }
     _cmdWorker = std::make_unique<std::thread>([this, line]() {
-        auto *prevCout = std::cout.rdbuf(&_cmdOutputBuf);
-        auto *prevCerr = std::cerr.rdbuf(&_cmdOutputBuf);
+        {
+            std::lock_guard<std::mutex> lock(_workerThreadMutex);
+            _cmdWorkerId = std::this_thread::get_id();
+        }
         if (_shell) {
             _shell->executeCommand(line);
         }
         std::cout << std::flush;
         std::cerr << std::flush;
-        std::cout.rdbuf(prevCout);
-        std::cerr.rdbuf(prevCerr);
+        {
+            std::lock_guard<std::mutex> lock(_workerThreadMutex);
+            _cmdWorkerId = std::thread::id();
+        }
         _workerExitCode = 0;
         _workerFinished.store(true);
     });
 }
 
 void NcursesConsole::run() {
+    _uiThreadId = std::this_thread::get_id();
     int headerTick = 0;
+
+    auto flushPendingRedraws = [this]() {
+        bool dirtyLog = _dirtyLog.exchange(false);
+        bool dirtyOut = _dirtyOutput.exchange(false);
+        if (dirtyLog || dirtyOut) {
+            std::lock_guard<std::recursive_mutex> lock(_uiMutex);
+            if (dirtyLog) {
+                renderLogPanel();
+            }
+            if (dirtyOut) {
+                renderMiddlePanel();
+            }
+            redrawInputLine();
+        }
+    };
 
     while (_running.load()) {
         if (_workerFinished.load()) {
@@ -580,17 +618,19 @@ void NcursesConsole::run() {
             _cmdWorker.reset();
             _workerFinished.store(false);
             _inputState.store(InputState::READY);
-            _activeCommandName.clear();
 
             flushinp();
-            _inputBuffer.clear();
 
             std::lock_guard<std::recursive_mutex> lock(_uiMutex);
+            _activeCommandName.clear();
+            _inputBuffer.clear();
             _scrollOffset = 0;
             renderMiddlePanel();
             updateHeader();
             redrawInputLine();
         }
+
+        flushPendingRedraws();
 
         bool wasExecuting = (_inputState.load() == InputState::EXECUTING);
         int ch = wgetch(_inputWin);
@@ -602,17 +642,19 @@ void NcursesConsole::run() {
             _cmdWorker.reset();
             _workerFinished.store(false);
             _inputState.store(InputState::READY);
-            _activeCommandName.clear();
 
             flushinp();
-            _inputBuffer.clear();
 
             std::lock_guard<std::recursive_mutex> lock(_uiMutex);
+            _activeCommandName.clear();
+            _inputBuffer.clear();
             _scrollOffset = 0;
             renderMiddlePanel();
             updateHeader();
             redrawInputLine();
         }
+
+        flushPendingRedraws();
 
         if (ch == ERR) {
             if (++headerTick >= 20) { // Update header every ~2s
@@ -715,7 +757,7 @@ void NcursesConsole::run() {
             break;
         }
         default:
-            if (isprint(ch) && _inputBuffer.size() < 256) {
+            if (ch >= 0 && ch <= 255 && std::isprint(static_cast<unsigned char>(ch)) && _inputBuffer.size() < 256) {
                 _inputBuffer += static_cast<char>(ch);
                 redrawInputLine();
             }

@@ -331,7 +331,7 @@ void Calibration::setConfigPath(const string &path)
     _configPath = path;
 }
 
-const string &Calibration::getConfigPath(void) const
+string Calibration::getConfigPath(void) const
 {
     lock_guard<mutex> lock(_mutex);
     return _configPath;
@@ -527,7 +527,7 @@ static string resolveConfigPath(const string &path, const string &storedPath)
 
 bool Calibration::loadFile(const string &path)
 {
-    string targetPath = resolveConfigPath(path, _configPath);
+    string targetPath = resolveConfigPath(path, getConfigPath());
     setConfigPath(targetPath);
     Config cfg;
 
@@ -546,7 +546,7 @@ bool Calibration::loadFile(const string &path)
 
 bool Calibration::saveFile(const string &path) const
 {
-    string targetPath = resolveConfigPath(path, _configPath);
+    string targetPath = resolveConfigPath(path, getConfigPath());
     Config cfg;
 
     // Try reading existing config first to preserve other sections

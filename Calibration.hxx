@@ -95,7 +95,7 @@ public:
     map<string, NodeCalibration> getAll(void) const;
 
     void setConfigPath(const string &path);
-    const string &getConfigPath(void) const;
+    string getConfigPath(void) const;
 
     bool readConfig(const libconfig::Config &cfg);
     bool writeConfig(libconfig::Config &cfg) const;

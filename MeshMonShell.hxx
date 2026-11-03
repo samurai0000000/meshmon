@@ -50,6 +50,10 @@ protected:
     virtual int db(int argc, char **argv);
     virtual int robot(int argc, char **argv);
 
+    inline void setExecutingCommand(bool exec) {
+        _isExecutingCommand = exec;
+    }
+
 private:
 
     void printDbHelp(void);

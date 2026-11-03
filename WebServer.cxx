@@ -20,6 +20,9 @@
 #include <algorithm>
 #include <chrono>
 
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+#endif
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 #pragma GCC diagnostic ignored "-Wshadow"
@@ -42,6 +45,11 @@ static string formatNodeHex(uint32_t nodeId)
     char buf[32];
     snprintf(buf, sizeof(buf), "!%08x", nodeId);
     return string(buf);
+}
+
+static string safeJsonDump(const json &j)
+{
+    return j.dump(-1, ' ', false, json::error_handler_t::replace);
 }
 
 static string generateRandomToken(size_t length = 32)
@@ -148,9 +156,23 @@ void WebServer::stop(void)
     cout << "[WebServer] Stopped" << endl;
 }
 
+void WebServer::join(void)
+{
+    if (_thread && _thread->joinable()) {
+        _thread->join();
+        _thread.reset();
+    }
+}
+
 bool WebServer::isRunning(void) const
 {
     return _running.load();
+}
+
+void WebServer::setAdminPassword(const string &password)
+{
+    lock_guard<mutex> lock(_authMutex);
+    _config.password = password;
 }
 
 void WebServer::serveStaticFileOrFallback(const string &diskPath,
@@ -173,36 +195,130 @@ void WebServer::serveStaticFileOrFallback(const string &diskPath,
     res.set_content(fallbackAsset, contentType.c_str());
 }
 
-string WebServer::createSessionToken(void)
+string WebServer::createUiSessionToken(void)
 {
     lock_guard<mutex> lock(_authMutex);
     purgeExpiredTokens();
 
-    AuthSession s;
-    s.token = generateRandomToken(32);
-    s.createdAt = time(NULL);
-    s.expiresAt = s.createdAt + 86400; // 24-hour token validity
-    _authSessions[s.token] = s;
-    return s.token;
+    while (_uiSessions.size() >= MAX_UI_SESSIONS) {
+        auto oldestIt = _uiSessions.end();
+        while (!_uiSessionOrder.empty()) {
+            auto it = _uiSessions.find(_uiSessionOrder.front());
+            _uiSessionOrder.pop_front();
+            if (it != _uiSessions.end()) {
+                oldestIt = it;
+                break;
+            }
+        }
+        if (oldestIt == _uiSessions.end()) {
+            oldestIt = _uiSessions.begin();
+            for (auto it = _uiSessions.begin(); it != _uiSessions.end(); ++it) {
+                if (it->second < oldestIt->second) {
+                    oldestIt = it;
+                }
+            }
+        }
+        if (oldestIt != _uiSessions.end()) {
+            _uiSessions.erase(oldestIt);
+        } else {
+            break;
+        }
+    }
+
+    string token = generateRandomToken(32);
+    time_t now = time(NULL);
+    _uiSessions[token] = now;
+    _uiSessionOrder.push_back(token);
+    return token;
 }
 
-bool WebServer::validateSessionToken(const string &token) const
+string WebServer::createAuthSessionToken(void)
+{
+    lock_guard<mutex> lock(_authMutex);
+    purgeExpiredTokens();
+
+    while (_authSessions.size() >= MAX_AUTH_SESSIONS) {
+        auto oldestIt = _authSessions.end();
+        while (!_authSessionOrder.empty()) {
+            auto it = _authSessions.find(_authSessionOrder.front());
+            _authSessionOrder.pop_front();
+            if (it != _authSessions.end()) {
+                oldestIt = it;
+                break;
+            }
+        }
+        if (oldestIt == _authSessions.end()) {
+            oldestIt = _authSessions.begin();
+            for (auto it = _authSessions.begin(); it != _authSessions.end(); ++it) {
+                if (it->second < oldestIt->second) {
+                    oldestIt = it;
+                }
+            }
+        }
+        if (oldestIt != _authSessions.end()) {
+            _authSessions.erase(oldestIt);
+        } else {
+            break;
+        }
+    }
+
+    string token = generateRandomToken(32);
+    time_t now = time(NULL);
+    _authSessions[token] = now;
+    _authSessionOrder.push_back(token);
+    return token;
+}
+
+string WebServer::createSessionToken(void)
+{
+    return createAuthSessionToken();
+}
+
+bool WebServer::validateUiSessionToken(const string &token) const
 {
     if (token.empty()) {
         return false;
     }
 
     lock_guard<mutex> lock(_authMutex);
+    purgeExpiredTokens();
+    auto it = _uiSessions.find(token);
+    if (it == _uiSessions.end()) {
+        return false;
+    }
+
+    if (time(NULL) - it->second > 86400) {
+        _uiSessions.erase(it);
+        return false;
+    }
+
+    return true;
+}
+
+bool WebServer::validateAuthSessionToken(const string &token) const
+{
+    if (token.empty()) {
+        return false;
+    }
+
+    lock_guard<mutex> lock(_authMutex);
+    purgeExpiredTokens();
     auto it = _authSessions.find(token);
     if (it == _authSessions.end()) {
         return false;
     }
 
-    if (it->second.expiresAt < time(NULL)) {
+    if (time(NULL) - it->second > 86400) {
+        _authSessions.erase(it);
         return false;
     }
 
     return true;
+}
+
+bool WebServer::validateSessionToken(const string &token) const
+{
+    return validateAuthSessionToken(token);
 }
 
 void WebServer::revokeSessionToken(const string &token)
@@ -211,15 +327,31 @@ void WebServer::revokeSessionToken(const string &token)
     _authSessions.erase(token);
 }
 
-void WebServer::purgeExpiredTokens(void)
+void WebServer::purgeExpiredTokens(void) const
 {
     time_t now = time(NULL);
+    for (auto it = _uiSessions.begin(); it != _uiSessions.end(); ) {
+        if (now - it->second > 86400) {
+            it = _uiSessions.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    while (!_uiSessionOrder.empty() &&
+           _uiSessions.find(_uiSessionOrder.front()) == _uiSessions.end()) {
+        _uiSessionOrder.pop_front();
+    }
+
     for (auto it = _authSessions.begin(); it != _authSessions.end(); ) {
-        if (it->second.expiresAt < now) {
+        if (now - it->second > 86400) {
             it = _authSessions.erase(it);
         } else {
             ++it;
         }
+    }
+    while (!_authSessionOrder.empty() &&
+           _authSessions.find(_authSessionOrder.front()) == _authSessions.end()) {
+        _authSessionOrder.pop_front();
     }
 }
 
@@ -261,21 +393,73 @@ string WebServer::extractToken(const httplib::Request &req) const
     return "";
 }
 
+bool WebServer::checkBasicAuth(const httplib::Request &req) const
+{
+    if (!req.has_header("Authorization")) {
+        return false;
+    }
+
+    string configuredPassword;
+    {
+        lock_guard<mutex> lock(_authMutex);
+        if (_config.password.empty()) {
+            return false;
+        }
+        configuredPassword = _config.password;
+    }
+
+    string auth = req.get_header_value("Authorization");
+    if (auth.rfind("Basic ", 0) != 0) {
+        return false;
+    }
+
+    string b64 = auth.substr(6);
+    static const string base64Chars =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    string decoded;
+    int val = 0, valb = -8;
+    for (unsigned char c : b64) {
+        if (isspace(c)) continue;
+        if (c == '=') break;
+        size_t pos = base64Chars.find(c);
+        if (pos == string::npos) return false;
+        val = (val << 6) + static_cast<int>(pos);
+        valb += 6;
+        if (valb >= 0) {
+            decoded.push_back(static_cast<char>((val >> valb) & 0xFF));
+            valb -= 8;
+        }
+    }
+
+    size_t colon = decoded.find(':');
+    if (colon == string::npos) {
+        return false;
+    }
+    return decoded.substr(colon + 1) == configuredPassword;
+}
+
 bool WebServer::checkAuth(const httplib::Request &req) const
 {
-    if (_config.password.empty()) {
-        return true; // No password configured; open mode
+    {
+        lock_guard<mutex> lock(_authMutex);
+        if (_config.password.empty()) {
+            return true; // No password configured; open mode
+        }
+    }
+
+    if (checkBasicAuth(req)) {
+        return true;
     }
 
     string token = extractToken(req);
-    return validateSessionToken(token);
+    return validateAuthSessionToken(token);
 }
 
-bool WebServer::isValidUiSession(const httplib::Request &req) const
+bool WebServer::checkUiSession(const httplib::Request &req) const
 {
     if (req.has_header("User-Agent")) {
         string ua = req.get_header_value("User-Agent");
-        for (char &c : ua) c = tolower(c);
+        for (char &c : ua) c = tolower(static_cast<unsigned char>(c));
         if (ua.find("curl/") != string::npos ||
             ua.find("python") != string::npos ||
             ua.find("wget/") != string::npos ||
@@ -288,25 +472,46 @@ bool WebServer::isValidUiSession(const httplib::Request &req) const
         return false;
     }
 
-    string token = extractToken(req);
-    if (token.empty() && req.has_header("X-UI-Session")) {
-        token = req.get_header_value("X-UI-Session");
+    if (checkBasicAuth(req)) {
+        return true;
     }
-    if (token.empty() && req.has_header("Cookie")) {
+
+    string authToken = extractToken(req);
+    if (!authToken.empty() &&
+        (validateUiSessionToken(authToken) || validateAuthSessionToken(authToken))) {
+        return true;
+    }
+
+    if (req.has_header("X-UI-Session")) {
+        string uiToken = req.get_header_value("X-UI-Session");
+        if (!uiToken.empty() &&
+            (validateUiSessionToken(uiToken) || validateAuthSessionToken(uiToken))) {
+            return true;
+        }
+    }
+
+    if (req.has_header("Cookie")) {
         string cookie = req.get_header_value("Cookie");
         size_t pos = cookie.find("meshmon_session=");
         if (pos != string::npos) {
             size_t start = pos + 16;
             size_t end = cookie.find(';', start);
-            token = (end == string::npos) ? cookie.substr(start) : cookie.substr(start, end - start);
+            string cookieToken = (end == string::npos)
+                ? cookie.substr(start)
+                : cookie.substr(start, end - start);
+            if (!cookieToken.empty() &&
+                (validateUiSessionToken(cookieToken) || validateAuthSessionToken(cookieToken))) {
+                return true;
+            }
         }
     }
 
-    if (token.empty()) {
-        return false;
-    }
+    return false;
+}
 
-    return validateSessionToken(token);
+bool WebServer::isValidUiSession(const httplib::Request &req) const
+{
+    return checkUiSession(req);
 }
 
 string WebServer::getMcpHintForPath(const string &path, const string &body)
@@ -338,19 +543,29 @@ string WebServer::getMcpHintForPath(const string &path, const string &body)
 
 void WebServer::setupRoutes(void)
 {
-    // Gate REST API endpoints if disabled by configuration, unless request is from an authenticated Web UI session
-    if (!_config.endpointsEnabled) {
+    // Gate REST API endpoints unless request carries a valid Web UI or Admin session
+    bool authEnforced = false;
+    {
+        lock_guard<mutex> lock(_authMutex);
+        authEnforced = (!_config.endpointsEnabled || !_config.password.empty());
+    }
+    if (authEnforced) {
         _server->set_pre_routing_handler([this](const httplib::Request &req, httplib::Response &res) {
             if (req.path == "/api" || req.path.rfind("/api/", 0) == 0) {
-                if (!isValidUiSession(req)) {
-                    res.status = 403;
+                if (req.path == "/api/auth/login" ||
+                    req.path == "/api/auth/status" ||
+                    req.path == "/api/auth/logout") {
+                    return httplib::Server::HandlerResponse::Unhandled;
+                }
+                if (!checkUiSession(req)) {
+                    res.status = 401;
                     string hint = getMcpHintForPath(req.path, req.body);
                     json err = {
-                        {"error", "Direct REST API endpoint access is disabled by configuration."},
+                        {"error", "Authentication or valid UI session required."},
                         {"hint", hint},
                         {"daemon", "meshmon"}
                     };
-                    res.set_content(err.dump(2), "application/json");
+                    res.set_content(safeJsonDump(err), "application/json");
                     return httplib::Server::HandlerResponse::Handled;
                 }
             }
@@ -371,7 +586,7 @@ void WebServer::setupRoutes(void)
 
     // Static Web Dashboard Assets
     _server->Get("/", [this](const httplib::Request&, httplib::Response &res) {
-        string token = createSessionToken();
+        string token = createUiSessionToken();
         res.set_header("Set-Cookie", "meshmon_session=" + token + "; Path=/; SameSite=Strict");
 
         string html;
@@ -491,19 +706,21 @@ void WebServer::setupRoutes(void)
     });
 
     // Authenticated Mutating Endpoints
-    _server->Post("/api/messages/send", [this](const httplib::Request &req, httplib::Response &res) {
+    auto handleSendMessage = [this](const httplib::Request &req, httplib::Response &res) {
         if (!checkAuth(req)) {
             res.status = 401;
-            res.set_content("{\"error\":\"Authentication required to transmit radio messages\"}", "application/json");
+            res.set_content(safeJsonDump(json({{"error", "Authentication required to transmit radio messages"}})), "application/json");
             return;
         }
         handlePostSendMessage(req, res);
-    });
+    };
+    _server->Post("/api/messages/send", handleSendMessage);
+    _server->Post("/api/send", handleSendMessage);
 
     _server->Post("/api/automation/command", [this](const httplib::Request &req, httplib::Response &res) {
         if (!checkAuth(req)) {
             res.status = 401;
-            res.set_content("{\"error\":\"Authentication required to send HomeMesh automation commands\"}", "application/json");
+            res.set_content(safeJsonDump(json({{"error", "Authentication required to send HomeMesh automation commands"}})), "application/json");
             return;
         }
         handlePostAutomationCommand(req, res);
@@ -512,7 +729,7 @@ void WebServer::setupRoutes(void)
     _server->Post("/api/db/query", [this](const httplib::Request &req, httplib::Response &res) {
         if (!checkAuth(req)) {
             res.status = 401;
-            res.set_content("{\"error\":\"Authentication required to execute database queries\"}", "application/json");
+            res.set_content(safeJsonDump(json({{"error", "Authentication required to execute database queries"}})), "application/json");
             return;
         }
         handlePostDbQuery(req, res);
@@ -572,7 +789,6 @@ void WebServer::setupRoutes(void)
 void WebServer::onPacketReceived(const meshtastic_MeshPacket &packet, time_t meshmonTime)
 {
     PacketLogEntry entry;
-    entry.id = _nextPacketId++;
     entry.meshmonTime = meshmonTime;
     entry.fromNode = packet.from;
     entry.fromHex = formatNodeHex(packet.from);
@@ -611,6 +827,7 @@ void WebServer::onPacketReceived(const meshtastic_MeshPacket &packet, time_t mes
     // Add to in-memory ring buffer
     {
         lock_guard<mutex> lock(_packetRingMutex);
+        entry.id = _nextPacketId++;
         _recentPackets.push_back(entry);
         while (_recentPackets.size() > _maxRecentPackets) {
             _recentPackets.pop_front();
@@ -636,7 +853,7 @@ void WebServer::onPacketReceived(const meshtastic_MeshPacket &packet, time_t mes
         {"via_mqtt", entry.viaMqtt}
     };
 
-    broadcastSseEvent("packet", j.dump());
+    broadcastSseEvent("packet", safeJsonDump(j));
 }
 
 void WebServer::broadcastSseEvent(const string &eventType, const string &jsonData)
@@ -649,6 +866,9 @@ void WebServer::broadcastSseEvent(const string &eventType, const string &jsonDat
         if (session && !session->closed.load()) {
             {
                 lock_guard<mutex> sLock(session->mutex);
+                while (session->messageQueue.size() >= MAX_SSE_QUEUE_SIZE) {
+                    session->messageQueue.pop();
+                }
                 session->messageQueue.push(msg);
             }
             session->cv.notify_one();
@@ -672,6 +892,7 @@ void WebServer::handleGetStatus(const httplib::Request&, httplib::Response &res)
     bool connected = false;
 
     if (_mon) {
+        SimpleClient::ScopedLock lock(_mon);
         myNodeId = _mon->whoami();
         if (myNodeId != 0) {
             myHex = formatNodeHex(myNodeId);
@@ -723,15 +944,21 @@ void WebServer::handleGetStatus(const httplib::Request&, httplib::Response &res)
         sseCount = _sseSessions.size();
     }
 
+    bool authRequired = false;
+    {
+        lock_guard<mutex> lock(_authMutex);
+        authRequired = !_config.password.empty();
+    }
+
     j["web"] = {
         {"port", _config.port},
         {"host", _config.host},
-        {"auth_required", !_config.password.empty()},
+        {"auth_required", authRequired},
         {"sse_clients", sseCount},
         {"version", MYPROJECT_VERSION_STRING}
     };
 
-    res.set_content(j.dump(), "application/json");
+    res.set_content(safeJsonDump(j), "application/json");
 }
 
 void WebServer::handleGetNodes(const httplib::Request&, httplib::Response &res)
@@ -742,6 +969,7 @@ void WebServer::handleGetNodes(const httplib::Request&, httplib::Response &res)
         return;
     }
 
+    SimpleClient::ScopedLock lock(_mon);
     const map<uint32_t, meshtastic_NodeInfo> &nodes = _mon->nodeInfos();
     const map<uint32_t, meshtastic_DeviceMetrics> &dMap = _mon->deviceMetrics();
     const map<uint32_t, meshtastic_EnvironmentMetrics> &eMap = _mon->environmentMetrics();
@@ -841,7 +1069,7 @@ void WebServer::handleGetNodes(const httplib::Request&, httplib::Response &res)
         nodesArr.push_back(nodeObj);
     }
 
-    res.set_content(nodesArr.dump(), "application/json");
+    res.set_content(safeJsonDump(nodesArr), "application/json");
 }
 
 void WebServer::handleGetNodeDetail(const httplib::Request &req, httplib::Response &res)
@@ -907,7 +1135,7 @@ void WebServer::handleGetNodeDetail(const httplib::Request &req, httplib::Respon
         j["fading_history"] = fadingArr;
     }
 
-    res.set_content(j.dump(), "application/json");
+    res.set_content(safeJsonDump(j), "application/json");
 }
 
 void WebServer::handleGetPackets(const httplib::Request &req, httplib::Response &res)
@@ -951,7 +1179,7 @@ void WebServer::handleGetPackets(const httplib::Request &req, httplib::Response 
         count++;
     }
 
-    res.set_content(arr.dump(), "application/json");
+    res.set_content(safeJsonDump(arr), "application/json");
 }
 
 void WebServer::handleGetAnalytics(const httplib::Request &req, httplib::Response &res)
@@ -966,7 +1194,7 @@ void WebServer::handleGetAnalytics(const httplib::Request &req, httplib::Respons
     if (req.has_param("hours")) {
         hours = max(1, atoi(req.get_param_value("hours").c_str()));
     }
-    time_t since = time(NULL) - (hours * 3600);
+    time_t since = time(NULL) - (static_cast<time_t>(hours) * 3600);
 
     json j;
     j["window_hours"] = hours;
@@ -1100,7 +1328,7 @@ void WebServer::handleGetAnalytics(const httplib::Request &req, httplib::Respons
         j["direct_neighbors"] = nArr;
     }
 
-    res.set_content(j.dump(), "application/json");
+    res.set_content(safeJsonDump(j), "application/json");
 }
 
 void WebServer::handleGetAutomation(const httplib::Request&, httplib::Response &res)
@@ -1190,7 +1418,7 @@ void WebServer::handleGetAutomation(const httplib::Request&, httplib::Response &
         }
     }
 
-    res.set_content(j.dump(), "application/json");
+    res.set_content(safeJsonDump(j), "application/json");
 }
 
 void WebServer::handleGetMessages(const httplib::Request &req, httplib::Response &res)
@@ -1201,43 +1429,42 @@ void WebServer::handleGetMessages(const httplib::Request &req, httplib::Response
         return;
     }
 
-    size_t limit = 50;
+    int limit = 50;
     if (req.has_param("limit")) {
-        limit = min((size_t) max(1, atoi(req.get_param_value("limit").c_str())), (size_t) 200);
+        limit = min(max(1, atoi(req.get_param_value("limit").c_str())), 200);
     }
 
-    string sql = "SELECT id, meshmon_time, from_node, to_node, channel, message "
-                 "FROM text_messages ORDER BY id DESC LIMIT " + to_string(limit) + ";";
-
-    QueryResult qres;
-    if (!_db->executeRawQuery(sql, qres)) {
+    vector<TextMessageRow> rows;
+    if (!_db->getRecentTextMessages(limit, rows)) {
         res.status = 500;
-        res.set_content("{\"error\":\"Database query failed: " + qres.error + "\"}", "application/json");
+        res.set_content("{\"error\":\"Database query failed\"}", "application/json");
         return;
     }
 
     json arr = json::array();
-    for (const auto &row : qres.rows) {
-        if (row.size() < 6) continue;
-        uint32_t fromNode = (uint32_t) strtoul(row[2].c_str(), nullptr, 10);
-        uint32_t toNode = (uint32_t) strtoul(row[3].c_str(), nullptr, 10);
-
-        string fromName = (_mon != nullptr) ? _mon->lookupShortName(fromNode) : "";
-        string toName = (_mon != nullptr && toNode != 0xffffffffU) ? _mon->lookupShortName(toNode) : "";
+    for (const auto &row : rows) {
+        string fromName = (_mon != nullptr) ? _mon->lookupShortName(row.fromNode) : "";
+        string toName = (_mon != nullptr && row.toNode != 0xffffffffU) ? _mon->lookupShortName(row.toNode) : "";
 
         arr.push_back({
-            {"id", (uint32_t) strtoul(row[0].c_str(), nullptr, 10)},
-            {"time", (time_t) strtoul(row[1].c_str(), nullptr, 10)},
-            {"from_hex", formatNodeHex(fromNode)},
+            {"id", static_cast<uint32_t>(row.id)},
+            {"time", static_cast<time_t>(row.rxTime)},
+            {"timestamp", static_cast<time_t>(row.rxTime)},
+            {"from_id", row.fromNode},
+            {"from_hex", formatNodeHex(row.fromNode)},
             {"from_name", fromName},
-            {"to_hex", (toNode == 0xffffffffU) ? "^all" : formatNodeHex(toNode)},
+            {"to_id", row.toNode},
+            {"to_hex", (row.toNode == 0xffffffffU) ? "^all" : formatNodeHex(row.toNode)},
             {"to_name", toName},
-            {"channel", atoi(row[4].c_str())},
-            {"message", row[5]}
+            {"channel", row.channel},
+            {"message", row.text},
+            {"text", row.text},
+            {"snr", row.rxSnr},
+            {"rssi", row.rxRssi}
         });
     }
 
-    res.set_content(arr.dump(), "application/json");
+    res.set_content(safeJsonDump(arr), "application/json");
 }
 
 void WebServer::handleGetSpatial(const httplib::Request &req, httplib::Response &res)
@@ -1254,7 +1481,7 @@ void WebServer::handleGetSpatial(const httplib::Request &req, httplib::Response 
     }
 
     json j = _spatial->getSpatialJson(thresholdM);
-    res.set_content(j.dump(), "application/json");
+    res.set_content(safeJsonDump(j), "application/json");
 }
 
 void WebServer::handleGetRemoteSummary(const httplib::Request &req, httplib::Response &res)
@@ -1271,7 +1498,7 @@ void WebServer::handleGetRemoteSummary(const httplib::Request &req, httplib::Res
     }
 
     json j = _spatial->getRemoteSummaryJson(thresholdM);
-    res.set_content(j.dump(), "application/json");
+    res.set_content(safeJsonDump(j), "application/json");
 }
 
 void WebServer::handleGetRemoteNodes(const httplib::Request &req, httplib::Response &res)
@@ -1288,7 +1515,7 @@ void WebServer::handleGetRemoteNodes(const httplib::Request &req, httplib::Respo
     }
 
     json j = _spatial->getRemoteNodesJson(thresholdM);
-    res.set_content(j.dump(), "application/json");
+    res.set_content(safeJsonDump(j), "application/json");
 }
 
 void WebServer::handleGetTopologyRoutes(const httplib::Request &req, httplib::Response &res)
@@ -1305,7 +1532,7 @@ void WebServer::handleGetTopologyRoutes(const httplib::Request &req, httplib::Re
     }
 
     json j = _spatial->getTopologyRoutesJson(limit);
-    res.set_content(j.dump(), "application/json");
+    res.set_content(safeJsonDump(j), "application/json");
 }
 
 void WebServer::handleGetTopologyAsymmetry(const httplib::Request &, httplib::Response &res)
@@ -1317,7 +1544,7 @@ void WebServer::handleGetTopologyAsymmetry(const httplib::Request &, httplib::Re
     }
 
     json j = _spatial->getTopologyAsymmetryJson();
-    res.set_content(j.dump(), "application/json");
+    res.set_content(safeJsonDump(j), "application/json");
 }
 
 void WebServer::handleGetTopologyCentroids(const httplib::Request &, httplib::Response &res)
@@ -1329,7 +1556,7 @@ void WebServer::handleGetTopologyCentroids(const httplib::Request &, httplib::Re
     }
 
     json j = _spatial->getTopologyCentroidsJson();
-    res.set_content(j.dump(), "application/json");
+    res.set_content(safeJsonDump(j), "application/json");
 }
 
 // ----------------------------------------------------------------------------
@@ -1343,14 +1570,33 @@ void WebServer::handlePostAuthLogin(const httplib::Request &req, httplib::Respon
         reqJson = json::parse(req.body);
     } catch (const exception &e) {
         res.status = 400;
-        res.set_content("{\"error\":\"Invalid JSON\"}", "application/json");
+        res.set_content(safeJsonDump(json({{"error", "Invalid JSON"}})), "application/json");
         return;
     }
 
-    string password = reqJson.value("password", "");
+    if (!reqJson.is_object()) {
+        res.status = 400;
+        res.set_content(safeJsonDump(json({{"error", "JSON request body must be an object"}})), "application/json");
+        return;
+    }
 
-    if (_config.password.empty() || password == _config.password) {
-        string token = createSessionToken();
+    string password;
+    try {
+        password = reqJson.value("password", "");
+    } catch (const json::exception &e) {
+        res.status = 400;
+        res.set_content(safeJsonDump(json({{"error", string("Invalid field format: ") + e.what()}})), "application/json");
+        return;
+    }
+
+    bool authOk = false;
+    {
+        lock_guard<mutex> lock(_authMutex);
+        authOk = (_config.password.empty() || password == _config.password);
+    }
+
+    if (authOk) {
+        string token = createAuthSessionToken();
 
         // Set HttpOnly cookie and return bearer token in JSON
         res.set_header("Set-Cookie", "meshmon_auth=" + token + "; Path=/; Max-Age=86400; SameSite=Lax");
@@ -1359,22 +1605,27 @@ void WebServer::handlePostAuthLogin(const httplib::Request &req, httplib::Respon
             {"token", token},
             {"expires_in", 86400}
         };
-        res.set_content(resp.dump(), "application/json");
+        res.set_content(safeJsonDump(resp), "application/json");
         cout << "[WebServer] Admin authenticated successfully" << endl;
     } else {
         res.status = 401;
-        res.set_content("{\"error\":\"Invalid password\"}", "application/json");
+        res.set_content(safeJsonDump(json({{"error", "Invalid password"}})), "application/json");
     }
 }
 
 void WebServer::handleGetAuthStatus(const httplib::Request &req, httplib::Response &res)
 {
     bool isAuth = checkAuth(req);
+    bool authRequired = false;
+    {
+        lock_guard<mutex> lock(_authMutex);
+        authRequired = !_config.password.empty();
+    }
     json j = {
         {"authenticated", isAuth},
-        {"auth_required", !_config.password.empty()}
+        {"auth_required", authRequired}
     };
-    res.set_content(j.dump(), "application/json");
+    res.set_content(safeJsonDump(j), "application/json");
 }
 
 void WebServer::handlePostAuthLogout(const httplib::Request &req, httplib::Response &res)
@@ -1395,7 +1646,7 @@ void WebServer::handlePostSendMessage(const httplib::Request &req, httplib::Resp
 {
     if (!_mon) {
         res.status = 503;
-        res.set_content("{\"error\":\"Radio client not available\"}", "application/json");
+        res.set_content(safeJsonDump(json({{"error", "Radio client not available"}})), "application/json");
         return;
     }
 
@@ -1404,17 +1655,32 @@ void WebServer::handlePostSendMessage(const httplib::Request &req, httplib::Resp
         reqJson = json::parse(req.body);
     } catch (const exception &e) {
         res.status = 400;
-        res.set_content("{\"error\":\"Invalid JSON: " + string(e.what()) + "\"}", "application/json");
+        res.set_content(safeJsonDump(json({{"error", string("Invalid JSON: ") + e.what()}})), "application/json");
         return;
     }
 
-    string text = reqJson.value("text", "");
-    string destination = reqJson.value("destination", "^all");
-    int channel = reqJson.value("channel", 0);
+    if (!reqJson.is_object()) {
+        res.status = 400;
+        res.set_content(safeJsonDump(json({{"error", "JSON request body must be an object"}})), "application/json");
+        return;
+    }
+
+    string text;
+    string destination;
+    int channel = 0;
+    try {
+        text = reqJson.value("text", "");
+        destination = reqJson.value("destination", "^all");
+        channel = reqJson.value("channel", 0);
+    } catch (const json::exception &e) {
+        res.status = 400;
+        res.set_content(safeJsonDump(json({{"error", string("Invalid field format: ") + e.what()}})), "application/json");
+        return;
+    }
 
     if (text.empty()) {
         res.status = 400;
-        res.set_content("{\"error\":\"Message text cannot be empty\"}", "application/json");
+        res.set_content(safeJsonDump(json({{"error", "Message text cannot be empty"}})), "application/json");
         return;
     }
 
@@ -1423,7 +1689,7 @@ void WebServer::handlePostSendMessage(const httplib::Request &req, httplib::Resp
         dest = MeshMonShell::resolveNode(_mon.get(), destination);
         if (dest == 0xffffffffU) {
             res.status = 400;
-            res.set_content("{\"error\":\"Destination could not be resolved: " + destination + "\"}", "application/json");
+            res.set_content(safeJsonDump(json({{"error", string("Destination could not be resolved: ") + destination}})), "application/json");
             return;
         }
     }
@@ -1436,12 +1702,12 @@ void WebServer::handlePostSendMessage(const httplib::Request &req, httplib::Resp
             {"channel", channel},
             {"bytes_sent", text.size()}
         };
-        res.set_content(j.dump(), "application/json");
+        res.set_content(safeJsonDump(j), "application/json");
         cout << "[WebServer] Sent message on ch " << channel << " to "
              << ((dest == 0xffffffffU) ? "^all" : formatNodeHex(dest)) << ": " << text << endl;
     } else {
         res.status = 500;
-        res.set_content("{\"error\":\"Failed to transmit radio text message\"}", "application/json");
+        res.set_content(safeJsonDump(json({{"error", "Failed to transmit radio text message"}})), "application/json");
     }
 }
 
@@ -1449,7 +1715,7 @@ void WebServer::handlePostAutomationCommand(const httplib::Request &req, httplib
 {
     if (!_mon) {
         res.status = 503;
-        res.set_content("{\"error\":\"Radio client not available\"}", "application/json");
+        res.set_content(safeJsonDump(json({{"error", "Radio client not available"}})), "application/json");
         return;
     }
 
@@ -1458,32 +1724,45 @@ void WebServer::handlePostAutomationCommand(const httplib::Request &req, httplib
         reqJson = json::parse(req.body);
     } catch (const exception &e) {
         res.status = 400;
-        res.set_content("{\"error\":\"Invalid JSON\"}", "application/json");
+        res.set_content(safeJsonDump(json({{"error", "Invalid JSON"}})), "application/json");
+        return;
+    }
+
+    if (!reqJson.is_object()) {
+        res.status = 400;
+        res.set_content(safeJsonDump(json({{"error", "JSON request body must be an object"}})), "application/json");
         return;
     }
 
     string nodeStr = "";
-    if (reqJson.contains("node_id")) {
-        if (reqJson["node_id"].is_string()) {
-            nodeStr = reqJson["node_id"].get<string>();
-        } else if (reqJson["node_id"].is_number()) {
-            nodeStr = to_string(reqJson["node_id"].get<uint32_t>());
+    string command = "";
+    int channel = -1;
+    try {
+        if (reqJson.contains("node_id")) {
+            if (reqJson["node_id"].is_string()) {
+                nodeStr = reqJson["node_id"].get<string>();
+            } else if (reqJson["node_id"].is_number()) {
+                nodeStr = to_string(reqJson["node_id"].get<uint32_t>());
+            }
         }
+        command = reqJson.value("command", "");
+        channel = reqJson.value("channel", -1);
+    } catch (const json::exception &e) {
+        res.status = 400;
+        res.set_content(safeJsonDump(json({{"error", string("Invalid field format: ") + e.what()}})), "application/json");
+        return;
     }
-
-    string command = reqJson.value("command", "");
-    int channel = reqJson.value("channel", -1);
 
     if (nodeStr.empty() || command.empty()) {
         res.status = 400;
-        res.set_content("{\"error\":\"'node_id' and 'command' required\"}", "application/json");
+        res.set_content(safeJsonDump(json({{"error", "'node_id' and 'command' required"}})), "application/json");
         return;
     }
 
     uint32_t nodeId = MeshMonShell::resolveNode(_mon.get(), nodeStr);
     if (nodeId == 0xffffffffU) {
         res.status = 404;
-        res.set_content("{\"error\":\"Node not found: " + nodeStr + "\"}", "application/json");
+        res.set_content(safeJsonDump(json({{"error", string("Node not found: ") + nodeStr}})), "application/json");
         return;
     }
 
@@ -1494,12 +1773,12 @@ void WebServer::handlePostAutomationCommand(const httplib::Request &req, httplib
             {"node_hex", formatNodeHex(nodeId)},
             {"command", command}
         };
-        res.set_content(j.dump(), "application/json");
+        res.set_content(safeJsonDump(j), "application/json");
         cout << "[WebServer] Dispatched automation command '" << command
              << "' to " << formatNodeHex(nodeId) << endl;
     } else {
         res.status = 500;
-        res.set_content("{\"error\":\"Failed to dispatch command to automation node\"}", "application/json");
+        res.set_content(safeJsonDump(json({{"error", "Failed to dispatch command to automation node"}})), "application/json");
     }
 }
 
@@ -1507,7 +1786,7 @@ void WebServer::handlePostDbQuery(const httplib::Request &req, httplib::Response
 {
     if (!_db) {
         res.status = 503;
-        res.set_content("{\"error\":\"Database not available\"}", "application/json");
+        res.set_content(safeJsonDump(json({{"error", "Database not available"}})), "application/json");
         return;
     }
 
@@ -1516,27 +1795,31 @@ void WebServer::handlePostDbQuery(const httplib::Request &req, httplib::Response
         reqJson = json::parse(req.body);
     } catch (const exception &e) {
         res.status = 400;
-        res.set_content("{\"error\":\"Invalid JSON\"}", "application/json");
+        res.set_content(safeJsonDump(json({{"error", "Invalid JSON"}})), "application/json");
         return;
     }
 
-    string query = reqJson.value("query", "");
+    if (!reqJson.is_object()) {
+        res.status = 400;
+        res.set_content(safeJsonDump(json({{"error", "JSON request body must be an object"}})), "application/json");
+        return;
+    }
+
+    string query = "";
+    try {
+        query = reqJson.value("query", "");
+        if (query.empty()) {
+            query = reqJson.value("sql", "");
+        }
+    } catch (const json::exception &e) {
+        res.status = 400;
+        res.set_content(safeJsonDump(json({{"error", string("Invalid field format: ") + e.what()}})), "application/json");
+        return;
+    }
+
     if (query.empty()) {
         res.status = 400;
-        res.set_content("{\"error\":\"Query cannot be empty\"}", "application/json");
-        return;
-    }
-
-    // Basic SQL sanity check: enforce read-only
-    string lowerQuery = query;
-    transform(lowerQuery.begin(), lowerQuery.end(), lowerQuery.begin(), ::tolower);
-    while (!lowerQuery.empty() && isspace(lowerQuery.front())) {
-        lowerQuery.erase(0, 1);
-    }
-
-    if (lowerQuery.rfind("select", 0) != 0 && lowerQuery.rfind("explain", 0) != 0 && lowerQuery.rfind("pragma", 0) != 0) {
-        res.status = 403;
-        res.set_content("{\"error\":\"Only SELECT, EXPLAIN, and PRAGMA read queries are permitted via Web Console\"}", "application/json");
+        res.set_content(safeJsonDump(json({{"error", "Query cannot be empty"}})), "application/json");
         return;
     }
 
@@ -1546,13 +1829,13 @@ void WebServer::handlePostDbQuery(const httplib::Request &req, httplib::Response
         j["columns"] = qres.columns;
         j["rows"] = qres.rows;
         j["row_count"] = qres.rows.size();
-        res.set_content(j.dump(), "application/json");
+        res.set_content(safeJsonDump(j), "application/json");
     } else {
         res.status = 400;
         json j = {
             {"error", qres.error}
         };
-        res.set_content(j.dump(), "application/json");
+        res.set_content(safeJsonDump(j), "application/json");
     }
 }
 

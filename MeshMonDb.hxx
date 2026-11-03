@@ -122,51 +122,51 @@ struct AppStat {
 };
 
 struct NodeDetail {
-    uint32_t nodeId;
+    uint32_t nodeId = 0;
     string nodeHex;
     string longName;
     string shortName;
-    int hwModel;
-    int role;
-    time_t firstSeen;
-    time_t lastSeen;
-    float lastRssi;
-    float lastSnr;
-    int lastHops;
-    uint32_t totalPackets;
-    float avgSnr;
-    float minSnr;
-    float maxSnr;
-    float avgRssi;
-    bool hasTelemetry;
-    int lastBattery;
-    float lastVoltage;
-    float lastChannelUtil;
-    float lastAirUtilTx;
-    bool hasPosition;
-    double lastLat;
-    double lastLon;
-    int lastAlt;
+    int hwModel = 0;
+    int role = 0;
+    time_t firstSeen = 0;
+    time_t lastSeen = 0;
+    float lastRssi = 0.0f;
+    float lastSnr = 0.0f;
+    int lastHops = 0;
+    uint32_t totalPackets = 0;
+    float avgSnr = 0.0f;
+    float minSnr = 0.0f;
+    float maxSnr = 0.0f;
+    float avgRssi = 0.0f;
+    bool hasTelemetry = false;
+    int lastBattery = 0;
+    float lastVoltage = 0.0f;
+    float lastChannelUtil = 0.0f;
+    float lastAirUtilTx = 0.0f;
+    bool hasPosition = false;
+    double lastLat = 0.0;
+    double lastLon = 0.0;
+    int lastAlt = 0;
 };
 
 struct LinkFadingPoint {
-    time_t timestamp;
-    float avgSnr;
-    float minSnr;
-    float maxSnr;
-    float avgRssi;
-    uint32_t count;
+    time_t timestamp = 0;
+    float avgSnr = 0.0f;
+    float minSnr = 0.0f;
+    float maxSnr = 0.0f;
+    float avgRssi = 0.0f;
+    uint32_t count = 0;
 };
 
 struct ChannelHealthStat {
-    float avgChannelUtil;
-    float maxChannelUtil;
-    float avgAirUtilTx;
-    float maxAirUtilTx;
-    uint32_t totalPackets;
-    uint32_t badPackets;
-    uint32_t duplicatePackets;
-    uint32_t uptimeSeconds;
+    float avgChannelUtil = 0.0f;
+    float maxChannelUtil = 0.0f;
+    float avgAirUtilTx = 0.0f;
+    float maxAirUtilTx = 0.0f;
+    uint32_t totalPackets = 0;
+    uint32_t badPackets = 0;
+    uint32_t duplicatePackets = 0;
+    uint32_t uptimeSeconds = 0;
 };
 
 struct AutomationEvent {
@@ -273,9 +273,102 @@ struct QueryResult {
     string error;
 };
 
+struct TextMessageRow {
+    int64_t id;
+    int64_t rxTime;
+    uint32_t fromNode;
+    uint32_t toNode;
+    uint32_t channel;
+    string text;
+    double rxSnr;
+    int rxRssi;
+
+    TextMessageRow()
+        : id(0), rxTime(0), fromNode(0), toNode(0), channel(0),
+          rxSnr(0.0), rxRssi(0) {}
+};
+
+struct RemoteNodeAnalyticsRow {
+    uint32_t nodeId;
+    string shortName;
+    string longName;
+    int hwModel;
+    int role;
+    time_t firstSeen;
+    time_t lastSeen;
+    bool hasGps;
+    double lat;
+    double lon;
+    int alt;
+    time_t lastPosTime;
+    uint32_t totalPackets;
+    uint64_t totalBytes;
+    float avgHops;
+    float avgSnr;
+    float minSnr;
+    float maxSnr;
+    float avgRssi;
+    uint32_t directPackets;
+    uint32_t relayedPackets;
+    bool hasTelemetry;
+    int lastBattery;
+    float lastVoltage;
+    double maxDisplacementM;
+    string mobility;
+    map<int, uint32_t> portnumCounts;
+
+    RemoteNodeAnalyticsRow()
+        : nodeId(0), hwModel(0), role(0), firstSeen(0), lastSeen(0),
+          hasGps(false), lat(0.0), lon(0.0), alt(0), lastPosTime(0),
+          totalPackets(0), totalBytes(0), avgHops(0.0f), avgSnr(0.0f),
+          minSnr(0.0f), maxSnr(0.0f), avgRssi(0.0f), directPackets(0),
+          relayedPackets(0), hasTelemetry(false), lastBattery(-1),
+          lastVoltage(0.0f), maxDisplacementM(0.0), mobility("RF-Only") {}
+};
+
+struct TopologyRouteRow {
+    int64_t id;
+    time_t meshmonTime;
+    uint32_t fromNode;
+    uint32_t toNode;
+    int routeCount;
+    string routeNodes;
+    string routeSnrs;
+    string fromShort;
+    string toShort;
+
+    TopologyRouteRow()
+        : id(0), meshmonTime(0), fromNode(0), toNode(0), routeCount(0) {}
+};
+
+struct TopologyAsymmetryRow {
+    uint32_t nodeId;
+    string shortName;
+    float forwardSnr;
+    float forwardRssi;
+    uint32_t sampleCount;
+    string reverseSnrs;
+
+    TopologyAsymmetryRow()
+        : nodeId(0), forwardSnr(0.0f), forwardRssi(0.0f), sampleCount(0) {}
+};
+
+struct TopologyCentroidRow {
+    uint32_t nodeId;
+    string shortName;
+    double estLat;
+    double estLon;
+    int neighborCount;
+
+    TopologyCentroidRow()
+        : nodeId(0), estLat(0.0), estLon(0.0), neighborCount(0) {}
+};
+
 class MeshMonDb {
 
 public:
+
+    static constexpr size_t MAX_DB_QUEUE_SIZE = 4096;
 
     MeshMonDb(const string &dbPath = "");
     ~MeshMonDb();
@@ -287,6 +380,9 @@ public:
     void stop(void);
     void join(void);
     bool isRunning(void) const;
+    void flush(void);
+    size_t getQueueDepth(void) const;
+    size_t getPendingQueueSize(void) const { return getQueueDepth(); }
 
     const string &getDbPath(void) const;
     size_t getDbFileSize(void) const;
@@ -353,6 +449,13 @@ public:
     bool getLinkFading(uint32_t nodeId, time_t since, vector<LinkFadingPoint> &points);
     bool getChannelHealth(time_t since, ChannelHealthStat &health);
 
+    // Single-Pass Batch Queries for WebServer & SpatialAnalytics
+    bool getRecentTextMessages(int limit, vector<TextMessageRow> &out);
+    bool getRemoteNodeAnalytics(vector<RemoteNodeAnalyticsRow> &out);
+    bool getTopologyRoutes(size_t limit, vector<TopologyRouteRow> &out);
+    bool getTopologyAsymmetry(size_t limit, vector<TopologyAsymmetryRow> &out);
+    bool getTopologyCentroids(size_t limit, vector<TopologyCentroidRow> &out);
+
     // Automation Queries
     bool getPumpAnalytics(uint32_t nodeId, time_t since, PumpAnalytics &analytics);
     bool getRoofAnalytics(uint32_t nodeId, time_t since, RoofAnalytics &analytics);
@@ -384,63 +487,63 @@ private:
     };
 
     struct DbEvent {
-        EventType type;
-        time_t meshmonTime;
-        time_t rxTime;
-        uint32_t packetId;
-        uint32_t fromNode;
-        uint32_t toNode;
-        uint32_t channel;
-        float rxRssi;
-        float rxSnr;
-        int hopStart;
-        int hopLimit;
-        int hops;
-        int portnum;
-        int payloadVariant;
+        EventType type = EV_PACKET;
+        time_t meshmonTime = 0;
+        time_t rxTime = 0;
+        uint32_t packetId = 0;
+        uint32_t fromNode = 0;
+        uint32_t toNode = 0;
+        uint32_t channel = 0;
+        float rxRssi = 0.0f;
+        float rxSnr = 0.0f;
+        int hopStart = 0;
+        int hopLimit = 0;
+        int hops = 0;
+        int portnum = 0;
+        int payloadVariant = 0;
         vector<uint8_t> payload;
-        bool wantAck;
-        bool viaMqtt;
+        bool wantAck = false;
+        bool viaMqtt = false;
 
         // Domain event specific payload fields
         string text;
         string shortName;
         string longName;
-        int hwModel;
-        int role;
+        int hwModel = 0;
+        int role = 0;
 
         // Telemetry
         string metricType;
-        bool hasBattery;
-        int batteryLevel;
-        bool hasVoltage;
-        float voltage;
-        bool hasChannelUtil;
-        float channelUtilization;
-        bool hasAirUtilTx;
-        float airUtilTx;
-        bool hasTemp;
-        float temperature;
-        bool hasHum;
-        float humidity;
-        bool hasPress;
-        float pressure;
-        bool hasCh1Volt;
-        float ch1Voltage;
-        bool hasCh1Curr;
-        float ch1Current;
-        uint32_t uptimeSeconds;
+        bool hasBattery = false;
+        int batteryLevel = 0;
+        bool hasVoltage = false;
+        float voltage = 0.0f;
+        bool hasChannelUtil = false;
+        float channelUtilization = 0.0f;
+        bool hasAirUtilTx = false;
+        float airUtilTx = 0.0f;
+        bool hasTemp = false;
+        float temperature = 0.0f;
+        bool hasHum = false;
+        float humidity = 0.0f;
+        bool hasPress = false;
+        float pressure = 0.0f;
+        bool hasCh1Volt = false;
+        float ch1Voltage = 0.0f;
+        bool hasCh1Curr = false;
+        float ch1Current = 0.0f;
+        uint32_t uptimeSeconds = 0;
 
         // Position
-        double latitude;
-        double longitude;
-        int altitude;
-        int groundSpeed;
-        int groundTrack;
-        int satsInView;
+        double latitude = 0.0;
+        double longitude = 0.0;
+        int altitude = 0;
+        int groundSpeed = 0;
+        int groundTrack = 0;
+        int satsInView = 0;
 
         // Traceroute
-        uint32_t routeCount;
+        uint32_t routeCount = 0;
         vector<uint32_t> routeNodes;
         vector<float> routeSnrs;
 
@@ -452,10 +555,14 @@ private:
         string actionParam;
         string status;
         string initiator;
-        int32_t rttMs;
+        int32_t rttMs = 0;
     };
 
     bool initSchema(void);
+    void prepareStatements(void);
+    void finalizeStatements(void);
+    void ensureNodeExists(uint32_t nodeId, int64_t ts);
+    void enqueueEvent(const DbEvent &ev);
     void workerLoop(void);
     void processEvent(const DbEvent &ev);
 
@@ -463,10 +570,24 @@ private:
     sqlite3 *_db;
     mutable mutex _dbMutex;
 
+    // Cached hot-path prepared statements
+    sqlite3_stmt *_stmtEnsureNode;
+    sqlite3_stmt *_stmtUpsertNodePacket;
+    sqlite3_stmt *_stmtInsertPacket;
+    sqlite3_stmt *_stmtUpsertNodeInfo;
+    sqlite3_stmt *_stmtInsertTelemetry;
+    sqlite3_stmt *_stmtInsertPosition;
+    sqlite3_stmt *_stmtInsertTextMsg;
+    sqlite3_stmt *_stmtInsertTraceroute;
+    sqlite3_stmt *_stmtInsertAutoEvent;
+
     // Async worker queue
     queue<DbEvent> _queue;
-    mutex _queueMutex;
+    mutable mutex _queueMutex;
     condition_variable _queueCv;
+    condition_variable _idleCv;
+    uint64_t _enqueuedSeq;
+    uint64_t _processedSeq;
     thread _workerThread;
     atomic<bool> _running;
     atomic<bool> _stopRequested;

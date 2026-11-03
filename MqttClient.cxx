@@ -108,6 +108,7 @@ void MqttClient::join(void)
         if (_thread->joinable()) {
             _thread->join();
         }
+        _thread.reset();
     }
 }
 
@@ -204,7 +205,7 @@ void MqttClient::onConnect(struct mosquitto *mosq, void *obj, int rc)
 
     if (rc != MOSQ_ERR_SUCCESS) {
         cerr << "mosquitto: " << mosquitto_connack_string(rc) << endl;
-        mosquitto_disconnect(mosq);
+        mqtt->_connected.store(false);
         return;
     }
 
@@ -215,7 +216,6 @@ void MqttClient::onConnect(struct mosquitto *mosq, void *obj, int rc)
         rc = mosquitto_subscribe(mosq, NULL, mqtt->_topic.c_str(), 1);
         if (rc != MOSQ_ERR_SUCCESS) {
             cerr << "mosquitto: " << mosquitto_strerror(rc) << endl;
-            mosquitto_disconnect(mosq);
             return;
         }
     }
@@ -296,6 +296,7 @@ void MqttClient::run(void)
 {
     int ret;
     bool loopStarted = false;
+    bool initialConnectLaunched = false;
     int qos;
 
     if (_mosq == NULL) {
@@ -314,6 +315,7 @@ void MqttClient::run(void)
         mosquitto_username_pw_set(_mosq, _user.c_str(),
                                   _password.empty() ? NULL : _password.c_str());
     }
+    mosquitto_reconnect_delay_set(_mosq, 2, 30, true);
     mosquitto_connect_callback_set(_mosq, onConnect);
     mosquitto_disconnect_callback_set(_mosq, onDisconnect);
     mosquitto_publish_callback_set(_mosq, onPublish);
@@ -344,10 +346,11 @@ void MqttClient::run(void)
     }
     loopStarted = true;
 
-    ret = mosquitto_connect(_mosq, _server.c_str(), _port, 60);
-    if (ret != MOSQ_ERR_SUCCESS) {
-        cerr << "mosquitto_connect: " << mosquitto_strerror(ret) << endl;
-        goto done;
+    ret = mosquitto_connect_async(_mosq, _server.c_str(), _port, 60);
+    if (ret == MOSQ_ERR_SUCCESS) {
+        initialConnectLaunched = true;
+    } else {
+        cerr << "mosquitto_connect_async: " << mosquitto_strerror(ret) << endl;
     }
 
     while (_isRunning.load()) {
@@ -361,7 +364,15 @@ void MqttClient::run(void)
         {
             unique_lock<mutex> lock(_mutex);
             while (_isRunning.load() && !_connected.load()) {
-                _cv.wait_for(lock, std::chrono::seconds(1));
+                if (!initialConnectLaunched) {
+                    lock.unlock();
+                    ret = mosquitto_connect_async(_mosq, _server.c_str(), _port, 60);
+                    lock.lock();
+                    if (ret == MOSQ_ERR_SUCCESS) {
+                        initialConnectLaunched = true;
+                    }
+                }
+                _cv.wait_for(lock, std::chrono::seconds(2));
             }
             while (_isRunning.load() && _connected.load() &&
                    _proxyQueue.empty() && _packetQueue.empty() &&
@@ -453,8 +464,10 @@ done:
     if (_mosq != NULL) {
         mosquitto_disconnect(_mosq);
         if (loopStarted) {
-            mosquitto_loop_stop(_mosq, true);
+            mosquitto_loop_stop(_mosq, false);
         }
+        mosquitto_destroy(_mosq);
+        _mosq = NULL;
     }
     _isRunning.store(false);
 

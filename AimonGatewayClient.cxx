@@ -78,7 +78,19 @@ void AimonGatewayClient::stop(void)
     }
 
     _running = false;
-    disconnect();
+    _connected = false;
+
+    int fd = _sockFd.load();
+    if (fd != -1) {
+        lock_guard<mutex> lock(_sendMutex);
+        if (_sockFd.load() != -1) {
+            shutdown(_sockFd.load(), SHUT_RDWR);
+        }
+    }
+
+    if (!_thread.joinable()) {
+        disconnect();
+    }
 }
 
 void AimonGatewayClient::join(void)
@@ -97,10 +109,10 @@ void AimonGatewayClient::disconnect(void)
 {
     _connected = false;
     lock_guard<mutex> lock(_sendMutex);
-    if (_sockFd != -1) {
-        shutdown(_sockFd, SHUT_RDWR);
-        close(_sockFd);
-        _sockFd = -1;
+    int fd = _sockFd.exchange(-1);
+    if (fd != -1) {
+        shutdown(fd, SHUT_RDWR);
+        close(fd);
     }
 }
 
@@ -147,7 +159,7 @@ bool AimonGatewayClient::connectToGateway(void)
 
     {
         lock_guard<mutex> lock(_sendMutex);
-        _sockFd = fd;
+        _sockFd.store(fd);
     }
 
     return true;
@@ -156,7 +168,8 @@ bool AimonGatewayClient::connectToGateway(void)
 void AimonGatewayClient::sendResponse(const string &msg)
 {
     lock_guard<mutex> lock(_sendMutex);
-    if (_sockFd == -1) {
+    int fd = _sockFd.load();
+    if (fd == -1) {
         return;
     }
 
@@ -168,7 +181,7 @@ void AimonGatewayClient::sendResponse(const string &msg)
     const char *ptr = payload.c_str();
     size_t rem = payload.size();
     while (rem > 0) {
-        ssize_t n = send(_sockFd, ptr, rem, MSG_NOSIGNAL);
+        ssize_t n = send(fd, ptr, rem, MSG_NOSIGNAL);
         if (n <= 0) {
             break;
         }
@@ -177,7 +190,7 @@ void AimonGatewayClient::sendResponse(const string &msg)
     }
 }
 
-bool AimonGatewayClient::sendRegistration(void)
+string AimonGatewayClient::getRegistrationJsonSchema(uint16_t webPort)
 {
     json reg = {
         {"jsonrpc", "2.0"},
@@ -188,7 +201,7 @@ bool AimonGatewayClient::sendRegistration(void)
             {"display_name", "Mesh Monitor"},
             {"short_name", "MeshMon"},
             {"priority", 20},
-            {"web_port", _webPort > 0 ? _webPort : 16880},
+            {"web_port", webPort > 0 ? webPort : 16880},
             {"web_path", "/"},
             {"description", "Meshtastic mesh network monitor, packet logger, and telemetry engine"},
             {"tools", json::array({
@@ -207,7 +220,7 @@ bool AimonGatewayClient::sendRegistration(void)
                 },
                 {
                     {"name", "meshmon_query_telemetry_history"},
-                    {"description", "Query historical telemetry time-series metrics for a node (battery, voltage, channel utilization, air util, temperature, humidity, pressure)."},
+                    {"description", "Query historical telemetry time-series metrics for a node (battery, voltage, channel utilization, air util, temperature, relative_humidity, barometric_pressure)."},
                     {"inputSchema", {
                         {"type", "object"},
                         {"properties", {
@@ -217,7 +230,7 @@ bool AimonGatewayClient::sendRegistration(void)
                             }},
                             {"metric", {
                                 {"type", "string"},
-                                {"description", "Specific metric to query: 'battery', 'voltage', 'channel_utilization', 'air_util_tx', 'temperature', 'humidity', 'pressure', or 'all' (default)."}
+                                {"description", "Specific metric to query: 'battery', 'voltage', 'channel_utilization', 'air_util_tx', 'temperature', 'relative_humidity', 'barometric_pressure', or 'all' (default)."}
                             }},
                             {"hours", {
                                 {"type", "integer"},
@@ -268,7 +281,7 @@ bool AimonGatewayClient::sendRegistration(void)
                 },
                 {
                     {"name", "meshmon_query_db"},
-                    {"description", "Execute a read-only SQL query against the local meshmon SQLite database. Supports complex analytics, percentiles, joins, aggregations, window functions, and time filtering.\n\nDatabase Schema:\n- nodes (node_id INTEGER PRIMARY KEY, node_hex TEXT, long_name TEXT, short_name TEXT, hw_model INTEGER, role INTEGER, first_seen INTEGER, last_seen INTEGER, last_rssi REAL, last_snr REAL, last_hops INTEGER)\n- packets (id INTEGER PRIMARY KEY, meshmon_time INTEGER, rx_time INTEGER, packet_id INTEGER, from_node INTEGER, to_node INTEGER, channel INTEGER, rx_rssi REAL, rx_snr REAL, hop_start INTEGER, hop_limit INTEGER, hops INTEGER, portnum INTEGER, payload_variant INTEGER, payload_size INTEGER, want_ack INTEGER, via_mqtt INTEGER, payload BLOB)\n- telemetry (id INTEGER PRIMARY KEY, meshmon_time INTEGER, node_id INTEGER, metric_type TEXT, battery_level INTEGER, voltage REAL, channel_utilization REAL, air_util_tx REAL, temperature REAL, humidity REAL, pressure REAL, ch1_voltage REAL, ch1_current REAL, uptime_seconds INTEGER)\n- positions (id INTEGER PRIMARY KEY, meshmon_time INTEGER, node_id INTEGER, latitude REAL, longitude REAL, altitude INTEGER, ground_speed INTEGER, ground_track INTEGER, sats_in_view INTEGER)\n- text_messages (id INTEGER PRIMARY KEY, meshmon_time INTEGER, packet_id INTEGER, from_node INTEGER, to_node INTEGER, channel INTEGER, message TEXT)\n- traceroutes (id INTEGER PRIMARY KEY, meshmon_time INTEGER, packet_id INTEGER, from_node INTEGER, to_node INTEGER, route_nodes TEXT, route_snrs TEXT)\n- automation_events (id INTEGER PRIMARY KEY, meshmon_time INTEGER, node_id INTEGER, device_type TEXT, direction TEXT, subsystem TEXT, command_name TEXT, action_param TEXT, status TEXT, initiator TEXT, rtt_ms INTEGER)\n- automation_nodes (node_id INTEGER PRIMARY KEY, node_hex TEXT, device_type TEXT, version TEXT, hardware TEXT, capabilities TEXT, ac_ir_protocol TEXT, tv_ir_protocol TEXT, first_seen INTEGER, last_seen INTEGER)"},
+                    {"description", "Execute a read-only SQL query against the local meshmon SQLite database. Supports complex analytics, percentiles, joins, aggregations, window functions, and time filtering.\n\nDatabase Schema:\n- nodes (node_id INTEGER PRIMARY KEY, node_hex TEXT, long_name TEXT, short_name TEXT, hw_model INTEGER, role INTEGER, first_seen INTEGER, last_seen INTEGER, last_rssi REAL, last_snr REAL, last_hops INTEGER)\n- packets (id INTEGER PRIMARY KEY, meshmon_time INTEGER, rx_time INTEGER, packet_id INTEGER, from_node INTEGER, to_node INTEGER, channel INTEGER, rx_rssi REAL, rx_snr REAL, hop_start INTEGER, hop_limit INTEGER, hops INTEGER, portnum INTEGER, payload_variant INTEGER, payload_size INTEGER, want_ack INTEGER, via_mqtt INTEGER, payload BLOB)\n- telemetry (id INTEGER PRIMARY KEY, rx_time INTEGER, meshmon_time INTEGER, node_id INTEGER, metric_type TEXT, battery_level INTEGER, voltage REAL, channel_utilization REAL, air_util_tx REAL, uptime_seconds INTEGER, temperature REAL, relative_humidity REAL, barometric_pressure REAL, ch1_voltage REAL, ch1_current REAL)\n- positions (id INTEGER PRIMARY KEY, meshmon_time INTEGER, node_id INTEGER, latitude REAL, longitude REAL, altitude INTEGER, ground_speed INTEGER, ground_track INTEGER, sats_in_view INTEGER)\n- text_messages (id INTEGER PRIMARY KEY, meshmon_time INTEGER, from_node INTEGER, to_node INTEGER, channel INTEGER, message TEXT)\n- traceroutes (id INTEGER PRIMARY KEY, meshmon_time INTEGER, from_node INTEGER, to_node INTEGER, route_count INTEGER, route_nodes TEXT, route_snrs TEXT)\n- automation_events (id INTEGER PRIMARY KEY, meshmon_time INTEGER, node_id INTEGER, node_hex TEXT, device_type TEXT, direction TEXT, subsystem TEXT, command_name TEXT, action_param TEXT, status TEXT, initiator TEXT, rtt_ms INTEGER)\n- automation_nodes (node_id INTEGER PRIMARY KEY, node_hex TEXT, device_type TEXT, version TEXT, hardware TEXT, capabilities TEXT, ac_ir_protocol TEXT, tv_ir_protocol TEXT, first_seen INTEGER, last_seen INTEGER)"},
                     {"inputSchema", {
                         {"type", "object"},
                         {"properties", {
@@ -305,7 +318,17 @@ bool AimonGatewayClient::sendRegistration(void)
         }}
     };
 
-    sendResponse(reg.dump());
+    return reg.dump(-1, ' ', false, json::error_handler_t::replace);
+}
+
+string AimonGatewayClient::buildRegistrationJson(void) const
+{
+    return getRegistrationJsonSchema(_webPort > 0 ? _webPort : 16880);
+}
+
+bool AimonGatewayClient::sendRegistration(void)
+{
+    sendResponse(buildRegistrationJson());
     return true;
 }
 
@@ -314,9 +337,14 @@ void AimonGatewayClient::processIncoming(void)
     char buffer[4096];
     string lineBuffer;
 
-    while (_running && _connected && (_sockFd != -1)) {
+    while (_running && _connected && (_sockFd.load() != -1)) {
+        int fd = _sockFd.load();
+        if (fd == -1) {
+            break;
+        }
+
         struct pollfd pfd;
-        pfd.fd = _sockFd;
+        pfd.fd = fd;
         pfd.events = POLLIN;
         pfd.revents = 0;
 
@@ -334,11 +362,14 @@ void AimonGatewayClient::processIncoming(void)
             break;
         }
         if (pfd.revents & POLLIN) {
-            ssize_t n = recv(_sockFd, buffer, sizeof(buffer), 0);
+            ssize_t n = recv(fd, buffer, sizeof(buffer), 0);
             if (n <= 0) {
                 break;
             }
             lineBuffer.append(buffer, n);
+            if (lineBuffer.size() > 1048576) {
+                lineBuffer.clear();
+            }
 
             size_t newlinePos;
             while ((newlinePos = lineBuffer.find('\n')) != string::npos) {
@@ -410,7 +441,7 @@ void AimonGatewayClient::handleRequest(const string &line)
                         {"message", "Unknown tool: " + toolName}
                     }}
                 };
-                sendResponse(errResp.dump());
+                sendResponse(errResp.dump(-1, ' ', false, json::error_handler_t::replace));
                 return;
             }
 
@@ -426,7 +457,7 @@ void AimonGatewayClient::handleRequest(const string &line)
                     })}
                 }}
             };
-            sendResponse(resp.dump());
+            sendResponse(resp.dump(-1, ' ', false, json::error_handler_t::replace));
         } else {
             json errResp = {
                 {"jsonrpc", "2.0"},
@@ -436,7 +467,7 @@ void AimonGatewayClient::handleRequest(const string &line)
                     {"message", "Unsupported method: " + method}
                 }}
             };
-            sendResponse(errResp.dump());
+            sendResponse(errResp.dump(-1, ' ', false, json::error_handler_t::replace));
         }
     } catch (const exception &e) {
         cerr << "[AimonGatewayClient] Error processing request: " << e.what() << endl;
@@ -473,6 +504,7 @@ string AimonGatewayClient::toolGetNodeStatus(const string &nodeIdArg)
         return "Error: Radio client is not attached or initialized.";
     }
 
+    SimpleClient::ScopedLock lock(_mon);
     const map<uint32_t, meshtastic_NodeInfo> &nodes = _mon->nodeInfos();
     const map<uint32_t, meshtastic_DeviceMetrics> &dMap = _mon->deviceMetrics();
     const map<uint32_t, meshtastic_Position> &pMap = _mon->positions();
@@ -702,7 +734,7 @@ string AimonGatewayClient::toolQueryTelemetryHistory(const string &nodeIdArg,
         limit = 50;
     }
 
-    time_t since = time(NULL) - (hours * 3600);
+    time_t since = time(NULL) - (static_cast<time_t>(hours) * 3600);
     string sql = "SELECT datetime(meshmon_time, 'unixepoch', 'localtime') AS timestamp, "
                  "metric_type, battery_level, voltage, channel_utilization, air_util_tx, "
                  "temperature, relative_humidity, barometric_pressure, uptime_seconds "
@@ -759,7 +791,7 @@ string AimonGatewayClient::toolGetRfAnalytics(int hours)
         hours = 24;
     }
 
-    time_t since = time(NULL) - (hours * 3600);
+    time_t since = time(NULL) - (static_cast<time_t>(hours) * 3600);
 
     TrafficSummary summary;
     _db->getTrafficSummary(since, summary);
@@ -888,7 +920,7 @@ string AimonGatewayClient::toolQueryDb(const string &sql)
     size_t endWord = sql.find_first_of(" \t\r\n;", start);
     string firstWord = sql.substr(start, (endWord == string::npos) ? string::npos : (endWord - start));
     for (char &c : firstWord) {
-        c = (char) toupper(c);
+        c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
     }
     if (firstWord != "SELECT" && firstWord != "WITH" && firstWord != "EXPLAIN") {
         return "Error: Only read-only queries (SELECT or WITH) are permitted.";
@@ -985,6 +1017,7 @@ string AimonGatewayClient::toolGetSpatialAnalytics(int premiseThresholdM, int to
     string refName = "Gateway Reference";
 
     if (_mon != nullptr) {
+        SimpleClient::ScopedLock lock(_mon);
         uint32_t myNode = _mon->whoami();
         if (myNode != 0) {
             char myHex[32];
@@ -1005,7 +1038,7 @@ string AimonGatewayClient::toolGetSpatialAnalytics(int premiseThresholdM, int to
         "LEFT JOIN nodes n ON p.node_id = n.node_id "
         "WHERE p.latitude != 0 AND p.longitude != 0 ";
     if (hours > 0) {
-        sql += "AND p.meshmon_time >= strftime('%s', 'now') - " + to_string(hours * 3600) + " ";
+        sql += "AND p.meshmon_time >= strftime('%s', 'now') - " + to_string(static_cast<time_t>(hours) * 3600) + " ";
     }
     sql += "GROUP BY p.node_id;";
 
@@ -1034,9 +1067,10 @@ string AimonGatewayClient::toolGetSpatialAnalytics(int premiseThresholdM, int to
 
         bool isOnPremise = (sn.distMeters <= premiseThresholdM);
         if (_mon != nullptr) {
+            SimpleClient::ScopedLock lock(_mon);
             if (sn.nodeId == _mon->whoami() ||
-                _mon->admins().find(sn.nodeId) != _mon->admins().end() ||
-                _mon->mates().find(sn.nodeId) != _mon->mates().end()) {
+                _mon->admins().count(sn.nodeId) > 0 ||
+                _mon->mates().count(sn.nodeId) > 0) {
                 isOnPremise = true;
             }
         }

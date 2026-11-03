@@ -4,10 +4,24 @@
 
 ARCH :=		$(shell uname -m)
 MAKEFLAGS =	--no-print-dir
+CMAKE :=	$(shell [ -x /usr/bin/cmake ] && echo /usr/bin/cmake || which cmake)
+NUM_PROCS :=	$(shell nproc 2>/dev/null || echo 4)
 
-TARGETS +=	build/$(ARCH)/meshmon
+ifneq ($(findstring mull-ir-frontend,$(CXXFLAGS)),)
+BUILD_DIR :=	build-mull/$(ARCH)
+GCC_INSTALL_DIR := $(shell dirname "$$(g++ -print-libgcc-file-name)" 2>/dev/null)
+CMAKE_SAN_FLAGS := -DCMAKE_C_COMPILER=clang-18 -DCMAKE_CXX_COMPILER=clang++-18 -DCMAKE_C_FLAGS="--gcc-install-dir=$(GCC_INSTALL_DIR) $(CFLAGS)" -DCMAKE_CXX_FLAGS="--gcc-install-dir=$(GCC_INSTALL_DIR) $(CXXFLAGS)" -DCMAKE_EXE_LINKER_FLAGS="--gcc-install-dir=$(GCC_INSTALL_DIR) $(LDFLAGS)"
+else ifneq ($(strip $(CFLAGS)$(CXXFLAGS)$(LDFLAGS)),)
+BUILD_DIR :=	build-sanitized/$(ARCH)
+CMAKE_SAN_FLAGS := -DCMAKE_C_FLAGS="$(CFLAGS)" -DCMAKE_CXX_FLAGS="$(CXXFLAGS)" -DCMAKE_EXE_LINKER_FLAGS="$(LDFLAGS)"
+else
+BUILD_DIR :=	build/$(ARCH)
+CMAKE_SAN_FLAGS :=
+endif
 
-.PHONY: default clean distclean all submodules
+TARGETS +=	$(BUILD_DIR)/meshmon
+
+.PHONY: default clean distclean all test submodules
 
 all: default
 
@@ -18,15 +32,18 @@ submodules:
 		git submodule update --init --recursive; \
 	fi
 
+test: all
+	@$(CMAKE) --build $(BUILD_DIR) --target test -j$(NUM_PROCS)
+
 clean:
-	@test -f build/$(ARCH)/Makefile && $(MAKE) -C build/$(ARCH) clean
+	@test -f $(BUILD_DIR)/Makefile && $(MAKE) -C $(BUILD_DIR) clean || true
 
 distclean:
-	rm -rf build/
+	rm -rf build/ build-sanitized/ build-mull/
 
 .PHONY: meshmon
 
-meshmon: build/$(ARCH)/meshmon
+meshmon: $(BUILD_DIR)/meshmon
 
 MESHMON_TREE :=	\
 	CMakeLists.txt version.h.in \
@@ -37,18 +54,18 @@ MESHMON_SRCS :=	$(shell find -H $(MESHMON_TREE) -type f \
 	       -o -name 'CMakeLists.txt' -o -name 'version.h.in' \) \
 	    2>/dev/null)
 
-build/$(ARCH)/meshmon: build/$(ARCH)/Makefile $(MESHMON_SRCS)
+$(BUILD_DIR)/meshmon: $(BUILD_DIR)/Makefile $(MESHMON_SRCS)
 	@if [ -f $@ ]; then \
-		rm -f build/$(ARCH)/version.h; \
+		rm -f $(BUILD_DIR)/version.h; \
 	fi
-	@$(MAKE) -C build/$(ARCH)
+	@$(MAKE) -C $(BUILD_DIR) -j$(NUM_PROCS)
 
-build/$(ARCH)/Makefile: CMakeLists.txt
-	@mkdir -p build/$(ARCH)
-	@cd build/$(ARCH) && cmake ../..
+$(BUILD_DIR)/Makefile: CMakeLists.txt
+	@mkdir -p $(BUILD_DIR)
+	@cd $(BUILD_DIR) && $(CMAKE) ../.. $(CMAKE_SAN_FLAGS)
 
 .PHONY: release
 
-release: build/$(ARCH)/Makefile
-	@rm -f build/$(ARCH)/version.h
-	@$(MAKE) -C build/$(ARCH)
+release: $(BUILD_DIR)/Makefile
+	@rm -f $(BUILD_DIR)/version.h
+	@$(MAKE) -C $(BUILD_DIR) -j$(NUM_PROCS)

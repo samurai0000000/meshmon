@@ -62,7 +62,9 @@ int MeshMonShell::vprintf(const char *format, va_list ap)
             char pbuf[2048];
             int ret = vsnprintf(pbuf, sizeof(pbuf), format, ap);
             if (ret > 0) {
-                std::cout << pbuf;
+                size_t len = std::min(static_cast<size_t>(ret), sizeof(pbuf) - 1);
+                std::string s(pbuf, len);
+                std::cout << s;
             }
             return ret;
         }
@@ -467,6 +469,8 @@ uint32_t MeshMonShell::resolveNode(const SimpleClient *client, const string &nod
         return 0xffffffffU;
     }
 
+    SimpleClient::ScopedLock lock(client);
+
     if ((strcasecmp(nodeArg.c_str(), "me") == 0) ||
         (strcasecmp(nodeArg.c_str(), "self") == 0) ||
         (strcasecmp(nodeArg.c_str(), "local") == 0)) {
@@ -567,6 +571,8 @@ void MeshMonShell::printNodeStatus(uint32_t nodeId)
         this->printf("Client not connected.\n");
         return;
     }
+
+    SimpleClient::ScopedLock lock(_client);
 
     const map<uint32_t, meshtastic_NodeInfo> &nodes = _client->nodeInfos();
     map<uint32_t, meshtastic_NodeInfo>::const_iterator nIt = nodes.find(nodeId);
@@ -879,6 +885,7 @@ void MeshMonShell::printNode(const string &nodeKey,
         char *end = NULL;
         unsigned long val = strtoul(nodeKey.c_str(), &end, 16);
         if ((end != nodeKey.c_str()) && (*end == '\0')) {
+            SimpleClient::ScopedLock lock(meshmon);
             const map<unsigned int, meshtastic_NodeInfo> &nodes = meshmon->nodeInfos();
             map<unsigned int, meshtastic_NodeInfo>::const_iterator it = nodes.find((unsigned int) val);
             if (it != nodes.end() && it->second.has_user && (it->second.user.short_name[0] != '\0')) {
@@ -905,6 +912,7 @@ bool MeshMonShell::resolveNodeKey(const string &nodeArg, string &outKey,
     // 1. Try matching known nodes by shortname or longname
     shared_ptr<MeshMon> meshmon = dynamic_pointer_cast<MeshMon>(_client);
     if (meshmon != NULL) {
+        SimpleClient::ScopedLock lock(meshmon);
         const map<unsigned int, meshtastic_NodeInfo> &nodes = meshmon->nodeInfos();
         for (map<unsigned int, meshtastic_NodeInfo>::const_iterator it = nodes.begin();
              it != nodes.end(); it++) {
@@ -953,6 +961,7 @@ bool MeshMonShell::resolveNodeKey(const string &nodeArg, string &outKey,
     outKey = Calibration::normalizeNodeKey((uint32_t) val);
     outName = outKey;
     if (meshmon != NULL) {
+        SimpleClient::ScopedLock lock(meshmon);
         const map<unsigned int, meshtastic_NodeInfo> &nodes = meshmon->nodeInfos();
         map<unsigned int, meshtastic_NodeInfo>::const_iterator it = nodes.find((unsigned int) val);
         if (it != nodes.end() && it->second.has_user && (it->second.user.short_name[0] != '\0')) {
@@ -1683,7 +1692,7 @@ int MeshMonShell::db(int argc, char **argv)
         if (argc >= 3) {
             hours = atoi(argv[2]);
         }
-        time_t since = (hours > 0) ? (time(NULL) - (hours * 3600)) : 0;
+        time_t since = (hours > 0) ? (time(NULL) - (static_cast<time_t>(hours) * 3600)) : 0;
         TrafficSummary s;
         if (!_db->getTrafficSummary(since, s)) {
             this->printf("Failed to query traffic summary.\n");
@@ -1718,7 +1727,7 @@ int MeshMonShell::db(int argc, char **argv)
         if (argc >= 4) {
             hours = atoi(argv[3]);
         }
-        time_t since = (hours > 0) ? (time(NULL) - (hours * 3600)) : 0;
+        time_t since = (hours > 0) ? (time(NULL) - (static_cast<time_t>(hours) * 3600)) : 0;
         vector<NodeTrafficStat> stats;
         if (!_db->getTopTalkers(since, limit, stats)) {
             this->printf("Failed to query top talkers.\n");
@@ -1746,7 +1755,7 @@ int MeshMonShell::db(int argc, char **argv)
         if (argc >= 3) {
             hours = atoi(argv[2]);
         }
-        time_t since = (hours > 0) ? (time(NULL) - (hours * 3600)) : 0;
+        time_t since = (hours > 0) ? (time(NULL) - (static_cast<time_t>(hours) * 3600)) : 0;
         vector<NeighborStat> stats;
         if (!_db->getNeighborStats(since, stats)) {
             this->printf("Failed to query neighbor statistics.\n");
@@ -1778,7 +1787,7 @@ int MeshMonShell::db(int argc, char **argv)
         if (argc >= 4) {
             hours = atoi(argv[3]);
         }
-        time_t since = (hours > 0) ? (time(NULL) - (hours * 3600)) : 0;
+        time_t since = (hours > 0) ? (time(NULL) - (static_cast<time_t>(hours) * 3600)) : 0;
         vector<EchoStormStat> stats;
         if (!_db->getEchoStorms(since, limit, stats)) {
             this->printf("Failed to query echo storm statistics.\n");
@@ -1811,7 +1820,7 @@ int MeshMonShell::db(int argc, char **argv)
         if (argc >= 3) {
             hours = atoi(argv[2]);
         }
-        time_t since = (hours > 0) ? (time(NULL) - (hours * 3600)) : 0;
+        time_t since = (hours > 0) ? (time(NULL) - (static_cast<time_t>(hours) * 3600)) : 0;
         vector<LinkAsymmetryStat> stats;
         if (!_db->getLinkAsymmetry(since, stats)) {
             this->printf("Failed to query link asymmetry.\n");
@@ -1842,7 +1851,7 @@ int MeshMonShell::db(int argc, char **argv)
         if (argc >= 4) {
             hours = atoi(argv[3]);
         }
-        time_t since = (hours > 0) ? (time(NULL) - (hours * 3600)) : 0;
+        time_t since = (hours > 0) ? (time(NULL) - (static_cast<time_t>(hours) * 3600)) : 0;
         vector<CriticalRepeaterStat> stats;
         if (!_db->getCriticalRepeaters(since, limit, stats)) {
             this->printf("Failed to query critical repeaters.\n");
@@ -1872,7 +1881,7 @@ int MeshMonShell::db(int argc, char **argv)
         if (argc >= 3) {
             hours = atoi(argv[2]);
         }
-        time_t since = (hours > 0) ? (time(NULL) - (hours * 3600)) : 0;
+        time_t since = (hours > 0) ? (time(NULL) - (static_cast<time_t>(hours) * 3600)) : 0;
         vector<ClockDriftStat> stats;
         if (!_db->getClockDrift(since, stats)) {
             this->printf("Failed to query clock drift statistics.\n");
@@ -1903,7 +1912,7 @@ int MeshMonShell::db(int argc, char **argv)
         if (argc >= 3) {
             hours = atoi(argv[2]);
         }
-        time_t since = (hours > 0) ? (time(NULL) - (hours * 3600)) : 0;
+        time_t since = (hours > 0) ? (time(NULL) - (static_cast<time_t>(hours) * 3600)) : 0;
         vector<HopStat> stats;
         if (!_db->getHopDistribution(since, stats)) {
             this->printf("Failed to query hop distribution.\n");
@@ -1925,7 +1934,7 @@ int MeshMonShell::db(int argc, char **argv)
         if (argc >= 3) {
             hours = atoi(argv[2]);
         }
-        time_t since = (hours > 0) ? (time(NULL) - (hours * 3600)) : 0;
+        time_t since = (hours > 0) ? (time(NULL) - (static_cast<time_t>(hours) * 3600)) : 0;
         vector<AppStat> stats;
         if (!_db->getPortnumDistribution(since, stats)) {
             this->printf("Failed to query application distribution.\n");
@@ -1957,7 +1966,7 @@ int MeshMonShell::db(int argc, char **argv)
         if (argc >= 4) {
             hours = atoi(argv[3]);
         }
-        time_t since = (hours > 0) ? (time(NULL) - (hours * 3600)) : 0;
+        time_t since = (hours > 0) ? (time(NULL) - (static_cast<time_t>(hours) * 3600)) : 0;
         NodeDetail d;
         if (!_db->getNodeDetail(nodeId, since, d)) {
             this->printf("Failed to query node detail.\n");
@@ -2002,7 +2011,7 @@ int MeshMonShell::db(int argc, char **argv)
         if (argc >= 4) {
             hours = atoi(argv[3]);
         }
-        time_t since = (hours > 0) ? (time(NULL) - (hours * 3600)) : 0;
+        time_t since = (hours > 0) ? (time(NULL) - (static_cast<time_t>(hours) * 3600)) : 0;
         vector<LinkFadingPoint> points;
         if (!_db->getLinkFading(nodeId, since, points)) {
             this->printf("Failed to query link fading data.\n");
@@ -2033,7 +2042,7 @@ int MeshMonShell::db(int argc, char **argv)
         if (argc >= 3) {
             hours = atoi(argv[2]);
         }
-        time_t since = (hours > 0) ? (time(NULL) - (hours * 3600)) : 0;
+        time_t since = (hours > 0) ? (time(NULL) - (static_cast<time_t>(hours) * 3600)) : 0;
         ChannelHealthStat h;
         if (!_db->getChannelHealth(since, h)) {
             this->printf("Failed to query channel health.\n");
@@ -2123,7 +2132,7 @@ int MeshMonShell::dbAuto(int argc, char **argv)
     if (subcmd == "pump" || subcmd == "meshpump") {
         int hours = 24;
         if (argc >= 3) hours = atoi(argv[2]);
-        time_t since = (hours > 0) ? (time(NULL) - (hours * 3600)) : 0;
+        time_t since = (hours > 0) ? (time(NULL) - (static_cast<time_t>(hours) * 3600)) : 0;
         PumpAnalytics a;
         if (!_db->getPumpAnalytics(0, since, a)) {
             this->printf("Failed to query meshpump analytics.\n");
@@ -2144,7 +2153,7 @@ int MeshMonShell::dbAuto(int argc, char **argv)
     if (subcmd == "roof" || subcmd == "meshroof") {
         int hours = 24;
         if (argc >= 3) hours = atoi(argv[2]);
-        time_t since = (hours > 0) ? (time(NULL) - (hours * 3600)) : 0;
+        time_t since = (hours > 0) ? (time(NULL) - (static_cast<time_t>(hours) * 3600)) : 0;
         RoofAnalytics a;
         if (!_db->getRoofAnalytics(0, since, a)) {
             this->printf("Failed to query meshroof analytics.\n");
@@ -2176,7 +2185,7 @@ int MeshMonShell::dbAuto(int argc, char **argv)
             hours = atoi(argv[3]);
         }
 
-        time_t since = (hours > 0) ? (time(NULL) - (hours * 3600)) : 0;
+        time_t since = (hours > 0) ? (time(NULL) - (static_cast<time_t>(hours) * 3600)) : 0;
         RoomAnalytics a;
         if (!_db->getRoomAnalytics(targetNode, since, a)) {
             this->printf("Failed to query meshroom analytics.\n");
@@ -2208,7 +2217,7 @@ int MeshMonShell::dbAuto(int argc, char **argv)
             hours = atoi(argv[3]);
         }
 
-        time_t since = (hours > 0) ? (time(NULL) - (hours * 3600)) : 0;
+        time_t since = (hours > 0) ? (time(NULL) - (static_cast<time_t>(hours) * 3600)) : 0;
         vector<LatencyTrendPoint> points;
         if (!_db->getLatencyTrend(targetNode, since, points)) {
             this->printf("Failed to query latency trend.\n");

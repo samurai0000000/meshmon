@@ -54,9 +54,6 @@ void sighandler(int signum)
     char c = 1;
 
     (void)(signum);
-    if (NcursesConsole::getInstance().isRunning()) {
-        NcursesConsole::getInstance().shutdown();
-    }
     g_stop = 1;
     if (g_stop_pipe[1] != -1) {
         ssize_t ret = write(g_stop_pipe[1], &c, 1);
@@ -66,6 +63,9 @@ void sighandler(int signum)
 
 static void requestStop(void)
 {
+    if (NcursesConsole::getInstance().isRunning()) {
+        NcursesConsole::getInstance().requestStop();
+    }
     if (gatewayClient) {
         gatewayClient->stop();
     }

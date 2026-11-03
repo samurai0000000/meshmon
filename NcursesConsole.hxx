@@ -67,8 +67,10 @@ public:
 
     bool init();
     void shutdown();
+    void requestStop();
 
     bool isRunning() const;
+    bool isCommandWorkerThread() const;
     InputState getInputState() const;
     void run();
 
@@ -159,9 +161,15 @@ private:
 
     std::atomic<InputState> _inputState{InputState::READY};
     std::unique_ptr<std::thread> _cmdWorker;
+    mutable std::mutex _workerThreadMutex;
+    std::thread::id _cmdWorkerId;
     std::atomic<bool> _workerFinished{false};
     std::string _activeCommandName;
     int _workerExitCode = 0;
+
+    std::atomic<bool> _dirtyLog{false};
+    std::atomic<bool> _dirtyOutput{false};
+    std::thread::id _uiThreadId;
 };
 
 #endif /* MESHMON_NCURSES_CONSOLE_HXX */

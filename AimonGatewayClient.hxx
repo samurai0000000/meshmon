@@ -30,6 +30,7 @@ public:
 
     bool start(const std::string &host = "127.0.0.1", uint16_t port = 3885);
     void stop(void);
+    void disconnect(void);
     void join(void);
 
     bool isConnected(void) const;
@@ -37,11 +38,13 @@ public:
     void setWebPort(uint16_t port) { _webPort = port; }
     uint16_t getWebPort(void) const { return _webPort; }
 
-private:
+    std::string buildRegistrationJson(void) const;
+    static std::string getRegistrationJsonSchema(uint16_t webPort = 16880);
+
+protected:
 
     void run(void);
     bool connectToGateway(void);
-    void disconnect(void);
     bool sendRegistration(void);
     void processIncoming(void);
 
@@ -69,7 +72,7 @@ private:
 
     std::atomic<bool> _running;
     std::atomic<bool> _connected;
-    int _sockFd;
+    std::atomic<int> _sockFd;
 
     std::thread _thread;
     std::mutex _sendMutex;

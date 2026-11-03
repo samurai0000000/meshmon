@@ -90,7 +90,20 @@ string MeshMonDb::portnumToString(int portnum)
 }
 
 MeshMonDb::MeshMonDb(const string &dbPath)
-    : _db(NULL), _running(false), _stopRequested(false)
+    : _db(NULL),
+      _stmtEnsureNode(NULL),
+      _stmtUpsertNodePacket(NULL),
+      _stmtInsertPacket(NULL),
+      _stmtUpsertNodeInfo(NULL),
+      _stmtInsertTelemetry(NULL),
+      _stmtInsertPosition(NULL),
+      _stmtInsertTextMsg(NULL),
+      _stmtInsertTraceroute(NULL),
+      _stmtInsertAutoEvent(NULL),
+      _enqueuedSeq(0),
+      _processedSeq(0),
+      _running(false),
+      _stopRequested(false)
 {
     if (!dbPath.empty()) {
         open(dbPath);
@@ -109,6 +122,7 @@ bool MeshMonDb::open(const string &dbPath)
     lock_guard<mutex> lock(_dbMutex);
 
     if (_db != NULL) {
+        finalizeStatements();
         sqlite3_close(_db);
         _db = NULL;
     }
@@ -143,13 +157,19 @@ bool MeshMonDb::open(const string &dbPath)
         err = NULL;
     }
 
-    return initSchema();
+    if (!initSchema()) {
+        return false;
+    }
+
+    prepareStatements();
+    return true;
 }
 
 void MeshMonDb::close(void)
 {
     lock_guard<mutex> lock(_dbMutex);
     if (_db != NULL) {
+        finalizeStatements();
         sqlite3_close(_db);
         _db = NULL;
     }
@@ -244,7 +264,7 @@ uint64_t MeshMonDb::getTotalTextMessageCount(void)
         return 0;
     }
 
-    const char *sql = "SELECT count(*) FROM messages;";
+    const char *sql = "SELECT count(*) FROM text_messages;";
     sqlite3_stmt *stmt = NULL;
     uint64_t count = 0;
 
@@ -307,6 +327,7 @@ bool MeshMonDb::initSchema(void)
         "CREATE TABLE IF NOT EXISTS telemetry ("
         "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
         "  meshmon_time INTEGER NOT NULL,"
+        "  rx_time INTEGER,"
         "  node_id INTEGER NOT NULL,"
         "  metric_type TEXT NOT NULL,"
         "  battery_level INTEGER,"
@@ -394,10 +415,104 @@ bool MeshMonDb::initSchema(void)
         return false;
     }
 
-    // Migration for existing tables: ensure rtt_ms column exists
+    // Migrations for existing tables
     sqlite3_exec(_db, "ALTER TABLE automation_events ADD COLUMN rtt_ms INTEGER DEFAULT 0;", NULL, NULL, NULL);
+    sqlite3_exec(_db, "ALTER TABLE telemetry ADD COLUMN rx_time INTEGER;", NULL, NULL, NULL);
 
     return true;
+}
+
+void MeshMonDb::prepareStatements(void)
+{
+    finalizeStatements();
+    if (_db == NULL) {
+        return;
+    }
+
+    sqlite3_prepare_v2(
+        _db,
+        "INSERT OR IGNORE INTO nodes (node_id, node_hex, first_seen, last_seen) "
+        "VALUES (?1, ?2, ?3, ?3);",
+        -1, &_stmtEnsureNode, NULL);
+
+    sqlite3_prepare_v2(
+        _db,
+        "INSERT INTO nodes (node_id, node_hex, first_seen, last_seen, last_rssi, last_snr, last_hops) "
+        "VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?6) "
+        "ON CONFLICT(node_id) DO UPDATE SET "
+        "last_seen=?3, last_rssi=?4, last_snr=?5, last_hops=?6;",
+        -1, &_stmtUpsertNodePacket, NULL);
+
+    sqlite3_prepare_v2(
+        _db,
+        "INSERT INTO packets (meshmon_time, rx_time, packet_id, from_node, to_node, channel, "
+        "rx_rssi, rx_snr, hop_start, hop_limit, hops, portnum, payload_variant, payload_size, "
+        "want_ack, via_mqtt, payload) "
+        "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17);",
+        -1, &_stmtInsertPacket, NULL);
+
+    sqlite3_prepare_v2(
+        _db,
+        "INSERT INTO nodes (node_id, node_hex, long_name, short_name, hw_model, role, first_seen, last_seen) "
+        "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7) "
+        "ON CONFLICT(node_id) DO UPDATE SET "
+        "long_name=?3, short_name=?4, hw_model=?5, role=?6, last_seen=?7;",
+        -1, &_stmtUpsertNodeInfo, NULL);
+
+    sqlite3_prepare_v2(
+        _db,
+        "INSERT INTO telemetry (meshmon_time, rx_time, node_id, metric_type, battery_level, voltage, "
+        "channel_utilization, air_util_tx, temperature, relative_humidity, barometric_pressure, "
+        "ch1_voltage, ch1_current, uptime_seconds) "
+        "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14);",
+        -1, &_stmtInsertTelemetry, NULL);
+
+    sqlite3_prepare_v2(
+        _db,
+        "INSERT INTO positions (meshmon_time, node_id, latitude, longitude, altitude, ground_speed, ground_track, sats_in_view) "
+        "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8);",
+        -1, &_stmtInsertPosition, NULL);
+
+    sqlite3_prepare_v2(
+        _db,
+        "INSERT INTO text_messages (meshmon_time, from_node, to_node, channel, message) "
+        "VALUES (?1, ?2, ?3, ?4, ?5);",
+        -1, &_stmtInsertTextMsg, NULL);
+
+    sqlite3_prepare_v2(
+        _db,
+        "INSERT INTO traceroutes (meshmon_time, from_node, to_node, route_count, route_nodes, route_snrs) "
+        "VALUES (?1, ?2, ?3, ?4, ?5, ?6);",
+        -1, &_stmtInsertTraceroute, NULL);
+
+    sqlite3_prepare_v2(
+        _db,
+        "INSERT INTO automation_events (meshmon_time, node_id, node_hex, device_type, "
+        "direction, subsystem, command_name, action_param, status, initiator, rtt_ms) "
+        "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11);",
+        -1, &_stmtInsertAutoEvent, NULL);
+}
+
+void MeshMonDb::finalizeStatements(void)
+{
+    sqlite3_stmt **stmts[] = {
+        &_stmtEnsureNode,
+        &_stmtUpsertNodePacket,
+        &_stmtInsertPacket,
+        &_stmtUpsertNodeInfo,
+        &_stmtInsertTelemetry,
+        &_stmtInsertPosition,
+        &_stmtInsertTextMsg,
+        &_stmtInsertTraceroute,
+        &_stmtInsertAutoEvent
+    };
+
+    for (size_t i = 0; i < sizeof(stmts) / sizeof(stmts[0]); i++) {
+        if (*stmts[i] != NULL) {
+            sqlite3_finalize(*stmts[i]);
+            *stmts[i] = NULL;
+        }
+    }
 }
 
 bool MeshMonDb::start(void)
@@ -416,6 +531,7 @@ void MeshMonDb::stop(void)
 {
     _stopRequested = true;
     _queueCv.notify_all();
+    _idleCv.notify_all();
 }
 
 void MeshMonDb::join(void)
@@ -424,11 +540,65 @@ void MeshMonDb::join(void)
         _workerThread.join();
     }
     _running = false;
+    _idleCv.notify_all();
 }
 
 bool MeshMonDb::isRunning(void) const
 {
     return _running;
+}
+
+size_t MeshMonDb::getQueueDepth(void) const
+{
+    lock_guard<mutex> lock(_queueMutex);
+    return _queue.size();
+}
+
+void MeshMonDb::flush(void)
+{
+    if (_running) {
+        unique_lock<mutex> lock(_queueMutex);
+        uint64_t target = _enqueuedSeq;
+        _idleCv.wait(lock, [this, target] {
+            return _processedSeq >= target || !_running;
+        });
+        if (_processedSeq >= target) {
+            return;
+        }
+    }
+
+    while (true) {
+        DbEvent ev;
+        {
+            lock_guard<mutex> lock(_queueMutex);
+            if (_queue.empty()) {
+                _processedSeq = _enqueuedSeq;
+                break;
+            }
+            ev = _queue.front();
+            _queue.pop();
+        }
+        processEvent(ev);
+        {
+            lock_guard<mutex> lock(_queueMutex);
+            _processedSeq++;
+        }
+    }
+    _idleCv.notify_all();
+}
+
+void MeshMonDb::enqueueEvent(const DbEvent &ev)
+{
+    {
+        lock_guard<mutex> lock(_queueMutex);
+        while (_queue.size() >= MAX_DB_QUEUE_SIZE) {
+            _queue.pop();
+            _processedSeq++;
+        }
+        _queue.push(ev);
+        _enqueuedSeq++;
+    }
+    _queueCv.notify_one();
 }
 
 void MeshMonDb::enqueuePacket(const meshtastic_MeshPacket &packet, time_t meshmonTime)
@@ -463,11 +633,7 @@ void MeshMonDb::enqueuePacket(const meshtastic_MeshPacket &packet, time_t meshmo
                           packet.encrypted.bytes + packet.encrypted.size);
     }
 
-    {
-        lock_guard<mutex> lock(_queueMutex);
-        _queue.push(ev);
-    }
-    _queueCv.notify_one();
+    enqueueEvent(ev);
 }
 
 void MeshMonDb::enqueueNodeInfo(uint32_t nodeId, const string &longName,
@@ -475,7 +641,6 @@ void MeshMonDb::enqueueNodeInfo(uint32_t nodeId, const string &longName,
                                 time_t meshmonTime)
 {
     DbEvent ev;
-    bzero(&ev, sizeof(ev));
     ev.type = EV_NODE_INFO;
     ev.meshmonTime = meshmonTime;
     ev.fromNode = nodeId;
@@ -484,11 +649,7 @@ void MeshMonDb::enqueueNodeInfo(uint32_t nodeId, const string &longName,
     ev.hwModel = hwModel;
     ev.role = role;
 
-    {
-        lock_guard<mutex> lock(_queueMutex);
-        _queue.push(ev);
-    }
-    _queueCv.notify_one();
+    enqueueEvent(ev);
 }
 
 void MeshMonDb::enqueueDeviceMetrics(const meshtastic_MeshPacket &packet,
@@ -496,9 +657,9 @@ void MeshMonDb::enqueueDeviceMetrics(const meshtastic_MeshPacket &packet,
                                     time_t meshmonTime)
 {
     DbEvent ev;
-    bzero(&ev, sizeof(ev));
     ev.type = EV_DEVICE_METRICS;
     ev.meshmonTime = meshmonTime;
+    ev.rxTime = packet.rx_time;
     ev.fromNode = packet.from;
     ev.metricType = "device";
     ev.hasBattery = metrics.has_battery_level;
@@ -511,11 +672,7 @@ void MeshMonDb::enqueueDeviceMetrics(const meshtastic_MeshPacket &packet,
     ev.airUtilTx = metrics.air_util_tx;
     ev.uptimeSeconds = metrics.has_uptime_seconds ? metrics.uptime_seconds : 0;
 
-    {
-        lock_guard<mutex> lock(_queueMutex);
-        _queue.push(ev);
-    }
-    _queueCv.notify_one();
+    enqueueEvent(ev);
 }
 
 void MeshMonDb::enqueueEnvironmentMetrics(const meshtastic_MeshPacket &packet,
@@ -523,9 +680,9 @@ void MeshMonDb::enqueueEnvironmentMetrics(const meshtastic_MeshPacket &packet,
                                          time_t meshmonTime)
 {
     DbEvent ev;
-    bzero(&ev, sizeof(ev));
     ev.type = EV_ENV_METRICS;
     ev.meshmonTime = meshmonTime;
+    ev.rxTime = packet.rx_time;
     ev.fromNode = packet.from;
     ev.metricType = "env";
     ev.hasTemp = metrics.has_temperature;
@@ -535,11 +692,7 @@ void MeshMonDb::enqueueEnvironmentMetrics(const meshtastic_MeshPacket &packet,
     ev.hasPress = metrics.has_barometric_pressure;
     ev.pressure = metrics.barometric_pressure;
 
-    {
-        lock_guard<mutex> lock(_queueMutex);
-        _queue.push(ev);
-    }
-    _queueCv.notify_one();
+    enqueueEvent(ev);
 }
 
 void MeshMonDb::enqueuePowerMetrics(const meshtastic_MeshPacket &packet,
@@ -547,9 +700,9 @@ void MeshMonDb::enqueuePowerMetrics(const meshtastic_MeshPacket &packet,
                                    time_t meshmonTime)
 {
     DbEvent ev;
-    bzero(&ev, sizeof(ev));
     ev.type = EV_POWER_METRICS;
     ev.meshmonTime = meshmonTime;
+    ev.rxTime = packet.rx_time;
     ev.fromNode = packet.from;
     ev.metricType = "power";
     ev.hasCh1Volt = metrics.has_ch1_voltage;
@@ -557,11 +710,7 @@ void MeshMonDb::enqueuePowerMetrics(const meshtastic_MeshPacket &packet,
     ev.hasCh1Curr = metrics.has_ch1_current;
     ev.ch1Current = metrics.ch1_current;
 
-    {
-        lock_guard<mutex> lock(_queueMutex);
-        _queue.push(ev);
-    }
-    _queueCv.notify_one();
+    enqueueEvent(ev);
 }
 
 void MeshMonDb::enqueueLocalStats(const meshtastic_MeshPacket &packet,
@@ -569,9 +718,9 @@ void MeshMonDb::enqueueLocalStats(const meshtastic_MeshPacket &packet,
                                  time_t meshmonTime)
 {
     DbEvent ev;
-    bzero(&ev, sizeof(ev));
     ev.type = EV_LOCAL_STATS;
     ev.meshmonTime = meshmonTime;
+    ev.rxTime = packet.rx_time;
     ev.fromNode = packet.from;
     ev.metricType = "stats";
     ev.hasChannelUtil = true;
@@ -580,11 +729,7 @@ void MeshMonDb::enqueueLocalStats(const meshtastic_MeshPacket &packet,
     ev.airUtilTx = stats.air_util_tx;
     ev.uptimeSeconds = stats.uptime_seconds;
 
-    {
-        lock_guard<mutex> lock(_queueMutex);
-        _queue.push(ev);
-    }
-    _queueCv.notify_one();
+    enqueueEvent(ev);
 }
 
 void MeshMonDb::enqueuePosition(const meshtastic_MeshPacket &packet,
@@ -592,9 +737,9 @@ void MeshMonDb::enqueuePosition(const meshtastic_MeshPacket &packet,
                                time_t meshmonTime)
 {
     DbEvent ev;
-    bzero(&ev, sizeof(ev));
     ev.type = EV_POSITION;
     ev.meshmonTime = meshmonTime;
+    ev.rxTime = packet.rx_time;
     ev.fromNode = packet.from;
     ev.latitude = ((double) pos.latitude_i) / 1e7;
     ev.longitude = ((double) pos.longitude_i) / 1e7;
@@ -603,11 +748,7 @@ void MeshMonDb::enqueuePosition(const meshtastic_MeshPacket &packet,
     ev.groundTrack = pos.ground_track;
     ev.satsInView = pos.sats_in_view;
 
-    {
-        lock_guard<mutex> lock(_queueMutex);
-        _queue.push(ev);
-    }
-    _queueCv.notify_one();
+    enqueueEvent(ev);
 }
 
 void MeshMonDb::enqueueTextMessage(const meshtastic_MeshPacket &packet,
@@ -615,19 +756,15 @@ void MeshMonDb::enqueueTextMessage(const meshtastic_MeshPacket &packet,
                                   time_t meshmonTime)
 {
     DbEvent ev;
-    bzero(&ev, sizeof(ev));
     ev.type = EV_TEXT_MESSAGE;
     ev.meshmonTime = meshmonTime;
+    ev.rxTime = packet.rx_time;
     ev.fromNode = packet.from;
     ev.toNode = packet.to;
     ev.channel = packet.channel;
     ev.text = message;
 
-    {
-        lock_guard<mutex> lock(_queueMutex);
-        _queue.push(ev);
-    }
-    _queueCv.notify_one();
+    enqueueEvent(ev);
 }
 
 void MeshMonDb::enqueueTraceRoute(const meshtastic_MeshPacket &packet,
@@ -635,14 +772,22 @@ void MeshMonDb::enqueueTraceRoute(const meshtastic_MeshPacket &packet,
                                  time_t meshmonTime)
 {
     DbEvent ev;
-    bzero(&ev, sizeof(ev));
     ev.type = EV_TRACEROUTE;
     ev.meshmonTime = meshmonTime;
+    ev.rxTime = packet.rx_time;
     ev.fromNode = packet.from;
     ev.toNode = packet.to;
-    ev.routeCount = routeDiscovery.route_count;
-    for (unsigned int i = 0; i < routeDiscovery.route_count; i++) {
+
+    size_t maxRoute = sizeof(routeDiscovery.route) / sizeof(routeDiscovery.route[0]);
+    size_t routeCount = min<size_t>(routeDiscovery.route_count, maxRoute);
+    ev.routeCount = (uint32_t) routeCount;
+    for (size_t i = 0; i < routeCount; i++) {
         ev.routeNodes.push_back(routeDiscovery.route[i]);
+    }
+
+    size_t maxSnr = sizeof(routeDiscovery.snr_towards) / sizeof(routeDiscovery.snr_towards[0]);
+    size_t snrCount = min<size_t>(routeDiscovery.snr_towards_count, maxSnr);
+    for (size_t i = 0; i < snrCount; i++) {
         if (routeDiscovery.snr_towards[i] != INT8_MIN) {
             ev.routeSnrs.push_back(((float) routeDiscovery.snr_towards[i]) / 4.0f);
         } else {
@@ -650,11 +795,7 @@ void MeshMonDb::enqueueTraceRoute(const meshtastic_MeshPacket &packet,
         }
     }
 
-    {
-        lock_guard<mutex> lock(_queueMutex);
-        _queue.push(ev);
-    }
-    _queueCv.notify_one();
+    enqueueEvent(ev);
 }
 
 void MeshMonDb::enqueueAutomationEvent(time_t meshmonTime, uint32_t nodeId,
@@ -676,11 +817,7 @@ void MeshMonDb::enqueueAutomationEvent(time_t meshmonTime, uint32_t nodeId,
     ev.initiator = initiator;
     ev.rttMs = rttMs;
 
-    {
-        lock_guard<mutex> lock(_queueMutex);
-        _queue.push(ev);
-    }
-    _queueCv.notify_one();
+    enqueueEvent(ev);
 }
 
 void MeshMonDb::workerLoop(void)
@@ -706,6 +843,12 @@ void MeshMonDb::workerLoop(void)
         }
 
         processEvent(ev);
+
+        {
+            lock_guard<mutex> lock(_queueMutex);
+            _processedSeq++;
+        }
+        _idleCv.notify_all();
     }
 
     // Drain remaining items on exit
@@ -720,6 +863,29 @@ void MeshMonDb::workerLoop(void)
             _queue.pop();
         }
         processEvent(ev);
+        {
+            lock_guard<mutex> lock(_queueMutex);
+            _processedSeq++;
+        }
+        _idleCv.notify_all();
+    }
+}
+
+void MeshMonDb::ensureNodeExists(uint32_t nodeId, int64_t ts)
+{
+    if (_db == NULL || nodeId == 0 || nodeId == 0xffffffffU) {
+        return;
+    }
+
+    if (_stmtEnsureNode != NULL) {
+        string hexId = formatNodeHex(nodeId);
+        sqlite3_reset(_stmtEnsureNode);
+        sqlite3_clear_bindings(_stmtEnsureNode);
+        sqlite3_bind_int64(_stmtEnsureNode, 1, nodeId);
+        sqlite3_bind_text(_stmtEnsureNode, 2, hexId.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(_stmtEnsureNode, 3, ts);
+        sqlite3_step(_stmtEnsureNode);
+        sqlite3_reset(_stmtEnsureNode);
     }
 }
 
@@ -730,88 +896,74 @@ void MeshMonDb::processEvent(const DbEvent &ev)
         return;
     }
 
-    sqlite3_stmt *stmt = NULL;
-
     switch (ev.type) {
     case EV_PACKET:
     {
         // 1. Upsert node
-        const char *nodeSql =
-            "INSERT INTO nodes (node_id, node_hex, first_seen, last_seen, last_rssi, last_snr, last_hops) "
-            "VALUES (?1, ?2, ?3, ?3, ?4, ?5, ?6) "
-            "ON CONFLICT(node_id) DO UPDATE SET "
-            "last_seen=?3, last_rssi=?4, last_snr=?5, last_hops=?6;";
-        if (sqlite3_prepare_v2(_db, nodeSql, -1, &stmt, NULL) == SQLITE_OK) {
+        if (_stmtUpsertNodePacket != NULL) {
             string hexId = formatNodeHex(ev.fromNode);
-            sqlite3_bind_int64(stmt, 1, ev.fromNode);
-            sqlite3_bind_text(stmt, 2, hexId.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_int64(stmt, 3, ev.meshmonTime);
-            sqlite3_bind_double(stmt, 4, ev.rxRssi);
-            sqlite3_bind_double(stmt, 5, ev.rxSnr);
-            sqlite3_bind_int(stmt, 6, ev.hops);
-            sqlite3_step(stmt);
-            sqlite3_finalize(stmt);
-            stmt = NULL;
+            sqlite3_reset(_stmtUpsertNodePacket);
+            sqlite3_clear_bindings(_stmtUpsertNodePacket);
+            sqlite3_bind_int64(_stmtUpsertNodePacket, 1, ev.fromNode);
+            sqlite3_bind_text(_stmtUpsertNodePacket, 2, hexId.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int64(_stmtUpsertNodePacket, 3, ev.meshmonTime);
+            sqlite3_bind_double(_stmtUpsertNodePacket, 4, ev.rxRssi);
+            sqlite3_bind_double(_stmtUpsertNodePacket, 5, ev.rxSnr);
+            sqlite3_bind_int(_stmtUpsertNodePacket, 6, ev.hops);
+            sqlite3_step(_stmtUpsertNodePacket);
+            sqlite3_reset(_stmtUpsertNodePacket);
         }
 
         // 2. Insert packet
-        const char *pktSql =
-            "INSERT INTO packets (meshmon_time, rx_time, packet_id, from_node, to_node, channel, "
-            "rx_rssi, rx_snr, hop_start, hop_limit, hops, portnum, payload_variant, payload_size, "
-            "want_ack, via_mqtt, payload) "
-            "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17);";
-        if (sqlite3_prepare_v2(_db, pktSql, -1, &stmt, NULL) == SQLITE_OK) {
-            sqlite3_bind_int64(stmt, 1, ev.meshmonTime);
+        if (_stmtInsertPacket != NULL) {
+            sqlite3_reset(_stmtInsertPacket);
+            sqlite3_clear_bindings(_stmtInsertPacket);
+            sqlite3_bind_int64(_stmtInsertPacket, 1, ev.meshmonTime);
             if (ev.rxTime > 0) {
-                sqlite3_bind_int64(stmt, 2, ev.rxTime);
+                sqlite3_bind_int64(_stmtInsertPacket, 2, ev.rxTime);
             } else {
-                sqlite3_bind_null(stmt, 2);
+                sqlite3_bind_null(_stmtInsertPacket, 2);
             }
-            sqlite3_bind_int64(stmt, 3, ev.packetId);
-            sqlite3_bind_int64(stmt, 4, ev.fromNode);
-            sqlite3_bind_int64(stmt, 5, ev.toNode);
-            sqlite3_bind_int(stmt, 6, ev.channel);
-            sqlite3_bind_double(stmt, 7, ev.rxRssi);
-            sqlite3_bind_double(stmt, 8, ev.rxSnr);
-            sqlite3_bind_int(stmt, 9, ev.hopStart);
-            sqlite3_bind_int(stmt, 10, ev.hopLimit);
-            sqlite3_bind_int(stmt, 11, ev.hops);
-            sqlite3_bind_int(stmt, 12, ev.portnum);
-            sqlite3_bind_int(stmt, 13, ev.payloadVariant);
-            sqlite3_bind_int(stmt, 14, (int) ev.payload.size());
-            sqlite3_bind_int(stmt, 15, ev.wantAck ? 1 : 0);
-            sqlite3_bind_int(stmt, 16, ev.viaMqtt ? 1 : 0);
+            sqlite3_bind_int64(_stmtInsertPacket, 3, ev.packetId);
+            sqlite3_bind_int64(_stmtInsertPacket, 4, ev.fromNode);
+            sqlite3_bind_int64(_stmtInsertPacket, 5, ev.toNode);
+            sqlite3_bind_int(_stmtInsertPacket, 6, ev.channel);
+            sqlite3_bind_double(_stmtInsertPacket, 7, ev.rxRssi);
+            sqlite3_bind_double(_stmtInsertPacket, 8, ev.rxSnr);
+            sqlite3_bind_int(_stmtInsertPacket, 9, ev.hopStart);
+            sqlite3_bind_int(_stmtInsertPacket, 10, ev.hopLimit);
+            sqlite3_bind_int(_stmtInsertPacket, 11, ev.hops);
+            sqlite3_bind_int(_stmtInsertPacket, 12, ev.portnum);
+            sqlite3_bind_int(_stmtInsertPacket, 13, ev.payloadVariant);
+            sqlite3_bind_int(_stmtInsertPacket, 14, (int) ev.payload.size());
+            sqlite3_bind_int(_stmtInsertPacket, 15, ev.wantAck ? 1 : 0);
+            sqlite3_bind_int(_stmtInsertPacket, 16, ev.viaMqtt ? 1 : 0);
             if (!ev.payload.empty()) {
-                sqlite3_bind_blob(stmt, 17, ev.payload.data(), (int) ev.payload.size(), SQLITE_TRANSIENT);
+                sqlite3_bind_blob(_stmtInsertPacket, 17, ev.payload.data(), (int) ev.payload.size(), SQLITE_TRANSIENT);
             } else {
-                sqlite3_bind_null(stmt, 17);
+                sqlite3_bind_null(_stmtInsertPacket, 17);
             }
-            sqlite3_step(stmt);
-            sqlite3_finalize(stmt);
-            stmt = NULL;
+            sqlite3_step(_stmtInsertPacket);
+            sqlite3_reset(_stmtInsertPacket);
         }
     }
         break;
 
     case EV_NODE_INFO:
     {
-        const char *infoSql =
-            "INSERT INTO nodes (node_id, node_hex, long_name, short_name, hw_model, role, first_seen, last_seen) "
-            "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7) "
-            "ON CONFLICT(node_id) DO UPDATE SET "
-            "long_name=?3, short_name=?4, hw_model=?5, role=?6, last_seen=?7;";
-        if (sqlite3_prepare_v2(_db, infoSql, -1, &stmt, NULL) == SQLITE_OK) {
+        if (_stmtUpsertNodeInfo != NULL) {
             string hexId = formatNodeHex(ev.fromNode);
-            sqlite3_bind_int64(stmt, 1, ev.fromNode);
-            sqlite3_bind_text(stmt, 2, hexId.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(stmt, 3, ev.longName.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(stmt, 4, ev.shortName.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_int(stmt, 5, ev.hwModel);
-            sqlite3_bind_int(stmt, 6, ev.role);
-            sqlite3_bind_int64(stmt, 7, ev.meshmonTime);
-            sqlite3_step(stmt);
-            sqlite3_finalize(stmt);
-            stmt = NULL;
+            sqlite3_reset(_stmtUpsertNodeInfo);
+            sqlite3_clear_bindings(_stmtUpsertNodeInfo);
+            sqlite3_bind_int64(_stmtUpsertNodeInfo, 1, ev.fromNode);
+            sqlite3_bind_text(_stmtUpsertNodeInfo, 2, hexId.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(_stmtUpsertNodeInfo, 3, ev.longName.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(_stmtUpsertNodeInfo, 4, ev.shortName.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int(_stmtUpsertNodeInfo, 5, ev.hwModel);
+            sqlite3_bind_int(_stmtUpsertNodeInfo, 6, ev.role);
+            sqlite3_bind_int64(_stmtUpsertNodeInfo, 7, ev.meshmonTime);
+            sqlite3_step(_stmtUpsertNodeInfo);
+            sqlite3_reset(_stmtUpsertNodeInfo);
         }
     }
         break;
@@ -821,126 +973,127 @@ void MeshMonDb::processEvent(const DbEvent &ev)
     case EV_POWER_METRICS:
     case EV_LOCAL_STATS:
     {
-        const char *telSql =
-            "INSERT INTO telemetry (meshmon_time, node_id, metric_type, battery_level, voltage, "
-            "channel_utilization, air_util_tx, temperature, relative_humidity, barometric_pressure, "
-            "ch1_voltage, ch1_current, uptime_seconds) "
-            "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13);";
-        if (sqlite3_prepare_v2(_db, telSql, -1, &stmt, NULL) == SQLITE_OK) {
-            sqlite3_bind_int64(stmt, 1, ev.meshmonTime);
-            sqlite3_bind_int64(stmt, 2, ev.fromNode);
-            sqlite3_bind_text(stmt, 3, ev.metricType.c_str(), -1, SQLITE_TRANSIENT);
-            if (ev.hasBattery) sqlite3_bind_int(stmt, 4, ev.batteryLevel); else sqlite3_bind_null(stmt, 4);
-            if (ev.hasVoltage) sqlite3_bind_double(stmt, 5, ev.voltage); else sqlite3_bind_null(stmt, 5);
-            if (ev.hasChannelUtil) sqlite3_bind_double(stmt, 6, ev.channelUtilization); else sqlite3_bind_null(stmt, 6);
-            if (ev.hasAirUtilTx) sqlite3_bind_double(stmt, 7, ev.airUtilTx); else sqlite3_bind_null(stmt, 7);
-            if (ev.hasTemp) sqlite3_bind_double(stmt, 8, ev.temperature); else sqlite3_bind_null(stmt, 8);
-            if (ev.hasHum) sqlite3_bind_double(stmt, 9, ev.humidity); else sqlite3_bind_null(stmt, 9);
-            if (ev.hasPress) sqlite3_bind_double(stmt, 10, ev.pressure); else sqlite3_bind_null(stmt, 10);
-            if (ev.hasCh1Volt) sqlite3_bind_double(stmt, 11, ev.ch1Voltage); else sqlite3_bind_null(stmt, 11);
-            if (ev.hasCh1Curr) sqlite3_bind_double(stmt, 12, ev.ch1Current); else sqlite3_bind_null(stmt, 12);
-            if (ev.uptimeSeconds > 0) sqlite3_bind_int64(stmt, 13, ev.uptimeSeconds); else sqlite3_bind_null(stmt, 13);
-            sqlite3_step(stmt);
-            sqlite3_finalize(stmt);
-            stmt = NULL;
+        ensureNodeExists(ev.fromNode, ev.meshmonTime);
+        if (_stmtInsertTelemetry != NULL) {
+            sqlite3_reset(_stmtInsertTelemetry);
+            sqlite3_clear_bindings(_stmtInsertTelemetry);
+            sqlite3_bind_int64(_stmtInsertTelemetry, 1, ev.meshmonTime);
+            if (ev.rxTime > 0) {
+                sqlite3_bind_int64(_stmtInsertTelemetry, 2, ev.rxTime);
+            } else {
+                sqlite3_bind_null(_stmtInsertTelemetry, 2);
+            }
+            sqlite3_bind_int64(_stmtInsertTelemetry, 3, ev.fromNode);
+            sqlite3_bind_text(_stmtInsertTelemetry, 4, ev.metricType.c_str(), -1, SQLITE_TRANSIENT);
+            if (ev.hasBattery) sqlite3_bind_int(_stmtInsertTelemetry, 5, ev.batteryLevel); else sqlite3_bind_null(_stmtInsertTelemetry, 5);
+            if (ev.hasVoltage) sqlite3_bind_double(_stmtInsertTelemetry, 6, ev.voltage); else sqlite3_bind_null(_stmtInsertTelemetry, 6);
+            if (ev.hasChannelUtil) sqlite3_bind_double(_stmtInsertTelemetry, 7, ev.channelUtilization); else sqlite3_bind_null(_stmtInsertTelemetry, 7);
+            if (ev.hasAirUtilTx) sqlite3_bind_double(_stmtInsertTelemetry, 8, ev.airUtilTx); else sqlite3_bind_null(_stmtInsertTelemetry, 8);
+            if (ev.hasTemp) sqlite3_bind_double(_stmtInsertTelemetry, 9, ev.temperature); else sqlite3_bind_null(_stmtInsertTelemetry, 9);
+            if (ev.hasHum) sqlite3_bind_double(_stmtInsertTelemetry, 10, ev.humidity); else sqlite3_bind_null(_stmtInsertTelemetry, 10);
+            if (ev.hasPress) sqlite3_bind_double(_stmtInsertTelemetry, 11, ev.pressure); else sqlite3_bind_null(_stmtInsertTelemetry, 11);
+            if (ev.hasCh1Volt) sqlite3_bind_double(_stmtInsertTelemetry, 12, ev.ch1Voltage); else sqlite3_bind_null(_stmtInsertTelemetry, 12);
+            if (ev.hasCh1Curr) sqlite3_bind_double(_stmtInsertTelemetry, 13, ev.ch1Current); else sqlite3_bind_null(_stmtInsertTelemetry, 13);
+            if (ev.uptimeSeconds > 0) sqlite3_bind_int64(_stmtInsertTelemetry, 14, ev.uptimeSeconds); else sqlite3_bind_null(_stmtInsertTelemetry, 14);
+            sqlite3_step(_stmtInsertTelemetry);
+            sqlite3_reset(_stmtInsertTelemetry);
         }
     }
         break;
 
     case EV_POSITION:
     {
-        const char *posSql =
-            "INSERT INTO positions (meshmon_time, node_id, latitude, longitude, altitude, ground_speed, ground_track, sats_in_view) "
-            "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8);";
-        if (sqlite3_prepare_v2(_db, posSql, -1, &stmt, NULL) == SQLITE_OK) {
-            sqlite3_bind_int64(stmt, 1, ev.meshmonTime);
-            sqlite3_bind_int64(stmt, 2, ev.fromNode);
-            sqlite3_bind_double(stmt, 3, ev.latitude);
-            sqlite3_bind_double(stmt, 4, ev.longitude);
-            sqlite3_bind_int(stmt, 5, ev.altitude);
-            sqlite3_bind_int(stmt, 6, ev.groundSpeed);
-            sqlite3_bind_int(stmt, 7, ev.groundTrack);
-            sqlite3_bind_int(stmt, 8, ev.satsInView);
-            sqlite3_step(stmt);
-            sqlite3_finalize(stmt);
-            stmt = NULL;
+        ensureNodeExists(ev.fromNode, ev.meshmonTime);
+        if (_stmtInsertPosition != NULL) {
+            sqlite3_reset(_stmtInsertPosition);
+            sqlite3_clear_bindings(_stmtInsertPosition);
+            sqlite3_bind_int64(_stmtInsertPosition, 1, ev.meshmonTime);
+            sqlite3_bind_int64(_stmtInsertPosition, 2, ev.fromNode);
+            sqlite3_bind_double(_stmtInsertPosition, 3, ev.latitude);
+            sqlite3_bind_double(_stmtInsertPosition, 4, ev.longitude);
+            sqlite3_bind_int(_stmtInsertPosition, 5, ev.altitude);
+            sqlite3_bind_int(_stmtInsertPosition, 6, ev.groundSpeed);
+            sqlite3_bind_int(_stmtInsertPosition, 7, ev.groundTrack);
+            sqlite3_bind_int(_stmtInsertPosition, 8, ev.satsInView);
+            sqlite3_step(_stmtInsertPosition);
+            sqlite3_reset(_stmtInsertPosition);
         }
     }
         break;
 
     case EV_TEXT_MESSAGE:
     {
-        const char *txtSql =
-            "INSERT INTO text_messages (meshmon_time, from_node, to_node, channel, message) "
-            "VALUES (?1, ?2, ?3, ?4, ?5);";
-        if (sqlite3_prepare_v2(_db, txtSql, -1, &stmt, NULL) == SQLITE_OK) {
-            sqlite3_bind_int64(stmt, 1, ev.meshmonTime);
-            sqlite3_bind_int64(stmt, 2, ev.fromNode);
-            sqlite3_bind_int64(stmt, 3, ev.toNode);
-            sqlite3_bind_int(stmt, 4, ev.channel);
-            sqlite3_bind_text(stmt, 5, ev.text.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_step(stmt);
-            sqlite3_finalize(stmt);
-            stmt = NULL;
+        ensureNodeExists(ev.fromNode, ev.meshmonTime);
+        if (_stmtInsertTextMsg != NULL) {
+            sqlite3_reset(_stmtInsertTextMsg);
+            sqlite3_clear_bindings(_stmtInsertTextMsg);
+            sqlite3_bind_int64(_stmtInsertTextMsg, 1, ev.meshmonTime);
+            sqlite3_bind_int64(_stmtInsertTextMsg, 2, ev.fromNode);
+            sqlite3_bind_int64(_stmtInsertTextMsg, 3, ev.toNode);
+            sqlite3_bind_int(_stmtInsertTextMsg, 4, ev.channel);
+            sqlite3_bind_text(_stmtInsertTextMsg, 5, ev.text.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_step(_stmtInsertTextMsg);
+            sqlite3_reset(_stmtInsertTextMsg);
         }
     }
         break;
 
     case EV_TRACEROUTE:
     {
+        ensureNodeExists(ev.fromNode, ev.meshmonTime);
+        ensureNodeExists(ev.toNode, ev.meshmonTime);
         ostringstream nodesStr, snrsStr;
         for (size_t i = 0; i < ev.routeNodes.size(); i++) {
             if (i > 0) {
                 nodesStr << ",";
-                snrsStr << ",";
             }
             nodesStr << formatNodeHex(ev.routeNodes[i]);
+        }
+        for (size_t i = 0; i < ev.routeSnrs.size(); i++) {
+            if (i > 0) {
+                snrsStr << ",";
+            }
             snrsStr << fixed << setprecision(1) << ev.routeSnrs[i];
         }
 
-        const char *trSql =
-            "INSERT INTO traceroutes (meshmon_time, from_node, to_node, route_count, route_nodes, route_snrs) "
-            "VALUES (?1, ?2, ?3, ?4, ?5, ?6);";
-        if (sqlite3_prepare_v2(_db, trSql, -1, &stmt, NULL) == SQLITE_OK) {
-            sqlite3_bind_int64(stmt, 1, ev.meshmonTime);
-            sqlite3_bind_int64(stmt, 2, ev.fromNode);
-            sqlite3_bind_int64(stmt, 3, ev.toNode);
-            sqlite3_bind_int(stmt, 4, ev.routeCount);
-            sqlite3_bind_text(stmt, 5, nodesStr.str().c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(stmt, 6, snrsStr.str().c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_step(stmt);
-            sqlite3_finalize(stmt);
-            stmt = NULL;
+        if (_stmtInsertTraceroute != NULL) {
+            sqlite3_reset(_stmtInsertTraceroute);
+            sqlite3_clear_bindings(_stmtInsertTraceroute);
+            sqlite3_bind_int64(_stmtInsertTraceroute, 1, ev.meshmonTime);
+            sqlite3_bind_int64(_stmtInsertTraceroute, 2, ev.fromNode);
+            sqlite3_bind_int64(_stmtInsertTraceroute, 3, ev.toNode);
+            sqlite3_bind_int(_stmtInsertTraceroute, 4, ev.routeCount);
+            sqlite3_bind_text(_stmtInsertTraceroute, 5, nodesStr.str().c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(_stmtInsertTraceroute, 6, snrsStr.str().c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_step(_stmtInsertTraceroute);
+            sqlite3_reset(_stmtInsertTraceroute);
         }
     }
         break;
 
     case EV_AUTOMATION_EVENT:
     {
-        const char *autoSql =
-            "INSERT INTO automation_events (meshmon_time, node_id, node_hex, device_type, "
-            "direction, subsystem, command_name, action_param, status, initiator, rtt_ms) "
-            "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11);";
-        if (sqlite3_prepare_v2(_db, autoSql, -1, &stmt, NULL) == SQLITE_OK) {
+        if (_stmtInsertAutoEvent != NULL) {
             string hexId = formatNodeHex(ev.fromNode);
-            sqlite3_bind_int64(stmt, 1, ev.meshmonTime);
-            sqlite3_bind_int64(stmt, 2, ev.fromNode);
-            sqlite3_bind_text(stmt, 3, hexId.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(stmt, 4, ev.deviceType.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(stmt, 5, ev.direction.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(stmt, 6, ev.subsystem.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(stmt, 7, ev.commandName.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_reset(_stmtInsertAutoEvent);
+            sqlite3_clear_bindings(_stmtInsertAutoEvent);
+            sqlite3_bind_int64(_stmtInsertAutoEvent, 1, ev.meshmonTime);
+            sqlite3_bind_int64(_stmtInsertAutoEvent, 2, ev.fromNode);
+            sqlite3_bind_text(_stmtInsertAutoEvent, 3, hexId.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(_stmtInsertAutoEvent, 4, ev.deviceType.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(_stmtInsertAutoEvent, 5, ev.direction.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(_stmtInsertAutoEvent, 6, ev.subsystem.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(_stmtInsertAutoEvent, 7, ev.commandName.c_str(), -1, SQLITE_TRANSIENT);
             if (!ev.actionParam.empty()) {
-                sqlite3_bind_text(stmt, 8, ev.actionParam.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(_stmtInsertAutoEvent, 8, ev.actionParam.c_str(), -1, SQLITE_TRANSIENT);
             } else {
-                sqlite3_bind_null(stmt, 8);
+                sqlite3_bind_null(_stmtInsertAutoEvent, 8);
             }
-            sqlite3_bind_text(stmt, 9, ev.status.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(stmt, 10, ev.initiator.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_int(stmt, 11, ev.rttMs);
-            sqlite3_step(stmt);
-            sqlite3_finalize(stmt);
-            stmt = NULL;
+            sqlite3_bind_text(_stmtInsertAutoEvent, 9, ev.status.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(_stmtInsertAutoEvent, 10, ev.initiator.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int(_stmtInsertAutoEvent, 11, ev.rttMs);
+            sqlite3_step(_stmtInsertAutoEvent);
+            sqlite3_reset(_stmtInsertAutoEvent);
         }
     }
         break;
@@ -1578,7 +1731,7 @@ bool MeshMonDb::getNodeDetail(uint32_t nodeId, time_t since, NodeDetail &detail)
         return false;
     }
 
-    bzero(&detail, sizeof(detail));
+    detail = NodeDetail();
     detail.nodeId = nodeId;
     detail.nodeHex = formatNodeHex(nodeId);
 
@@ -1703,7 +1856,7 @@ bool MeshMonDb::getChannelHealth(time_t since, ChannelHealthStat &health)
         return false;
     }
 
-    bzero(&health, sizeof(health));
+    health = ChannelHealthStat();
 
     // Telemetry channel utilization stats
     const char *telSql =
@@ -2165,6 +2318,446 @@ bool MeshMonDb::getAutomationEventCount(time_t since, uint32_t &count)
     return true;
 }
 
+namespace {
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
+double calcHaversineMeters(double lat1, double lon1, double lat2, double lon2)
+{
+    if ((lat1 == 0.0 && lon1 == 0.0) || (lat2 == 0.0 && lon2 == 0.0)) {
+        return 0.0;
+    }
+
+    const double R = 6371000.0;
+    double phi1 = lat1 * M_PI / 180.0;
+    double phi2 = lat2 * M_PI / 180.0;
+    double dphi = (lat2 - lat1) * M_PI / 180.0;
+    double dlam = (lon2 - lon1) * M_PI / 180.0;
+
+    double a = sin(dphi / 2.0) * sin(dphi / 2.0) +
+               cos(phi1) * cos(phi2) * sin(dlam / 2.0) * sin(dlam / 2.0);
+    double c = 2.0 * atan2(sqrt(a), sqrt(1.0 - a));
+    return R * c;
+}
+
+size_t skipSqlTrivia(const string &s, size_t pos)
+{
+    while (pos < s.size()) {
+        while (pos < s.size() &&
+               (s[pos] == ' ' || s[pos] == '\t' || s[pos] == '\r' || s[pos] == '\n')) {
+            pos++;
+        }
+        if (pos + 1 < s.size() && s[pos] == '-' && s[pos + 1] == '-') {
+            pos += 2;
+            while (pos < s.size() && s[pos] != '\n') {
+                pos++;
+            }
+            continue;
+        }
+        if (pos + 1 < s.size() && s[pos] == '/' && s[pos + 1] == '*') {
+            pos += 2;
+            while (pos + 1 < s.size() && !(s[pos] == '*' && s[pos + 1] == '/')) {
+                pos++;
+            }
+            if (pos + 1 < s.size()) {
+                pos += 2;
+            } else {
+                pos = s.size();
+            }
+            continue;
+        }
+        break;
+    }
+    return pos;
+}
+
+string toUpperAscii(const string &in)
+{
+    string out = in;
+    for (size_t i = 0; i < out.size(); i++) {
+        unsigned char c = static_cast<unsigned char>(out[i]);
+        if (c >= 'a' && c <= 'z') {
+            out[i] = static_cast<char>(c - 'a' + 'A');
+        }
+    }
+    return out;
+}
+
+} // namespace
+
+bool MeshMonDb::getRecentTextMessages(int limit, vector<TextMessageRow> &out)
+{
+    lock_guard<mutex> lock(_dbMutex);
+    out.clear();
+    if (_db == NULL) {
+        return false;
+    }
+
+    if (limit <= 0) {
+        limit = 50;
+    } else if (limit > 500) {
+        limit = 500;
+    }
+
+    const char *sql =
+        "SELECT tm.id, tm.meshmon_time, tm.from_node, tm.to_node, tm.channel, tm.message, "
+        "coalesce(n.last_snr, 0.0), coalesce(n.last_rssi, 0.0) "
+        "FROM text_messages tm "
+        "LEFT JOIN nodes n ON tm.from_node = n.node_id "
+        "ORDER BY tm.id DESC LIMIT ?1;";
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(_db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        return false;
+    }
+
+    sqlite3_bind_int(stmt, 1, limit);
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        TextMessageRow row;
+        row.id = sqlite3_column_int64(stmt, 0);
+        row.rxTime = sqlite3_column_int64(stmt, 1);
+        row.fromNode = static_cast<uint32_t>(sqlite3_column_int64(stmt, 2));
+        row.toNode = static_cast<uint32_t>(sqlite3_column_int64(stmt, 3));
+        row.channel = static_cast<uint32_t>(sqlite3_column_int(stmt, 4));
+        const char *msg = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 5));
+        row.text = msg ? msg : "";
+        row.rxSnr = sqlite3_column_double(stmt, 6);
+        row.rxRssi = static_cast<int>(sqlite3_column_double(stmt, 7));
+        out.push_back(row);
+    }
+
+    sqlite3_finalize(stmt);
+    return true;
+}
+
+bool MeshMonDb::getRemoteNodeAnalytics(vector<RemoteNodeAnalyticsRow> &out)
+{
+    lock_guard<mutex> lock(_dbMutex);
+    out.clear();
+    if (_db == NULL) {
+        return false;
+    }
+
+    const char *sql =
+        "SELECT "
+        "  n.node_id, "
+        "  coalesce(n.short_name, ''), "
+        "  coalesce(n.long_name, ''), "
+        "  coalesce(n.hw_model, 0), "
+        "  coalesce(n.role, 0), "
+        "  coalesce(n.first_seen, 0), "
+        "  coalesce(n.last_seen, 0), "
+        "  coalesce(pos.latitude, 0.0), "
+        "  coalesce(pos.longitude, 0.0), "
+        "  coalesce(pos.altitude, 0), "
+        "  coalesce(pos.max_pos_time, 0), "
+        "  coalesce(pkt.total_packets, 0), "
+        "  coalesce(pkt.total_bytes, 0), "
+        "  coalesce(pkt.avg_hops, 0.0), "
+        "  coalesce(pkt.avg_snr, 0.0), "
+        "  coalesce(pkt.min_snr, 0.0), "
+        "  coalesce(pkt.max_snr, 0.0), "
+        "  coalesce(pkt.avg_rssi, 0.0), "
+        "  coalesce(pkt.direct_packets, 0), "
+        "  coalesce(pkt.relayed_packets, 0), "
+        "  tel.battery_level, "
+        "  tel.voltage "
+        "FROM nodes n "
+        "LEFT JOIN ( "
+        "  SELECT p1.node_id, p1.latitude, p1.longitude, p1.altitude, p2.max_pos_time "
+        "  FROM positions p1 "
+        "  INNER JOIN ( "
+        "    SELECT node_id, max(id) AS max_id, max(meshmon_time) AS max_pos_time "
+        "    FROM positions "
+        "    WHERE latitude != 0 AND longitude != 0 "
+        "    GROUP BY node_id "
+        "  ) p2 ON p1.id = p2.max_id "
+        ") pos ON n.node_id = pos.node_id "
+        "LEFT JOIN ( "
+        "  SELECT "
+        "    from_node, "
+        "    count(*) AS total_packets, "
+        "    coalesce(sum(payload_size), 0) AS total_bytes, "
+        "    coalesce(avg(hops), 0.0) AS avg_hops, "
+        "    coalesce(avg(rx_snr), 0.0) AS avg_snr, "
+        "    coalesce(min(rx_snr), 0.0) AS min_snr, "
+        "    coalesce(max(rx_snr), 0.0) AS max_snr, "
+        "    coalesce(avg(rx_rssi), 0.0) AS avg_rssi, "
+        "    coalesce(sum(CASE WHEN hops = 0 THEN 1 ELSE 0 END), 0) AS direct_packets, "
+        "    coalesce(sum(CASE WHEN hops > 0 THEN 1 ELSE 0 END), 0) AS relayed_packets "
+        "  FROM packets "
+        "  GROUP BY from_node "
+        ") pkt ON n.node_id = pkt.from_node "
+        "LEFT JOIN ( "
+        "  SELECT t1.node_id, t1.battery_level, t1.voltage "
+        "  FROM telemetry t1 "
+        "  INNER JOIN ( "
+        "    SELECT node_id, max(id) AS max_id "
+        "    FROM telemetry "
+        "    GROUP BY node_id "
+        "  ) t2 ON t1.id = t2.max_id "
+        ") tel ON n.node_id = tel.node_id;";
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(_db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        return false;
+    }
+
+    map<uint32_t, size_t> nodeIndex;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        RemoteNodeAnalyticsRow row;
+        row.nodeId = static_cast<uint32_t>(sqlite3_column_int64(stmt, 0));
+        const char *sn = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 1));
+        const char *ln = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 2));
+        row.shortName = (sn && sn[0] != '\0') ? sn : "-";
+        row.longName = (ln && ln[0] != '\0') ? ln : "-";
+        row.hwModel = sqlite3_column_int(stmt, 3);
+        row.role = sqlite3_column_int(stmt, 4);
+        row.firstSeen = static_cast<time_t>(sqlite3_column_int64(stmt, 5));
+        row.lastSeen = static_cast<time_t>(sqlite3_column_int64(stmt, 6));
+        row.lat = sqlite3_column_double(stmt, 7);
+        row.lon = sqlite3_column_double(stmt, 8);
+        row.alt = sqlite3_column_int(stmt, 9);
+        row.lastPosTime = static_cast<time_t>(sqlite3_column_int64(stmt, 10));
+        row.hasGps = (row.lat != 0.0 && row.lon != 0.0);
+        row.totalPackets = static_cast<uint32_t>(sqlite3_column_int64(stmt, 11));
+        row.totalBytes = static_cast<uint64_t>(sqlite3_column_int64(stmt, 12));
+        row.avgHops = static_cast<float>(sqlite3_column_double(stmt, 13));
+        row.avgSnr = static_cast<float>(sqlite3_column_double(stmt, 14));
+        row.minSnr = static_cast<float>(sqlite3_column_double(stmt, 15));
+        row.maxSnr = static_cast<float>(sqlite3_column_double(stmt, 16));
+        row.avgRssi = static_cast<float>(sqlite3_column_double(stmt, 17));
+        row.directPackets = static_cast<uint32_t>(sqlite3_column_int64(stmt, 18));
+        row.relayedPackets = static_cast<uint32_t>(sqlite3_column_int64(stmt, 19));
+        if (sqlite3_column_type(stmt, 20) != SQLITE_NULL ||
+            sqlite3_column_type(stmt, 21) != SQLITE_NULL) {
+            row.hasTelemetry = true;
+            row.lastBattery = sqlite3_column_type(stmt, 20) != SQLITE_NULL
+                ? sqlite3_column_int(stmt, 20) : -1;
+            row.lastVoltage = sqlite3_column_type(stmt, 21) != SQLITE_NULL
+                ? static_cast<float>(sqlite3_column_double(stmt, 21)) : 0.0f;
+        }
+        row.mobility = row.hasGps ? "Stationary" : "RF-Only";
+        nodeIndex[row.nodeId] = out.size();
+        out.push_back(row);
+    }
+    sqlite3_finalize(stmt);
+    stmt = NULL;
+
+    // Query 2: single-pass portnum distribution per node
+    const char *portSql =
+        "SELECT from_node, portnum, count(*) FROM packets GROUP BY from_node, portnum;";
+    if (sqlite3_prepare_v2(_db, portSql, -1, &stmt, NULL) == SQLITE_OK) {
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            uint32_t nid = static_cast<uint32_t>(sqlite3_column_int64(stmt, 0));
+            int portnum = sqlite3_column_int(stmt, 1);
+            uint32_t cnt = static_cast<uint32_t>(sqlite3_column_int64(stmt, 2));
+            auto it = nodeIndex.find(nid);
+            if (it != nodeIndex.end()) {
+                out[it->second].portnumCounts[portnum] = cnt;
+            }
+        }
+        sqlite3_finalize(stmt);
+        stmt = NULL;
+    }
+
+    // Query 3: single-pass position displacement for all positioned nodes
+    const char *posHistSql =
+        "SELECT node_id, latitude, longitude FROM positions "
+        "WHERE latitude != 0 AND longitude != 0 "
+        "ORDER BY node_id ASC, meshmon_time ASC, id ASC;";
+    if (sqlite3_prepare_v2(_db, posHistSql, -1, &stmt, NULL) == SQLITE_OK) {
+        uint32_t curNode = 0;
+        bool hasFirst = false;
+        double firstLat = 0.0, firstLon = 0.0;
+        double maxDist = 0.0;
+
+        auto flushNode = [&]() {
+            if (!hasFirst) {
+                return;
+            }
+            auto it = nodeIndex.find(curNode);
+            if (it != nodeIndex.end()) {
+                out[it->second].maxDisplacementM = maxDist;
+                out[it->second].mobility = (maxDist > 100.0) ? "Mobile Tracker" : "Stationary";
+            }
+        };
+
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            uint32_t nid = static_cast<uint32_t>(sqlite3_column_int64(stmt, 0));
+            double lat = sqlite3_column_double(stmt, 1);
+            double lon = sqlite3_column_double(stmt, 2);
+            if (!hasFirst || nid != curNode) {
+                flushNode();
+                curNode = nid;
+                firstLat = lat;
+                firstLon = lon;
+                maxDist = 0.0;
+                hasFirst = true;
+            } else {
+                double d = calcHaversineMeters(firstLat, firstLon, lat, lon);
+                if (d > maxDist) {
+                    maxDist = d;
+                }
+            }
+        }
+        flushNode();
+        sqlite3_finalize(stmt);
+        stmt = NULL;
+    }
+
+    return true;
+}
+
+bool MeshMonDb::getTopologyRoutes(size_t limit, vector<TopologyRouteRow> &out)
+{
+    lock_guard<mutex> lock(_dbMutex);
+    out.clear();
+    if (_db == NULL) {
+        return false;
+    }
+
+    const char *sql =
+        "SELECT t.id, t.meshmon_time, t.from_node, t.to_node, t.route_count, "
+        "t.route_nodes, t.route_snrs, coalesce(nf.short_name, ''), coalesce(nt.short_name, '') "
+        "FROM traceroutes t "
+        "LEFT JOIN nodes nf ON t.from_node = nf.node_id "
+        "LEFT JOIN nodes nt ON t.to_node = nt.node_id "
+        "ORDER BY t.meshmon_time DESC, t.id DESC LIMIT ?1;";
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(_db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        return false;
+    }
+
+    sqlite3_bind_int64(stmt, 1, static_cast<sqlite3_int64>(limit));
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        TopologyRouteRow row;
+        row.id = sqlite3_column_int64(stmt, 0);
+        row.meshmonTime = static_cast<time_t>(sqlite3_column_int64(stmt, 1));
+        row.fromNode = static_cast<uint32_t>(sqlite3_column_int64(stmt, 2));
+        row.toNode = static_cast<uint32_t>(sqlite3_column_int64(stmt, 3));
+        row.routeCount = sqlite3_column_int(stmt, 4);
+        const char *rn = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 5));
+        const char *rs = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 6));
+        const char *fs = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 7));
+        const char *ts = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 8));
+        row.routeNodes = rn ? rn : "";
+        row.routeSnrs = rs ? rs : "";
+        row.fromShort = fs ? fs : "";
+        row.toShort = ts ? ts : "";
+        out.push_back(row);
+    }
+
+    sqlite3_finalize(stmt);
+    return true;
+}
+
+bool MeshMonDb::getTopologyAsymmetry(size_t limit, vector<TopologyAsymmetryRow> &out)
+{
+    lock_guard<mutex> lock(_dbMutex);
+    out.clear();
+    if (_db == NULL) {
+        return false;
+    }
+
+    const char *sql =
+        "SELECT p.from_node, coalesce(n.short_name, ''), "
+        "avg(p.rx_snr) AS fwd_snr, avg(p.rx_rssi) AS fwd_rssi, count(*) AS sample_cnt, "
+        "coalesce((SELECT t.route_snrs FROM traceroutes t "
+        "          WHERE t.from_node = p.from_node OR t.to_node = p.from_node "
+        "          ORDER BY t.meshmon_time DESC, t.id DESC LIMIT 1), '') AS rev_snrs "
+        "FROM packets p "
+        "LEFT JOIN nodes n ON p.from_node = n.node_id "
+        "WHERE p.hops = 0 AND p.rx_snr IS NOT NULL "
+        "GROUP BY p.from_node "
+        "HAVING count(*) >= 3 "
+        "ORDER BY sample_cnt DESC LIMIT ?1;";
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(_db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        return false;
+    }
+
+    sqlite3_bind_int64(stmt, 1, static_cast<sqlite3_int64>(limit));
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        TopologyAsymmetryRow row;
+        row.nodeId = static_cast<uint32_t>(sqlite3_column_int64(stmt, 0));
+        const char *sn = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 1));
+        row.shortName = sn ? sn : "";
+        row.forwardSnr = static_cast<float>(sqlite3_column_double(stmt, 2));
+        row.forwardRssi = static_cast<float>(sqlite3_column_double(stmt, 3));
+        row.sampleCount = static_cast<uint32_t>(sqlite3_column_int64(stmt, 4));
+        const char *rev = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 5));
+        row.reverseSnrs = rev ? rev : "";
+        out.push_back(row);
+    }
+
+    sqlite3_finalize(stmt);
+    return true;
+}
+
+bool MeshMonDb::getTopologyCentroids(size_t limit, vector<TopologyCentroidRow> &out)
+{
+    lock_guard<mutex> lock(_dbMutex);
+    out.clear();
+    if (_db == NULL) {
+        return false;
+    }
+
+    const char *sql =
+        "WITH latest_pos AS ( "
+        "  SELECT p1.node_id, p1.latitude, p1.longitude "
+        "  FROM positions p1 "
+        "  INNER JOIN ( "
+        "    SELECT node_id, max(id) AS max_id "
+        "    FROM positions "
+        "    WHERE latitude != 0 AND longitude != 0 "
+        "    GROUP BY node_id "
+        "  ) p2 ON p1.id = p2.max_id "
+        "), "
+        "unpositioned AS ( "
+        "  SELECT n.node_id, coalesce(n.short_name, '') AS short_name "
+        "  FROM nodes n "
+        "  WHERE n.node_id NOT IN (SELECT node_id FROM latest_pos) "
+        "    AND n.node_id IN (SELECT DISTINCT from_node FROM packets) "
+        "  LIMIT ?1 "
+        "), "
+        "neighbor_links AS ( "
+        "  SELECT DISTINCT u.node_id AS target_id, u.short_name, "
+        "         lp.node_id AS nbr_id, lp.latitude, lp.longitude "
+        "  FROM unpositioned u "
+        "  INNER JOIN packets pkt ON (pkt.from_node = u.node_id OR pkt.to_node = u.node_id) "
+        "  INNER JOIN latest_pos lp ON (lp.node_id = pkt.from_node OR lp.node_id = pkt.to_node) "
+        "  WHERE lp.node_id != u.node_id "
+        ") "
+        "SELECT target_id, short_name, avg(latitude), avg(longitude), count(nbr_id) "
+        "FROM neighbor_links "
+        "GROUP BY target_id;";
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(_db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        return false;
+    }
+
+    sqlite3_bind_int64(stmt, 1, static_cast<sqlite3_int64>(limit));
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        TopologyCentroidRow row;
+        row.nodeId = static_cast<uint32_t>(sqlite3_column_int64(stmt, 0));
+        const char *sn = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 1));
+        row.shortName = sn ? sn : "";
+        row.estLat = sqlite3_column_double(stmt, 2);
+        row.estLon = sqlite3_column_double(stmt, 3);
+        row.neighborCount = sqlite3_column_int(stmt, 4);
+        out.push_back(row);
+    }
+
+    sqlite3_finalize(stmt);
+    return true;
+}
+
 bool MeshMonDb::executeRawQuery(const string &sql, QueryResult &result)
 {
     lock_guard<mutex> lock(_dbMutex);
@@ -2177,11 +2770,104 @@ bool MeshMonDb::executeRawQuery(const string &sql, QueryResult &result)
     result.rows.clear();
     result.error.clear();
 
-    sqlite3_stmt *stmt = NULL;
-    int rc = sqlite3_prepare_v2(_db, sql.c_str(), -1, &stmt, NULL);
-    if (rc != SQLITE_OK) {
-        result.error = sqlite3_errmsg(_db);
+    size_t pos = skipSqlTrivia(sql, 0);
+    if (pos >= sql.size()) {
+        result.error = "Empty SQL query is not permitted";
         return false;
+    }
+
+    size_t wordEnd = pos;
+    while (wordEnd < sql.size() &&
+           ((sql[wordEnd] >= 'a' && sql[wordEnd] <= 'z') ||
+            (sql[wordEnd] >= 'A' && sql[wordEnd] <= 'Z') ||
+            sql[wordEnd] == '_')) {
+        wordEnd++;
+    }
+    string firstWord = toUpperAscii(sql.substr(pos, wordEnd - pos));
+    if (firstWord != "SELECT" && firstWord != "WITH" &&
+        firstWord != "EXPLAIN" && firstWord != "PRAGMA") {
+        result.error = "Write operations are not permitted (statement is not read-only)";
+        return false;
+    }
+
+    if (firstWord == "PRAGMA") {
+        if (sql.find('=') != string::npos) {
+            result.error = "Mutating PRAGMA assignments are not permitted";
+            return false;
+        }
+        size_t pStart = skipSqlTrivia(sql, wordEnd);
+        size_t pEnd = pStart;
+        while (pEnd < sql.size() &&
+               ((sql[pEnd] >= 'a' && sql[pEnd] <= 'z') ||
+                (sql[pEnd] >= 'A' && sql[pEnd] <= 'Z') ||
+                sql[pEnd] == '_')) {
+            pEnd++;
+        }
+        string pragmaName = toUpperAscii(sql.substr(pStart, pEnd - pStart));
+        if (pragmaName != "TABLE_INFO" && pragmaName != "TABLE_XINFO" &&
+            pragmaName != "INDEX_LIST" && pragmaName != "INDEX_INFO" &&
+            pragmaName != "FOREIGN_KEY_LIST" && pragmaName != "DATABASE_LIST" &&
+            pragmaName != "COMPILE_OPTIONS") {
+            result.error = "PRAGMA is not in read-only inspection allowlist";
+            return false;
+        }
+    } else if (firstWord == "EXPLAIN") {
+        size_t nextPos = skipSqlTrivia(sql, wordEnd);
+        size_t nextEnd = nextPos;
+        while (nextEnd < sql.size() &&
+               ((sql[nextEnd] >= 'a' && sql[nextEnd] <= 'z') ||
+                (sql[nextEnd] >= 'A' && sql[nextEnd] <= 'Z') ||
+                sql[nextEnd] == '_')) {
+            nextEnd++;
+        }
+        string secondWord = toUpperAscii(sql.substr(nextPos, nextEnd - nextPos));
+        if (secondWord == "QUERY") {
+            size_t pPos = skipSqlTrivia(sql, nextEnd);
+            size_t pEnd = pPos;
+            while (pEnd < sql.size() &&
+                   ((sql[pEnd] >= 'a' && sql[pEnd] <= 'z') ||
+                    (sql[pEnd] >= 'A' && sql[pEnd] <= 'Z') ||
+                    sql[pEnd] == '_')) {
+                pEnd++;
+            }
+            string thirdWord = toUpperAscii(sql.substr(pPos, pEnd - pPos));
+            if (thirdWord == "PLAN") {
+                nextPos = skipSqlTrivia(sql, pEnd);
+                nextEnd = nextPos;
+                while (nextEnd < sql.size() &&
+                       ((sql[nextEnd] >= 'a' && sql[nextEnd] <= 'z') ||
+                        (sql[nextEnd] >= 'A' && sql[nextEnd] <= 'Z') ||
+                        sql[nextEnd] == '_')) {
+                    nextEnd++;
+                }
+                secondWord = toUpperAscii(sql.substr(nextPos, nextEnd - nextPos));
+            }
+        }
+        if (secondWord != "SELECT" && secondWord != "WITH") {
+            result.error = "EXPLAIN is only permitted on SELECT or WITH statements";
+            return false;
+        }
+    }
+
+    sqlite3_stmt *stmt = NULL;
+    const char *tail = NULL;
+    int rc = sqlite3_prepare_v2(_db, sql.c_str(), -1, &stmt, &tail);
+    if (rc != SQLITE_OK || stmt == NULL) {
+        result.error = (rc != SQLITE_OK) ? sqlite3_errmsg(_db) : "Empty SQL statement";
+        if (stmt != NULL) {
+            sqlite3_finalize(stmt);
+        }
+        return false;
+    }
+
+    if (tail != NULL) {
+        string tailStr(tail);
+        size_t remPos = skipSqlTrivia(tailStr, 0);
+        if (remPos < tailStr.size()) {
+            result.error = "Multiple SQL statements are not permitted";
+            sqlite3_finalize(stmt);
+            return false;
+        }
     }
 
     if (!sqlite3_stmt_readonly(stmt)) {
@@ -2273,25 +2959,50 @@ bool MeshMonDb::getDiscoveredAutomationNodes(vector<DbAutomationNodeSummary> &no
 
     const char *sql =
         "SELECT "
-        "  a.node_id, "
-        "  a.node_hex, "
+        "  r.node_id, "
+        "  coalesce(nullif(r.node_hex, ''), coalesce(n.node_hex, '')), "
         "  coalesce(n.long_name, ''), "
         "  coalesce(n.short_name, ''), "
-        "  (SELECT a2.device_type FROM automation_events a2 WHERE a2.node_id = a.node_id AND a2.device_type IS NOT NULL AND a2.device_type != '' ORDER BY a2.meshmon_time DESC LIMIT 1) AS dev_type, "
-        "  (SELECT a3.action_param FROM automation_events a3 WHERE a3.node_id = a.node_id AND a3.command_name = 'ROLLCALL' ORDER BY a3.meshmon_time DESC LIMIT 1) AS rollcall_param, "
-        "  min(a.meshmon_time) AS first_seen, "
-        "  max(a.meshmon_time) AS last_seen, "
-        "  (SELECT count(*) FROM automation_events a4 WHERE a4.node_id = a.node_id AND (a4.command_name = 'BOOT_UP' OR a4.command_name = 'REBOOT_DETECTED')) AS reboot_cnt, "
+        "  r.device_type, "
+        "  coalesce((SELECT a3.action_param FROM automation_events a3 WHERE a3.node_id = r.node_id AND a3.command_name = 'ROLLCALL' ORDER BY a3.meshmon_time DESC LIMIT 1), '') AS rollcall_param, "
+        "  case "
+        "    when r.first_seen > 0 then "
+        "      coalesce((SELECT min(r.first_seen, min(a.meshmon_time)) FROM automation_events a WHERE a.node_id = r.node_id), r.first_seen) "
+        "    else "
+        "      coalesce((SELECT min(a.meshmon_time) FROM automation_events a WHERE a.node_id = r.node_id), 0) "
+        "  end AS first_seen, "
+        "  max(r.last_seen, coalesce((SELECT max(a.meshmon_time) FROM automation_events a WHERE a.node_id = r.node_id), 0)) AS last_seen, "
+        "  (SELECT count(*) FROM automation_events a4 WHERE a4.node_id = r.node_id AND (a4.command_name = 'BOOT_UP' OR a4.command_name = 'REBOOT_DETECTED')) AS reboot_cnt, "
         "  coalesce(r.capabilities, ''), "
         "  coalesce(r.ac_ir_protocol, ''), "
         "  coalesce(r.tv_ir_protocol, ''), "
         "  coalesce(r.version, ''), "
         "  coalesce(r.hardware, '') "
+        "FROM automation_nodes r "
+        "LEFT JOIN nodes n ON n.node_id = r.node_id "
+        "WHERE r.device_type IS NOT NULL AND r.device_type != '' "
+        "UNION ALL "
+        "SELECT "
+        "  a.node_id, "
+        "  coalesce(nullif(a.node_hex, ''), coalesce(n.node_hex, '')), "
+        "  coalesce(n.long_name, ''), "
+        "  coalesce(n.short_name, ''), "
+        "  (SELECT a2.device_type FROM automation_events a2 WHERE a2.node_id = a.node_id AND a2.device_type IS NOT NULL AND a2.device_type != '' ORDER BY a2.meshmon_time DESC LIMIT 1) AS dev_type, "
+        "  coalesce((SELECT a3.action_param FROM automation_events a3 WHERE a3.node_id = a.node_id AND a3.command_name = 'ROLLCALL' ORDER BY a3.meshmon_time DESC LIMIT 1), '') AS rollcall_param, "
+        "  min(a.meshmon_time) AS first_seen, "
+        "  max(a.meshmon_time) AS last_seen, "
+        "  (SELECT count(*) FROM automation_events a4 WHERE a4.node_id = a.node_id AND (a4.command_name = 'BOOT_UP' OR a4.command_name = 'REBOOT_DETECTED')) AS reboot_cnt, "
+        "  '' AS capabilities, "
+        "  '' AS ac_ir_protocol, "
+        "  '' AS tv_ir_protocol, "
+        "  '' AS version, "
+        "  '' AS hardware "
         "FROM automation_events a "
         "LEFT JOIN nodes n ON n.node_id = a.node_id "
-        "LEFT JOIN automation_nodes r ON r.node_id = a.node_id "
         "WHERE a.device_type IS NOT NULL AND a.device_type != '' "
-        "GROUP BY a.node_id;";
+        "  AND a.node_id NOT IN (SELECT node_id FROM automation_nodes) "
+        "GROUP BY a.node_id "
+        "ORDER BY 1 ASC;";
 
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(_db, sql, -1, &stmt, NULL) != SQLITE_OK) {
@@ -2313,6 +3024,9 @@ bool MeshMonDb::getDiscoveredAutomationNodes(vector<DbAutomationNodeSummary> &no
         s.deviceType = devType ? devType : "";
         if (s.nodeId == 0 || s.deviceType.empty()) {
             continue;
+        }
+        if (s.nodeHex.empty()) {
+            s.nodeHex = formatNodeHex(s.nodeId);
         }
         s.rollcallPayload = rollcall ? rollcall : "";
         s.firstSeen = (time_t) sqlite3_column_int64(stmt, 6);

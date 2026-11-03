@@ -810,7 +810,12 @@ GeminiHttpPostResult GeminiChat::httpPost(const string &url, const string &body)
         return result;
     }
 
-    keyHeader = string("x-goog-api-key: ") + _apiKey;
+    string apiKey;
+    {
+        lock_guard<mutex> lock(_stateMutex);
+        apiKey = _apiKey;
+    }
+    keyHeader = string("x-goog-api-key: ") + apiKey;
     headers = curl_slist_append(headers, "Content-Type: application/json");
     headers = curl_slist_append(headers, keyHeader.c_str());
 

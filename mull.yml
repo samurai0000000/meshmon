@@ -1,0 +1,16 @@
+# mull.yml
+#
+# Copyright (C) 2026, Charles Chiou
+
+gitDiffRef: HEAD
+gitProjectRoot: "."
+includePaths:
+  - ".*Calibration\\.cxx"
+  - ".*MeshMonDb\\.cxx"
+  - ".*WebServer\\.cxx"
+excludePaths:
+  - "/usr/.*"
+  - ".*third_party/.*"
+  - ".*Meshtastic-arduino/.*"
+  - ".*test/.*"
+timeout: 10000

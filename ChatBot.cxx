@@ -530,17 +530,24 @@ ChatBot::~ChatBot()
 
 void ChatBot::setClient(shared_ptr<MeshClient> client)
 {
+    lock_guard<mutex> lock(_mutex);
     _client = client;
+}
+
+shared_ptr<MeshClient> ChatBot::getClient(void) const
+{
+    lock_guard<mutex> lock(_mutex);
+    return _client;
 }
 
 void ChatBot::setEnabled(bool enable)
 {
-    _enabled = enable;
+    _enabled.store(enable);
 }
 
 bool ChatBot::enabled(void) const
 {
-    return _enabled;
+    return _enabled.load();
 }
 
 void ChatBot::setMaxHistoryTurns(size_t turns)
@@ -575,6 +582,24 @@ void ChatBot::clearConversations(uint32_t nodeId)
     } else {
         _conversations.erase(nodeId);
     }
+}
+
+void ChatBot::setConversation(uint32_t from, const vector<ChatTurn> &turns)
+{
+    lock_guard<mutex> lock(_mutex);
+    Conversation &conv = _conversations[from];
+    conv.turns = turns;
+    conv.lastUsed = time(NULL);
+}
+
+vector<ChatTurn> ChatBot::getConversation(uint32_t from) const
+{
+    lock_guard<mutex> lock(_mutex);
+    map<uint32_t, Conversation>::const_iterator it = _conversations.find(from);
+    if (it != _conversations.end()) {
+        return it->second.turns;
+    }
+    return vector<ChatTurn>();
 }
 
 ChatBotStats ChatBot::getStats(void) const
@@ -915,6 +940,10 @@ void ChatBot::ask(uint32_t from, uint32_t dest, uint8_t channel,
             }
         }
 
+        while (_queue.size() >= MAX_QUEUE_SIZE) {
+            _queue.pop_front();
+        }
+
         ChatJob job;
 
         job.from = from;
@@ -1097,7 +1126,7 @@ void ChatBot::processDueTasks(time_t now)
                 modelTurn.user = false;
                 modelTurn.text = replyText;
                 cIt->second.turns.push_back(modelTurn);
-                while (cIt->second.turns.size() > CHAT_HISTORY_MAX) {
+                while (cIt->second.turns.size() > _maxHistoryTurns) {
                     cIt->second.turns.erase(cIt->second.turns.begin());
                 }
                 cIt->second.lastUsed = now;
@@ -1170,13 +1199,9 @@ void ChatBot::run(void)
 
 void ChatBot::expireIdle(time_t now)
 {
+    lock_guard<mutex> lock(_mutex);
     map<uint32_t, Conversation>::iterator it;
-    time_t timeoutSec;
-
-    {
-        lock_guard<mutex> lock(_mutex);
-        timeoutSec = (time_t) _idleTimeoutSec;
-    }
+    time_t timeoutSec = (time_t) _idleTimeoutSec;
 
     it = _conversations.begin();
     while (it != _conversations.end()) {
@@ -1223,17 +1248,30 @@ void ChatBot::processJob(const ChatJob &job)
     ChatTurn userTurn;
     ChatTurn modelTurn;
     bool success = false;
+    vector<ChatTurn> history;
 
     expireIdle(now);
 
-    Conversation &conv = _conversations[job.from];
-
     {
         unique_lock<mutex> lock(_mutex);
+        if (_conversations.find(job.from) == _conversations.end() &&
+            _conversations.size() >= MAX_CONVERSATIONS) {
+            auto oldestIt = _conversations.begin();
+            for (auto it = _conversations.begin(); it != _conversations.end(); ++it) {
+                if (it->second.lastUsed < oldestIt->second.lastUsed) {
+                    oldestIt = it;
+                }
+            }
+            if (oldestIt != _conversations.end()) {
+                _conversations.erase(oldestIt);
+            }
+        }
+        Conversation &conv = _conversations[job.from];
+        history = conv.turns;
         _stats.invocations++;
     }
 
-    generated = generate(job.from, job.dest, job.channel, conv.turns, job.message);
+    generated = generate(job.from, job.dest, job.channel, history, job.message);
     success = !generated.empty();
     {
         unique_lock<mutex> lock(_mutex);
@@ -1245,7 +1283,7 @@ void ChatBot::processJob(const ChatJob &job)
     }
 #if DEBUG_CHATBOT
     cout << "chatbot: generate from=" << job.from
-         << " history=" << conv.turns.size()
+         << " history=" << history.size()
          << " empty=" << (success ? 0 : 1)
          << " bytes=" << generated.size() << endl;
 #endif
@@ -1262,22 +1300,19 @@ void ChatBot::processJob(const ChatJob &job)
     userTurn.text = job.message;
     modelTurn.user = false;
     modelTurn.text = reply;
-    conv.turns.push_back(userTurn);
-    conv.turns.push_back(modelTurn);
     {
-        size_t maxTurns;
-        {
-            lock_guard<mutex> lock(_mutex);
-            maxTurns = _maxHistoryTurns;
-        }
-        while (conv.turns.size() > maxTurns) {
+        lock_guard<mutex> lock(_mutex);
+        Conversation &conv = _conversations[job.from];
+        conv.turns.push_back(userTurn);
+        conv.turns.push_back(modelTurn);
+        while (conv.turns.size() > _maxHistoryTurns) {
             conv.turns.erase(conv.turns.begin());
         }
+        while (!conv.turns.empty() && !conv.turns.front().user) {
+            conv.turns.erase(conv.turns.begin());
+        }
+        conv.lastUsed = now;
     }
-    while (!conv.turns.empty() && !conv.turns.front().user) {
-        conv.turns.erase(conv.turns.begin());
-    }
-    conv.lastUsed = now;
 
     // Address the sender when replying to a user message, if within 160 character limit
     string outText = reply;
@@ -1401,13 +1436,14 @@ uint8_t ChatBot::resolveChannel(const string &channelQuery, uint8_t defaultChann
         }
     }
 
-    if (_client != NULL) {
-        ClientScopeLock clientLock(_client);
-        uint8_t ch = _client->getChannel(channelQuery);
+    shared_ptr<MeshClient> client = getClient();
+    if (client != NULL) {
+        ClientScopeLock clientLock(client);
+        uint8_t ch = client->getChannel(channelQuery);
         if (ch != 0xffU) {
             return ch;
         }
-        const map<uint8_t, meshtastic_Channel> &chans = _client->channels();
+        const map<uint8_t, meshtastic_Channel> &chans = client->channels();
         for (map<uint8_t, meshtastic_Channel>::const_iterator it = chans.begin();
              it != chans.end(); it++) {
             if (it->second.settings.name == channelQuery) {
@@ -1429,9 +1465,10 @@ uint32_t ChatBot::resolveNodeId(const string &nodeQuery) const
         return 0xffffffffU;
     }
 
-    if (_client != NULL) {
+    shared_ptr<MeshClient> client = getClient();
+    if (client != NULL) {
         if ((nodeQuery == "self") || (nodeQuery == "me") || (nodeQuery == "local")) {
-            return _client->whoami();
+            return client->whoami();
         }
     }
 
@@ -1452,9 +1489,9 @@ uint32_t ChatBot::resolveNodeId(const string &nodeQuery) const
         }
     }
 
-    if (_client != NULL) {
-        ClientScopeLock clientLock(_client);
-        const map<uint32_t, meshtastic_NodeInfo> &nodes = _client->nodeInfos();
+    if (client != NULL) {
+        ClientScopeLock clientLock(client);
+        const map<uint32_t, meshtastic_NodeInfo> &nodes = client->nodeInfos();
         for (map<uint32_t, meshtastic_NodeInfo>::const_iterator it = nodes.begin();
              it != nodes.end(); it++) {
             if (it->second.has_user) {
@@ -1473,7 +1510,7 @@ uint32_t ChatBot::resolveNodeId(const string &nodeQuery) const
                 }
             }
         }
-        uint32_t idByName = _client->getId(nodeQuery);
+        uint32_t idByName = client->getId(nodeQuery);
         if (idByName != 0xffffffffU) {
             return idByName;
         }
@@ -1492,14 +1529,15 @@ uint32_t ChatBot::resolveNodeId(const string &nodeQuery) const
 
 string ChatBot::toolGetMeshNodes(void) const
 {
-    if (_client == NULL) {
+    shared_ptr<MeshClient> client = getClient();
+    if (client == NULL) {
         return "{\"error\": \"client not connected\"}";
     }
 
-    ClientScopeLock clientLock(_client);
+    ClientScopeLock clientLock(client);
     stringstream ss;
-    const map<uint32_t, meshtastic_NodeInfo> &nodes = _client->nodeInfos();
-    uint32_t myId = _client->whoami();
+    const map<uint32_t, meshtastic_NodeInfo> &nodes = client->nodeInfos();
+    uint32_t myId = client->whoami();
     time_t now = time(NULL);
 
     size_t active1h = 0;
@@ -1542,7 +1580,7 @@ string ChatBot::toolGetMeshNodes(void) const
     if (farthestNodeId != 0) {
         char idBuf[16];
         snprintf(idBuf, sizeof(idBuf), "!%08x", farthestNodeId);
-        string fName = _client->lookupShortName(farthestNodeId);
+        string fName = client->lookupShortName(farthestNodeId);
         if (fName.empty()) {
             fName = idBuf;
         }
@@ -1574,8 +1612,8 @@ string ChatBot::toolGetMeshNodes(void) const
         char idBuf[16];
         snprintf(idBuf, sizeof(idBuf), "!%08x", id);
 
-        string sName = _client->lookupShortName(id);
-        string lName = _client->lookupLongName(id);
+        string sName = client->lookupShortName(id);
+        string lName = client->lookupLongName(id);
 
         ss << "{\"id\":\"" << idBuf << "\"";
         if (id == myId) {
@@ -1607,11 +1645,12 @@ string ChatBot::toolGetMeshNodes(void) const
 
 string ChatBot::toolGetNodeTelemetry(const string &nodeQuery) const
 {
-    if (_client == NULL) {
+    shared_ptr<MeshClient> client = getClient();
+    if (client == NULL) {
         return "{\"error\": \"client not connected\"}";
     }
 
-    ClientScopeLock clientLock(_client);
+    ClientScopeLock clientLock(client);
     uint32_t targetId = 0xffffffffU;
     if (!nodeQuery.empty()) {
         targetId = resolveNodeId(nodeQuery);
@@ -1620,7 +1659,7 @@ string ChatBot::toolGetNodeTelemetry(const string &nodeQuery) const
         }
     }
 
-    const map<uint32_t, meshtastic_NodeInfo> &nodes = _client->nodeInfos();
+    const map<uint32_t, meshtastic_NodeInfo> &nodes = client->nodeInfos();
 
     size_t reportingBattery = 0;
     size_t batteryCount = 0;
@@ -1644,12 +1683,12 @@ string ChatBot::toolGetNodeTelemetry(const string &nodeQuery) const
         }
 
         map<uint32_t, meshtastic_DeviceMetrics>::const_iterator dIt =
-            _client->deviceMetrics().find(id);
+            client->deviceMetrics().find(id);
         map<uint32_t, meshtastic_EnvironmentMetrics>::const_iterator eIt =
-            _client->environmentMetrics().find(id);
+            client->environmentMetrics().find(id);
 
         const meshtastic_DeviceMetrics *dm = NULL;
-        if (dIt != _client->deviceMetrics().end()) {
+        if (dIt != client->deviceMetrics().end()) {
             dm = &dIt->second;
         } else if (it->second.has_device_metrics) {
             dm = &it->second.device_metrics;
@@ -1665,7 +1704,7 @@ string ChatBot::toolGetNodeTelemetry(const string &nodeQuery) const
             }
         }
 
-        if (eIt != _client->environmentMetrics().end()) {
+        if (eIt != client->environmentMetrics().end()) {
             reportingEnv++;
             if (eIt->second.has_temperature) {
                 float t = eIt->second.temperature;
@@ -1718,19 +1757,19 @@ string ChatBot::toolGetNodeTelemetry(const string &nodeQuery) const
         }
 
         map<uint32_t, meshtastic_DeviceMetrics>::const_iterator dIt =
-            _client->deviceMetrics().find(id);
+            client->deviceMetrics().find(id);
         map<uint32_t, meshtastic_EnvironmentMetrics>::const_iterator eIt =
-            _client->environmentMetrics().find(id);
+            client->environmentMetrics().find(id);
 
         const meshtastic_DeviceMetrics *dm = NULL;
-        if (dIt != _client->deviceMetrics().end()) {
+        if (dIt != client->deviceMetrics().end()) {
             dm = &dIt->second;
         } else if (it->second.has_device_metrics) {
             dm = &it->second.device_metrics;
         }
 
         if ((dm == NULL) &&
-            (eIt == _client->environmentMetrics().end()) &&
+            (eIt == client->environmentMetrics().end()) &&
             (targetId == 0xffffffffU)) {
             continue;
         }
@@ -1748,7 +1787,7 @@ string ChatBot::toolGetNodeTelemetry(const string &nodeQuery) const
         char idBuf[16];
         snprintf(idBuf, sizeof(idBuf), "!%08x", id);
         ss << "{\"id\":\"" << idBuf << "\"";
-        string sName = _client->lookupShortName(id);
+        string sName = client->lookupShortName(id);
         if (!sName.empty()) {
             ss << ",\"name\":\"" << jsonEscape(sName) << "\"";
         }
@@ -1771,7 +1810,7 @@ string ChatBot::toolGetNodeTelemetry(const string &nodeQuery) const
             }
         }
 
-        if (eIt != _client->environmentMetrics().end()) {
+        if (eIt != client->environmentMetrics().end()) {
             if (eIt->second.has_temperature) {
                 ss << ",\"temp_c\":" << eIt->second.temperature;
             }
@@ -1793,26 +1832,27 @@ string ChatBot::toolGetNodeTelemetry(const string &nodeQuery) const
 
 string ChatBot::toolGetNetworkStats(void) const
 {
-    if (_client == NULL) {
+    shared_ptr<MeshClient> client = getClient();
+    if (client == NULL) {
         return "{\"error\": \"client not connected\"}";
     }
 
-    ClientScopeLock clientLock(_client);
+    ClientScopeLock clientLock(client);
     stringstream ss;
     ss << "{\"mesh_stats\":{";
-    ss << "\"packets_rx\":" << _client->meshDevicePacketsReceived() << ",";
-    ss << "\"packets_tx\":" << _client->meshDevicePacketsSent() << ",";
-    ss << "\"bytes_rx\":" << _client->meshDeviceBytesReceived() << ",";
-    ss << "\"bytes_tx\":" << _client->meshDeviceBytesSent() << ",";
-    ss << "\"direct_messages_rx\":" << _client->dmRx() << ",";
-    ss << "\"direct_messages_tx\":" << _client->dmTx() << ",";
-    ss << "\"channel_messages_rx\":" << _client->cmRx() << ",";
-    ss << "\"channel_messages_tx\":" << _client->cmTx() << ",";
-    ss << "\"total_nodes_known\":" << _client->nodeInfos().size();
+    ss << "\"packets_rx\":" << client->meshDevicePacketsReceived() << ",";
+    ss << "\"packets_tx\":" << client->meshDevicePacketsSent() << ",";
+    ss << "\"bytes_rx\":" << client->meshDeviceBytesReceived() << ",";
+    ss << "\"bytes_tx\":" << client->meshDeviceBytesSent() << ",";
+    ss << "\"direct_messages_rx\":" << client->dmRx() << ",";
+    ss << "\"direct_messages_tx\":" << client->dmTx() << ",";
+    ss << "\"channel_messages_rx\":" << client->cmRx() << ",";
+    ss << "\"channel_messages_tx\":" << client->cmTx() << ",";
+    ss << "\"total_nodes_known\":" << client->nodeInfos().size();
     ss << "},";
 
     ss << "\"lora_config\":{";
-    const meshtastic_Config_LoRaConfig &lora = _client->loraConfig();
+    const meshtastic_Config_LoRaConfig &lora = client->loraConfig();
     ss << "\"hop_limit\":" << (unsigned int) lora.hop_limit << ",";
     ss << "\"tx_power\":" << (int) lora.tx_power << ",";
     ss << "\"region\":" << (int) lora.region << ",";
@@ -1821,8 +1861,8 @@ string ChatBot::toolGetNetworkStats(void) const
 
     ss << "\"channels\":[";
     bool first = true;
-    for (map<uint8_t, meshtastic_Channel>::const_iterator it = _client->channels().begin();
-         it != _client->channels().end(); it++) {
+    for (map<uint8_t, meshtastic_Channel>::const_iterator it = client->channels().begin();
+         it != client->channels().end(); it++) {
         if (it->second.role == meshtastic_Channel_Role_DISABLED) {
             continue;
         }
@@ -1843,11 +1883,12 @@ string ChatBot::toolGetNetworkStats(void) const
 
 string ChatBot::toolGetNodePositions(const string &nodeQuery) const
 {
-    if (_client == NULL) {
+    shared_ptr<MeshClient> client = getClient();
+    if (client == NULL) {
         return "{\"error\": \"client not connected\"}";
     }
 
-    ClientScopeLock clientLock(_client);
+    ClientScopeLock clientLock(client);
     uint32_t targetId = 0xffffffffU;
     if (!nodeQuery.empty()) {
         targetId = resolveNodeId(nodeQuery);
@@ -1860,12 +1901,12 @@ string ChatBot::toolGetNodePositions(const string &nodeQuery) const
     if (targetId != 0xffffffffU) {
         allIds.insert(targetId);
     } else {
-        const map<uint32_t, meshtastic_NodeInfo> &nodes = _client->nodeInfos();
+        const map<uint32_t, meshtastic_NodeInfo> &nodes = client->nodeInfos();
         for (map<uint32_t, meshtastic_NodeInfo>::const_iterator it = nodes.begin();
              it != nodes.end(); it++) {
             allIds.insert(it->first);
         }
-        const map<uint32_t, meshtastic_Position> &posMap = _client->positions();
+        const map<uint32_t, meshtastic_Position> &posMap = client->positions();
         for (map<uint32_t, meshtastic_Position>::const_iterator it = posMap.begin();
              it != posMap.end(); it++) {
             allIds.insert(it->first);
@@ -1876,8 +1917,8 @@ string ChatBot::toolGetNodePositions(const string &nodeQuery) const
     ss << "{\"positions\":[";
     bool first = true;
 
-    const map<uint32_t, meshtastic_Position> &pMap = _client->positions();
-    const map<uint32_t, meshtastic_NodeInfo> &nMap = _client->nodeInfos();
+    const map<uint32_t, meshtastic_Position> &pMap = client->positions();
+    const map<uint32_t, meshtastic_NodeInfo> &nMap = client->nodeInfos();
 
     for (set<uint32_t>::const_iterator it = allIds.begin(); it != allIds.end(); it++) {
         uint32_t id = *it;
@@ -1909,7 +1950,7 @@ string ChatBot::toolGetNodePositions(const string &nodeQuery) const
         double lon = pos->longitude_i * 1e-7;
 
         ss << "{\"id\":\"" << idBuf << "\"";
-        string sName = _client->lookupShortName(id);
+        string sName = client->lookupShortName(id);
         if (!sName.empty()) {
             ss << ",\"name\":\"" << jsonEscape(sName) << "\"";
         }

@@ -133,6 +133,7 @@ public:
     json getRemoteSummaryJson(double thresholdM = 50.0);
     json getRemoteNodesJson(double thresholdM = 50.0);
     json getTopologyRoutesJson(size_t limit = 50);
+    json getTopologyGraphJson(size_t limit = 50) { return getTopologyRoutesJson(limit); }
     json getTopologyAsymmetryJson();
     json getTopologyCentroidsJson();
 

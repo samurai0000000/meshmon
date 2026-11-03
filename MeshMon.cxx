@@ -46,6 +46,9 @@ void MeshMon::setVerbose(bool verbose)
 
 MeshMon::~MeshMon()
 {
+    detach();
+    MeshClient::join();
+
     if (_chatbot != NULL) {
         _chatbot->stop();
         _chatbot->join();
@@ -59,6 +62,7 @@ MeshMon::~MeshMon()
     }
 
     if (_myownMqtt != NULL) {
+        _myownMqtt->setMessageCallback(nullptr);
         _myownMqtt->stop();
         _myownMqtt->join();
         _myownMqtt = NULL;
@@ -175,6 +179,7 @@ void MeshMon::join(void)
     }
 
     if (_myownMqtt != NULL) {
+        _myownMqtt->setMessageCallback(nullptr);
         _myownMqtt->stop();
         _myownMqtt->join();
         _myownMqtt = NULL;
@@ -889,11 +894,11 @@ bool MeshMon::isSensorForwardAllowed(uint32_t nodeId) const
         return true;
     }
 
-    if (admins().find(nodeId) != admins().end()) {
+    if (admins().count(nodeId) > 0) {
         return true;
     }
 
-    if (mates().find(nodeId) != mates().end()) {
+    if (mates().count(nodeId) > 0) {
         return true;
     }
 
@@ -1948,7 +1953,8 @@ int MeshMon::vprintf(const char *format, va_list ap) const
         char buf[2048];
         int n = vsnprintf(buf, sizeof(buf), format, ap);
         if (n > 0) {
-            std::string s(buf, n);
+            size_t len = std::min(static_cast<size_t>(n), sizeof(buf) - 1);
+            std::string s(buf, len);
             while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) {
                 s.pop_back();
             }
@@ -2962,6 +2968,7 @@ bool MeshMon::parseMeshPumpStatus(const meshtastic_MeshPacket &packet,
     map<string, string> kv;
     string verb;
     bool stateUpdated = false;
+    bool isNewFallback = false;
     AutomationNode nodeCopy;
 
     parseKvVerb(text, verb);
@@ -2975,6 +2982,23 @@ bool MeshMon::parseMeshPumpStatus(const meshtastic_MeshPacket &packet,
 
         if (node.deviceType.empty()) {
             node.deviceType = "meshpump";
+        }
+        if (node.nodeId == 0 || node.nodeHex.empty()) {
+            node.nodeId = packet.from;
+            node.nodeHex = nodeHexId(packet.from);
+            if (node.firstSeen == 0) {
+                node.firstSeen = now;
+            }
+            if (node.shortName.empty()) {
+                node.shortName = SimpleClient::lookupShortName(packet.from, true);
+            }
+            if (node.longName.empty()) {
+                node.longName = SimpleClient::lookupLongName(packet.from, true);
+            }
+            if (node.device == nullptr) {
+                node.device = AutomationDevice::create(node.deviceType);
+            }
+            isNewFallback = true;
         }
         node.lastSeen = now;
         node.online = true;
@@ -3020,6 +3044,10 @@ bool MeshMon::parseMeshPumpStatus(const meshtastic_MeshPacket &packet,
         nodeCopy = node;
     }
 
+    if (isNewFallback) {
+        persistAutomationNode(nodeCopy);
+    }
+
     if (stateUpdated && (_myownMqtt != NULL)) {
         publishAutomationState(nodeCopy);
     }
@@ -3035,6 +3063,7 @@ bool MeshMon::parseMeshRoofStatus(const meshtastic_MeshPacket &packet,
     map<string, string> kv;
     string verb;
     bool stateUpdated = false;
+    bool isNewFallback = false;
     AutomationNode nodeCopy;
 
     parseKvVerb(text, verb);
@@ -3050,6 +3079,23 @@ bool MeshMon::parseMeshRoofStatus(const meshtastic_MeshPacket &packet,
 
         if (node.deviceType.empty()) {
             node.deviceType = "meshroof";
+        }
+        if (node.nodeId == 0 || node.nodeHex.empty()) {
+            node.nodeId = packet.from;
+            node.nodeHex = nodeHexId(packet.from);
+            if (node.firstSeen == 0) {
+                node.firstSeen = now;
+            }
+            if (node.shortName.empty()) {
+                node.shortName = SimpleClient::lookupShortName(packet.from, true);
+            }
+            if (node.longName.empty()) {
+                node.longName = SimpleClient::lookupLongName(packet.from, true);
+            }
+            if (node.device == nullptr) {
+                node.device = AutomationDevice::create(node.deviceType);
+            }
+            isNewFallback = true;
         }
         node.lastSeen = now;
         node.online = true;
@@ -3131,6 +3177,10 @@ bool MeshMon::parseMeshRoofStatus(const meshtastic_MeshPacket &packet,
         nodeCopy = node;
     }
 
+    if (isNewFallback) {
+        persistAutomationNode(nodeCopy);
+    }
+
     if (stateUpdated && (_myownMqtt != NULL)) {
         publishAutomationState(nodeCopy);
     }
@@ -3147,6 +3197,7 @@ bool MeshMon::parseMeshRoomStatus(const meshtastic_MeshPacket &packet,
     string verb;
     bool stateUpdated = false;
     bool irChanged = false;
+    bool isNewFallback = false;
     AutomationNode nodeCopy;
 
     parseKvVerb(text, verb);
@@ -3162,6 +3213,23 @@ bool MeshMon::parseMeshRoomStatus(const meshtastic_MeshPacket &packet,
 
         if (node.deviceType.empty()) {
             node.deviceType = "meshroom";
+        }
+        if (node.nodeId == 0 || node.nodeHex.empty()) {
+            node.nodeId = packet.from;
+            node.nodeHex = nodeHexId(packet.from);
+            if (node.firstSeen == 0) {
+                node.firstSeen = now;
+            }
+            if (node.shortName.empty()) {
+                node.shortName = SimpleClient::lookupShortName(packet.from, true);
+            }
+            if (node.longName.empty()) {
+                node.longName = SimpleClient::lookupLongName(packet.from, true);
+            }
+            if (node.device == nullptr) {
+                node.device = AutomationDevice::create(node.deviceType);
+            }
+            isNewFallback = true;
         }
         node.lastSeen = now;
         node.online = true;
@@ -3256,9 +3324,11 @@ bool MeshMon::parseMeshRoomStatus(const meshtastic_MeshPacket &packet,
         nodeCopy = node;
     }
 
-    if (irChanged) {
+    if (isNewFallback || irChanged) {
         persistAutomationNode(nodeCopy);
-        syncCapabilityDiscovery(nodeCopy);
+        if (irChanged) {
+            syncCapabilityDiscovery(nodeCopy);
+        }
     }
 
     if (stateUpdated && (_myownMqtt != NULL)) {
@@ -3765,7 +3835,10 @@ void MeshMon::handleMqttCommand(const string &topic, const string &payload)
         }
         {
             lock_guard<mutex> lock(_autoNodesMutex);
-            _autoNodes[targetNodeId].upPumpCutoffSec = (uint32_t) sec;
+            auto it = _autoNodes.find(targetNodeId);
+            if (it != _autoNodes.end()) {
+                it->second.upPumpCutoffSec = (uint32_t) sec;
+            }
         }
         if (!upPumpOn) {
             /* Nothing to send until the pump is started again */
