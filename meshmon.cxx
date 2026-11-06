@@ -1076,8 +1076,8 @@ int main(int argc, char **argv)
             bot->setMaxHistoryTurns(geminiMaxHistory);
             bot->setMaxContextTurns(geminiMaxContext);
             bot->setIdleTimeout(geminiIdleTimeout);
-            bot->loadTasksFromFile();
             mon->setChatBot(bot);
+            bot->loadTasksFromFile();
         }
         mon->setCalibration(calibration);
         mons.push_back(mon);

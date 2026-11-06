@@ -633,14 +633,13 @@ const string &ChatBot::getConfigPath(void) const
 
 bool ChatBot::loadTasksFromConfig(Config &cfg)
 {
-    lock_guard<mutex> lock(_mutex);
     Setting &root = cfg.getRoot();
 
     if (!root.exists("scheduled_tasks")) {
         return false;
     }
 
-    _tasks.clear();
+    vector<ScheduledTask> loadedTasks;
     uint32_t maxId = 0;
 
     try {
@@ -702,7 +701,7 @@ bool ChatBot::loadTasksFromConfig(Config &cfg)
             }
 
             if ((task.id != 0) && !task.content.empty() && (task.dueTime != 0)) {
-                _tasks.push_back(task);
+                loadedTasks.push_back(task);
                 if (task.id > maxId) {
                     maxId = task.id;
                 }
@@ -712,7 +711,12 @@ bool ChatBot::loadTasksFromConfig(Config &cfg)
         return false;
     }
 
-    _nextTaskId = maxId + 1;
+    {
+        lock_guard<mutex> lock(_mutex);
+        _tasks.swap(loadedTasks);
+        _nextTaskId = maxId + 1;
+    }
+    _cv.notify_one();
     return true;
 }
 
@@ -1465,13 +1469,6 @@ uint32_t ChatBot::resolveNodeId(const string &nodeQuery) const
         return 0xffffffffU;
     }
 
-    shared_ptr<MeshClient> client = getClient();
-    if (client != NULL) {
-        if ((nodeQuery == "self") || (nodeQuery == "me") || (nodeQuery == "local")) {
-            return client->whoami();
-        }
-    }
-
     if (nodeQuery[0] == '!') {
         char *endptr = NULL;
         unsigned long v = strtoul(nodeQuery.c_str() + 1, &endptr, 16);
@@ -1489,7 +1486,12 @@ uint32_t ChatBot::resolveNodeId(const string &nodeQuery) const
         }
     }
 
+    shared_ptr<MeshClient> client = getClient();
     if (client != NULL) {
+        if ((nodeQuery == "self") || (nodeQuery == "me") || (nodeQuery == "local")) {
+            return client->whoami();
+        }
+
         ClientScopeLock clientLock(client);
         const map<uint32_t, meshtastic_NodeInfo> &nodes = client->nodeInfos();
         for (map<uint32_t, meshtastic_NodeInfo>::const_iterator it = nodes.begin();

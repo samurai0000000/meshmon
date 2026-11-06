@@ -1056,6 +1056,65 @@ TEST(SubsystemsDE_Remediation, CalibrationGetConfigPathThreadSafetyAndValueRetur
     }
 }
 
+TEST(ChatBotTruncation, LoadTasksFromFileNoDeadlock)
+{
+    char tmpl[] = "/tmp/test_meshmon_sched_XXXXXX";
+    int fd = mkstemp(tmpl);
+    CHECK(fd >= 0);
+    close(fd);
+    std::string schedPath(tmpl);
+
+    TestableChatBot writerBot;
+    auto client = std::make_shared<TestableMeshMon>();
+    client->setMyNodeNum(0x11223344U);
+    client->setNodeInfo(0x22334455U, "nod1", "Node One");
+    writerBot.setClient(client);
+    writerBot.setConfigPath(schedPath);
+
+    ScheduledTask t1;
+    t1.from = 0x22334455U;
+    t1.dest = 0xffffffffU;
+    t1.channel = 0;
+    t1.type = TASK_PROMPT;
+    t1.content = "Check weather";
+    t1.dueTime = time(NULL) + 3600;
+    t1.cronExpr = "0 8 * * *";
+    t1.maxRepeats = -1;
+    uint32_t assignedId = writerBot.scheduleTask(t1);
+    CHECK_EQUAL(1u, assignedId);
+
+    // Also test loading with a short name in config alongside !hex ID
+    libconfig::Config manualCfg;
+    CHECK_TRUE(writerBot.writeTasksToConfig(manualCfg));
+    libconfig::Setting &taskList = manualCfg.getRoot()["scheduled_tasks"];
+    libconfig::Setting &g2 = taskList.add(libconfig::Setting::TypeGroup);
+    g2.add("id", libconfig::Setting::TypeInt) = 5;
+    g2.add("from", libconfig::Setting::TypeString) = std::string("nod1");
+    g2.add("dest", libconfig::Setting::TypeString) = std::string("self");
+    g2.add("channel", libconfig::Setting::TypeInt) = 1;
+    g2.add("type", libconfig::Setting::TypeString) = std::string("message");
+    g2.add("content", libconfig::Setting::TypeString) = std::string("Ping self");
+    g2.add("due_time", libconfig::Setting::TypeInt64) = static_cast<long long>(time(NULL) + 7200);
+    manualCfg.writeFile(schedPath.c_str());
+
+    TestableChatBot readerBot;
+    readerBot.setClient(client);
+    CHECK_TRUE(readerBot.loadTasksFromFile(schedPath));
+
+    std::vector<ScheduledTask> loaded = readerBot.getTasks();
+    CHECK_EQUAL(2u, loaded.size());
+    CHECK_EQUAL(1u, loaded[0].id);
+    CHECK_EQUAL(0x22334455U, loaded[0].from);
+    CHECK_EQUAL(0xffffffffU, loaded[0].dest);
+    STRCMP_EQUAL("Check weather", loaded[0].content.c_str());
+    CHECK_EQUAL(5u, loaded[1].id);
+    CHECK_EQUAL(0x22334455U, loaded[1].from);
+    CHECK_EQUAL(0x11223344U, loaded[1].dest);
+    STRCMP_EQUAL("Ping self", loaded[1].content.c_str());
+
+    unlink(schedPath.c_str());
+}
+
 TEST(SubsystemsDE_Remediation, ShellHoursMultiplicationDoesNotOverflow32BitSignedInt)
 {
     int hours = 1000000; // 1 million hours
