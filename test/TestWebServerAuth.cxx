@@ -29,6 +29,7 @@
 #include "MeshMon.hxx"
 #include "MeshMonDb.hxx"
 #include "WebServer.hxx"
+#include "AimonGatewayClient.hxx"
 
 #include <CppUTest/TestHarness.h>
 
@@ -550,6 +551,308 @@ TEST(WebServerSecurity, PostHandlersRejectMalformedAndNonObjectJson)
         json errJson = json::parse(res->body);
         CHECK_TRUE(errJson.contains("error"));
     }
+}
+
+TEST(WebServerSecurity, McpOptionsCorsHeaders)
+{
+    for (const auto &ep : {"/mcp", "/sse", "/message"}) {
+        auto res = _cli->Options(ep);
+        CHECK_TRUE(res != nullptr);
+        LONGS_EQUAL(204, res->status);
+        CHECK_TRUE(res->has_header("Access-Control-Allow-Origin"));
+        CHECK_EQUAL("*", res->get_header_value("Access-Control-Allow-Origin"));
+        CHECK_TRUE(res->has_header("Access-Control-Allow-Methods"));
+        CHECK_TRUE(res->get_header_value("Access-Control-Allow-Methods").find("GET") != std::string::npos);
+        CHECK_TRUE(res->get_header_value("Access-Control-Allow-Methods").find("POST") != std::string::npos);
+        CHECK_TRUE(res->get_header_value("Access-Control-Allow-Methods").find("DELETE") != std::string::npos);
+        CHECK_TRUE(res->has_header("Access-Control-Allow-Headers"));
+        CHECK_TRUE(res->get_header_value("Access-Control-Allow-Headers").find("Mcp-Session-Id") != std::string::npos);
+        CHECK_TRUE(res->has_header("Access-Control-Expose-Headers"));
+        CHECK_EQUAL("Mcp-Session-Id", res->get_header_value("Access-Control-Expose-Headers"));
+    }
+}
+
+TEST(WebServerSecurity, McpPostInitializeAndNotifications)
+{
+    json initReq = {
+        {"jsonrpc", "2.0"},
+        {"id", 1},
+        {"method", "initialize"},
+        {"params", {
+            {"protocolVersion", "2025-03-26"},
+            {"clientInfo", {{"name", "test-client"}, {"version", "1.0.0"}}}
+        }}
+    };
+
+    auto res = _cli->Post("/mcp", initReq.dump(), "application/json");
+    CHECK_TRUE(res != nullptr);
+    LONGS_EQUAL(200, res->status);
+    CHECK_TRUE(res->has_header("Mcp-Session-Id"));
+    std::string sessionId = res->get_header_value("Mcp-Session-Id");
+    LONGS_EQUAL(32, sessionId.size());
+
+    json resp = json::parse(res->body);
+    CHECK_EQUAL("2.0", resp.value("jsonrpc", ""));
+    LONGS_EQUAL(1, resp["id"].get<int>());
+    CHECK_TRUE(resp.contains("result"));
+    CHECK_EQUAL("2025-03-26", resp["result"].value("protocolVersion", ""));
+    CHECK_EQUAL("meshmon", resp["result"]["serverInfo"].value("name", ""));
+    CHECK_TRUE(resp["result"]["capabilities"].contains("tools"));
+    CHECK_TRUE(resp["result"]["capabilities"].contains("resources"));
+    CHECK_TRUE(resp["result"]["capabilities"].contains("prompts"));
+
+    // Send notifications/initialized with Mcp-Session-Id header
+    httplib::Headers headers = {
+        {"Mcp-Session-Id", sessionId}
+    };
+    json notifReq = {
+        {"jsonrpc", "2.0"},
+        {"method", "notifications/initialized"},
+        {"params", json::object()}
+    };
+
+    auto notifRes = _cli->Post("/mcp", headers, notifReq.dump(), "application/json");
+    CHECK_TRUE(notifRes != nullptr);
+    LONGS_EQUAL(202, notifRes->status);
+    CHECK_TRUE(notifRes->body.empty());
+}
+
+TEST(WebServerSecurity, McpPostToolsResourcesPromptsAndCall)
+{
+    json initReq = {
+        {"jsonrpc", "2.0"},
+        {"id", 1},
+        {"method", "initialize"},
+        {"params", {{"protocolVersion", "2025-03-26"}}}
+    };
+    auto initRes = _cli->Post("/mcp", initReq.dump(), "application/json");
+    CHECK_TRUE(initRes != nullptr);
+    std::string sessionId = initRes->get_header_value("Mcp-Session-Id");
+    httplib::Headers headers = {{"Mcp-Session-Id", sessionId}};
+
+    // tools/list (must return all 6 meshmon_* tools)
+    json toolsReq = {{"jsonrpc", "2.0"}, {"id", 2}, {"method", "tools/list"}};
+    auto toolsRes = _cli->Post("/mcp", headers, toolsReq.dump(), "application/json");
+    CHECK_TRUE(toolsRes != nullptr);
+    LONGS_EQUAL(200, toolsRes->status);
+    json toolsJson = json::parse(toolsRes->body);
+    CHECK_TRUE(toolsJson["result"]["tools"].is_array());
+    LONGS_EQUAL(6, toolsJson["result"]["tools"].size());
+
+    const std::vector<std::string> expectedTools = {
+        "meshmon_get_node_status",
+        "meshmon_query_telemetry_history",
+        "meshmon_get_rf_analytics",
+        "meshmon_send_message",
+        "meshmon_query_db",
+        "meshmon_get_spatial_analytics"
+    };
+    for (const auto &expected : expectedTools) {
+        bool found = false;
+        for (const auto &t : toolsJson["result"]["tools"]) {
+            if (t.value("name", "") == expected) {
+                found = true;
+                break;
+            }
+        }
+        CHECK_TRUE_TEXT(found, ("Tool not found: " + expected).c_str());
+    }
+
+    // resources/list
+    json resReq = {{"jsonrpc", "2.0"}, {"id", 3}, {"method", "resources/list"}};
+    auto resRes = _cli->Post("/mcp", headers, resReq.dump(), "application/json");
+    CHECK_TRUE(resRes != nullptr);
+    LONGS_EQUAL(200, resRes->status);
+    json resJson = json::parse(resRes->body);
+    CHECK_TRUE(resJson["result"]["resources"].is_array());
+    LONGS_EQUAL(0, resJson["result"]["resources"].size());
+
+    // prompts/list
+    json promptReq = {{"jsonrpc", "2.0"}, {"id", 4}, {"method", "prompts/list"}};
+    auto promptRes = _cli->Post("/mcp", headers, promptReq.dump(), "application/json");
+    CHECK_TRUE(promptRes != nullptr);
+    LONGS_EQUAL(200, promptRes->status);
+    json promptJson = json::parse(promptRes->body);
+    CHECK_TRUE(promptJson["result"]["prompts"].is_array());
+    LONGS_EQUAL(0, promptJson["result"]["prompts"].size());
+
+    // tools/call meshmon_get_rf_analytics
+    json callReq = {
+        {"jsonrpc", "2.0"},
+        {"id", 5},
+        {"method", "tools/call"},
+        {"params", {
+            {"name", "meshmon_get_rf_analytics"},
+            {"arguments", {{"hours", 24}}}
+        }}
+    };
+    auto callRes = _cli->Post("/mcp", headers, callReq.dump(), "application/json");
+    CHECK_TRUE(callRes != nullptr);
+    LONGS_EQUAL(200, callRes->status);
+    json callJson = json::parse(callRes->body);
+    CHECK_TRUE(callJson["result"]["content"].is_array());
+    CHECK_FALSE(callJson["result"]["content"][0]["text"].get<std::string>().empty());
+}
+
+TEST(WebServerSecurity, McpPostBatchArray)
+{
+    json batchReq = json::array({
+        {{"jsonrpc", "2.0"}, {"id", 10}, {"method", "ping"}},
+        {{"jsonrpc", "2.0"}, {"id", 11}, {"method", "prompts/list"}},
+        {{"jsonrpc", "2.0"}, {"method", "notifications/initialized"}, {"params", json::object()}}
+    });
+
+    auto res = _cli->Post("/mcp", batchReq.dump(), "application/json");
+    CHECK_TRUE(res != nullptr);
+    LONGS_EQUAL(200, res->status);
+
+    json batchResp = json::parse(res->body);
+    CHECK_TRUE(batchResp.is_array());
+    LONGS_EQUAL(2, batchResp.size());
+    LONGS_EQUAL(10, batchResp[0]["id"].get<int>());
+    LONGS_EQUAL(11, batchResp[1]["id"].get<int>());
+}
+
+TEST(WebServerSecurity, McpGetChunkedSseAndNeverEmitsEndpoint)
+{
+    // Initialize first to obtain session ID
+    json initReq = {
+        {"jsonrpc", "2.0"},
+        {"id", 1},
+        {"method", "initialize"},
+        {"params", {{"protocolVersion", "2025-03-26"}}}
+    };
+    auto initRes = _cli->Post("/mcp", initReq.dump(), "application/json");
+    CHECK_TRUE(initRes != nullptr);
+    std::string sessionId = initRes->get_header_value("Mcp-Session-Id");
+
+    int getStatus = 0;
+    std::string contentType;
+    std::string streamData;
+    httplib::Headers headers = {
+        {"Accept", "text/event-stream"},
+        {"Mcp-Session-Id", sessionId}
+    };
+
+    _cli->Get("/mcp", headers,
+        [&](const httplib::Response &response) {
+            getStatus = response.status;
+            contentType = response.get_header_value("Content-Type");
+            return true;
+        },
+        [&](const char *data, size_t length) {
+            streamData.append(data, length);
+            return false; // Stop after reading initial connected chunk
+        });
+
+    LONGS_EQUAL(200, getStatus);
+    CHECK_TRUE(contentType.find("text/event-stream") != std::string::npos);
+    CHECK_TRUE(streamData.find(": connected\n\n") != std::string::npos);
+    CHECK_EQUAL(std::string::npos, streamData.find("event: endpoint"));
+}
+
+TEST(WebServerSecurity, McpDeleteTerminatesSession)
+{
+    json initReq = {
+        {"jsonrpc", "2.0"},
+        {"id", 1},
+        {"method", "initialize"},
+        {"params", {{"protocolVersion", "2025-03-26"}}}
+    };
+    auto initRes = _cli->Post("/mcp", initReq.dump(), "application/json");
+    CHECK_TRUE(initRes != nullptr);
+    std::string sessionId = initRes->get_header_value("Mcp-Session-Id");
+
+    httplib::Headers headers = {
+        {"Mcp-Session-Id", sessionId}
+    };
+    auto delRes = _cli->Delete("/mcp", headers);
+    CHECK_TRUE(delRes != nullptr);
+    LONGS_EQUAL(204, delRes->status);
+}
+
+TEST(WebServerSecurity, McpLegacySseAndMessageCompatibility)
+{
+    // GET /sse returns legacy endpoint announcement
+    auto sseRes = _cli->Get("/sse");
+    CHECK_TRUE(sseRes != nullptr);
+    LONGS_EQUAL(200, sseRes->status);
+    CHECK_EQUAL("event: endpoint\ndata: /message\n\n", sseRes->body);
+
+    // POST /message uses 2024-11-05
+    json msgReq = {
+        {"jsonrpc", "2.0"},
+        {"id", 100},
+        {"method", "initialize"},
+        {"params", {{"protocolVersion", "2024-11-05"}}}
+    };
+    auto msgRes = _cli->Post("/message", msgReq.dump(), "application/json");
+    CHECK_TRUE(msgRes != nullptr);
+    LONGS_EQUAL(200, msgRes->status);
+    json msgJson = json::parse(msgRes->body);
+    CHECK_EQUAL("2024-11-05", msgJson["result"].value("protocolVersion", ""));
+
+    // POST /sse auto-detect
+    json ssePostReq = {
+        {"jsonrpc", "2.0"},
+        {"id", 101},
+        {"method", "initialize"},
+        {"params", {{"protocolVersion", "2025-03-26"}}}
+    };
+    auto ssePostRes = _cli->Post("/sse", ssePostReq.dump(), "application/json");
+    CHECK_TRUE(ssePostRes != nullptr);
+    LONGS_EQUAL(200, ssePostRes->status);
+    CHECK_TRUE(ssePostRes->has_header("Mcp-Session-Id"));
+    json ssePostJson = json::parse(ssePostRes->body);
+    CHECK_EQUAL("2025-03-26", ssePostJson["result"].value("protocolVersion", ""));
+}
+
+TEST(WebServerSecurity, AimonGatewayClientDirectDispatchCoverage)
+{
+    AimonGatewayClient client(_mon, _db);
+    client.setWebPort(_port);
+
+    // Parse error
+    std::string malformed = client.dispatchJsonRpc("{not-json");
+    json err1 = json::parse(malformed);
+    LONGS_EQUAL(-32700, err1["error"]["code"].get<int>());
+
+    // Invalid request
+    std::string emptyArray = client.dispatchJsonRpc("[]");
+    json err2 = json::parse(emptyArray);
+    LONGS_EQUAL(-32600, err2["error"]["code"].get<int>());
+
+    std::string nonObj = client.dispatchJsonRpc("\"hello\"");
+    json err3 = json::parse(nonObj);
+    LONGS_EQUAL(-32600, err3["error"]["code"].get<int>());
+
+    // Notifications return empty string
+    std::string notif1 = client.dispatchJsonRpc("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}");
+    CHECK_EQUAL("", notif1);
+
+    std::string notif2 = client.dispatchJsonRpc("{\"jsonrpc\":\"2.0\",\"id\":null,\"method\":\"notifications/cancelled\"}");
+    CHECK_EQUAL("", notif2);
+
+    // Gateway registration ACK frames return empty string
+    std::string ack = client.dispatchJsonRpc("{\"jsonrpc\":\"2.0\",\"result\":\"ok\"}");
+    CHECK_EQUAL("", ack);
+
+    // Ping
+    std::string ping = client.dispatchJsonRpc("{\"jsonrpc\":\"2.0\",\"id\":99,\"method\":\"ping\"}");
+    json pingJson = json::parse(ping);
+    LONGS_EQUAL(99, pingJson["id"].get<int>());
+    CHECK_TRUE(pingJson["result"].is_object());
+
+    // Protocol version negotiation (echoes 2025-11-25)
+    std::string initFuture = client.dispatchJsonRpc(
+        "{\"jsonrpc\":\"2.0\",\"id\":102,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-11-25\"}}");
+    json initFutureJson = json::parse(initFuture);
+    CHECK_EQUAL("2025-11-25", initFutureJson["result"]["protocolVersion"].get<std::string>());
+
+    // Unknown method
+    std::string unknown = client.dispatchJsonRpc("{\"jsonrpc\":\"2.0\",\"id\":103,\"method\":\"unknown/method\"}");
+    json unknownJson = json::parse(unknown);
+    LONGS_EQUAL(-32601, unknownJson["error"]["code"].get<int>());
 }
 
 /*

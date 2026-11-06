@@ -1118,6 +1118,7 @@ int main(int argc, char **argv)
     }
 
     if (webConfig.enabled && !mons.empty() && !g_stop) {
+        webConfig.gatewayHost = gatewayHost;
         g_webServer = make_shared<WebServer>(mons[0], g_db, webConfig);
         if (!g_webServer->start(true)) {
             cerr << "Failed to start WebServer on " << webConfig.host

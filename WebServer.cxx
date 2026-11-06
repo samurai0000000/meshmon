@@ -10,6 +10,7 @@
 #include "MeshMon.hxx"
 #include "MeshMonDb.hxx"
 #include "MeshMonShell.hxx"
+#include "AimonGatewayClient.hxx"
 #include "version.h"
 #include <iostream>
 #include <fstream>
@@ -73,8 +74,10 @@ WebServer::WebServer(shared_ptr<MeshMon> mon,
       _db(db),
       _spatial(make_shared<SpatialAnalytics>(mon, db)),
       _config(config),
-      _server(make_unique<httplib::Server>())
+      _server(make_unique<httplib::Server>()),
+      _mcpDispatcher(make_unique<AimonGatewayClient>(mon, db))
 {
+    _mcpDispatcher->setWebPort(_config.port);
     _startTime = time(NULL);
 }
 
@@ -131,6 +134,15 @@ void WebServer::stop(void)
     }
 
     _running = false;
+
+    // Terminate all MCP sessions cleanly and wake waiting streams
+    {
+        lock_guard<mutex> lock(_mcpMutex);
+        for (auto &pair : _mcpSessions) {
+            pair.second.closed = true;
+        }
+    }
+    _mcpCv.notify_all();
 
     // Terminate all SSE sessions cleanly
     {
@@ -541,6 +553,40 @@ string WebServer::getMcpHintForPath(const string &path, const string &body)
     return "Use official MCP tools ('meshmon_*'). Direct REST API access is disabled.";
 }
 
+bool WebServer::isAllowedMcpRequest(const httplib::Request &req) const
+{
+    const string &remote = req.remote_addr;
+    if (remote.empty() ||
+        remote == "127.0.0.1" ||
+        remote == "::1" ||
+        remote == "::ffff:127.0.0.1" ||
+        remote == "localhost") {
+        return true;
+    }
+
+    if (!_config.gatewayHost.empty() && remote == _config.gatewayHost) {
+        return true;
+    }
+
+    if (checkAuth(req) || checkUiSession(req)) {
+        return true;
+    }
+
+    return false;
+}
+
+string WebServer::createMcpSession(void)
+{
+    string sessionId = generateRandomToken(32);
+    lock_guard<mutex> lock(_mcpMutex);
+    McpSessionState state;
+    state.sessionId = sessionId;
+    state.lastActivity = time(nullptr);
+    state.closed = false;
+    _mcpSessions[sessionId] = std::move(state);
+    return sessionId;
+}
+
 void WebServer::setupRoutes(void)
 {
     // Gate REST API endpoints unless request carries a valid Web UI or Admin session
@@ -551,6 +597,9 @@ void WebServer::setupRoutes(void)
     }
     if (authEnforced) {
         _server->set_pre_routing_handler([this](const httplib::Request &req, httplib::Response &res) {
+            if (req.path == "/mcp" || req.path == "/sse" || req.path == "/message") {
+                return httplib::Server::HandlerResponse::Unhandled;
+            }
             if (req.path == "/api" || req.path.rfind("/api/", 0) == 0) {
                 if (req.path == "/api/auth/login" ||
                     req.path == "/api/auth/status" ||
@@ -573,10 +622,305 @@ void WebServer::setupRoutes(void)
         });
     }
 
+    // CORS & Options for standalone MCP endpoints
+    auto setMcpCorsHeaders = [](httplib::Response &res) {
+        res.headers.erase("Access-Control-Allow-Origin");
+        res.headers.erase("Access-Control-Allow-Methods");
+        res.headers.erase("Access-Control-Allow-Headers");
+        res.headers.erase("Access-Control-Expose-Headers");
+        res.set_header("Access-Control-Allow-Origin", "*");
+        res.set_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+        res.set_header("Access-Control-Allow-Headers",
+                       "Content-Type, Accept, Authorization, Mcp-Session-Id, MCP-Protocol-Version, Last-Event-ID");
+        res.set_header("Access-Control-Expose-Headers", "Mcp-Session-Id");
+    };
+
+    auto handleMcpOptions = [setMcpCorsHeaders](const httplib::Request &req, httplib::Response &res) {
+        (void) req;
+        setMcpCorsHeaders(res);
+        res.status = 204;
+    };
+
+    _server->Options("/mcp", handleMcpOptions);
+    _server->Options("/sse", handleMcpOptions);
+    _server->Options("/message", handleMcpOptions);
+
+    // MCP Streamable HTTP 2025-03-26 POST handler
+    auto handleStreamableHttpPost = [this, setMcpCorsHeaders](const httplib::Request &req, httplib::Response &res) {
+        setMcpCorsHeaders(res);
+
+        if (!isAllowedMcpRequest(req)) {
+            res.status = 403;
+            res.set_content(safeJsonDump(json{{"error", "Forbidden"}}), "application/json");
+            return;
+        }
+
+        json parsed;
+        try {
+            parsed = json::parse(req.body);
+        } catch (...) {
+            res.status = 400;
+            json err = {
+                {"jsonrpc", "2.0"},
+                {"id", nullptr},
+                {"error", {
+                    {"code", -32700},
+                    {"message", "Parse error"}
+                }}
+            };
+            res.set_content(safeJsonDump(err), "application/json");
+            return;
+        }
+
+        std::string sessionId;
+        if (req.has_header("Mcp-Session-Id")) {
+            sessionId = req.get_header_value("Mcp-Session-Id");
+        }
+
+        bool isInit = false;
+        if (parsed.is_object()) {
+            if (parsed.value("method", "") == "initialize") {
+                isInit = true;
+            }
+        } else if (parsed.is_array()) {
+            for (const auto &item : parsed) {
+                if (item.is_object() && item.value("method", "") == "initialize") {
+                    isInit = true;
+                    break;
+                }
+            }
+        }
+
+        time_t now = time(nullptr);
+        if (sessionId.empty() && isInit) {
+            sessionId = createMcpSession();
+        } else if (!sessionId.empty()) {
+            std::lock_guard<std::mutex> lock(_mcpMutex);
+            auto it = _mcpSessions.find(sessionId);
+            if (it != _mcpSessions.end()) {
+                it->second.lastActivity = now;
+            } else {
+                McpSessionState state;
+                state.sessionId = sessionId;
+                state.lastActivity = now;
+                state.closed = false;
+                _mcpSessions[sessionId] = std::move(state);
+            }
+        }
+
+        if (!sessionId.empty()) {
+            res.set_header("Mcp-Session-Id", sessionId);
+        }
+
+        std::string resp = _mcpDispatcher->dispatchJsonRpc(req.body, "2025-03-26");
+        if (resp.empty()) {
+            res.status = 202;
+            res.body.clear();
+        } else {
+            res.status = 200;
+            res.set_content(resp, "application/json");
+        }
+    };
+
+    _server->Post("/mcp", handleStreamableHttpPost);
+    _server->Post("/sse", handleStreamableHttpPost);
+
+    // Legacy MCP POST /message handler (2024-11-05 protocol version)
+    _server->Post("/message", [this, setMcpCorsHeaders](const httplib::Request &req, httplib::Response &res) {
+        setMcpCorsHeaders(res);
+
+        if (!isAllowedMcpRequest(req)) {
+            res.status = 403;
+            res.set_content(safeJsonDump(json{{"error", "Forbidden"}}), "application/json");
+            return;
+        }
+
+        try {
+            auto parsed = json::parse(req.body);
+            (void) parsed;
+        } catch (...) {
+            res.status = 400;
+            json err = {
+                {"jsonrpc", "2.0"},
+                {"id", nullptr},
+                {"error", {
+                    {"code", -32700},
+                    {"message", "Parse error"}
+                }}
+            };
+            res.set_content(safeJsonDump(err), "application/json");
+            return;
+        }
+
+        std::string resp = _mcpDispatcher->dispatchJsonRpc(req.body, "2024-11-05");
+        if (resp.empty()) {
+            res.status = 202;
+            res.body.clear();
+        } else {
+            res.status = 200;
+            res.set_content(resp, "application/json");
+        }
+    });
+
+    // Standalone MCP GET /mcp SSE stream
+    _server->Get("/mcp", [this, setMcpCorsHeaders](const httplib::Request &req, httplib::Response &res) {
+        setMcpCorsHeaders(res);
+
+        if (!isAllowedMcpRequest(req)) {
+            res.status = 403;
+            res.set_content(safeJsonDump(json{{"error", "Forbidden"}}), "application/json");
+            return;
+        }
+
+        if (req.has_header("Accept")) {
+            std::string accept = req.get_header_value("Accept");
+            if (accept.find("text/event-stream") == std::string::npos && accept.find("*/*") == std::string::npos) {
+                res.status = 405;
+                return;
+            }
+        }
+
+        std::string sessionId;
+        if (req.has_header("Mcp-Session-Id")) {
+            sessionId = req.get_header_value("Mcp-Session-Id");
+        }
+
+        time_t now = time(nullptr);
+        if (sessionId.empty()) {
+            sessionId = createMcpSession();
+        } else {
+            std::lock_guard<std::mutex> lock(_mcpMutex);
+            auto it = _mcpSessions.find(sessionId);
+            if (it != _mcpSessions.end()) {
+                it->second.lastActivity = now;
+            } else {
+                McpSessionState state;
+                state.sessionId = sessionId;
+                state.lastActivity = now;
+                state.closed = false;
+                _mcpSessions[sessionId] = std::move(state);
+            }
+        }
+
+        res.set_header("Mcp-Session-Id", sessionId);
+        res.set_header("Cache-Control", "no-cache");
+        res.set_header("X-Accel-Buffering", "no");
+
+        auto lastKeepalive = std::make_shared<std::chrono::steady_clock::time_point>(std::chrono::steady_clock::now());
+        auto initialSent = std::make_shared<bool>(false);
+
+        auto provider = [this, sessionId, lastKeepalive, initialSent](size_t offset, httplib::DataSink &sink) -> bool {
+            (void) offset;
+            if (!sink.is_writable() || !_running.load()) {
+                return false;
+            }
+
+            if (!*initialSent) {
+                *initialSent = true;
+                std::string connMsg = ": connected\n\n";
+                return sink.write(connMsg.data(), connMsg.size());
+            }
+
+            std::vector<std::string> toSend;
+            {
+                std::unique_lock<std::mutex> lock(_mcpMutex);
+                _mcpCv.wait_for(lock, std::chrono::milliseconds(200), [this, &sessionId]() {
+                    if (!_running.load()) return true;
+                    auto it = _mcpSessions.find(sessionId);
+                    if (it == _mcpSessions.end() || it->second.closed) return true;
+                    return !it->second.pendingMessages.empty();
+                });
+
+                if (!_running.load()) {
+                    return false;
+                }
+
+                auto it = _mcpSessions.find(sessionId);
+                if (it == _mcpSessions.end() || it->second.closed) {
+                    return false;
+                }
+
+                it->second.lastActivity = time(nullptr);
+
+                if (!it->second.pendingMessages.empty()) {
+                    toSend = std::move(it->second.pendingMessages);
+                    it->second.pendingMessages.clear();
+                }
+            }
+
+            if (!toSend.empty()) {
+                std::string batch;
+                for (const auto &msg : toSend) {
+                    batch += "event: message\ndata: " + msg + "\n\n";
+                }
+                *lastKeepalive = std::chrono::steady_clock::now();
+                return sink.write(batch.data(), batch.size());
+            }
+
+            auto nowTime = std::chrono::steady_clock::now();
+            if (std::chrono::duration_cast<std::chrono::seconds>(nowTime - *lastKeepalive).count() >= 15) {
+                *lastKeepalive = nowTime;
+                std::string ping = ": keepalive\n\n";
+                return sink.write(ping.data(), ping.size());
+            }
+
+            return true;
+        };
+
+        auto releaser = [this, sessionId](bool success) {
+            (void) success;
+            std::lock_guard<std::mutex> lock(_mcpMutex);
+            auto it = _mcpSessions.find(sessionId);
+            if (it != _mcpSessions.end()) {
+                it->second.lastActivity = time(nullptr);
+            }
+        };
+
+        res.set_chunked_content_provider("text/event-stream", provider, releaser);
+    });
+
+    // Standalone MCP DELETE /mcp session teardown
+    _server->Delete("/mcp", [this, setMcpCorsHeaders](const httplib::Request &req, httplib::Response &res) {
+        setMcpCorsHeaders(res);
+        if (!isAllowedMcpRequest(req)) {
+            res.status = 403;
+            res.set_content(safeJsonDump(json{{"error", "Forbidden"}}), "application/json");
+            return;
+        }
+
+        if (req.has_header("Mcp-Session-Id")) {
+            std::string sessionId = req.get_header_value("Mcp-Session-Id");
+            {
+                std::lock_guard<std::mutex> lock(_mcpMutex);
+                auto it = _mcpSessions.find(sessionId);
+                if (it != _mcpSessions.end()) {
+                    it->second.closed = true;
+                    _mcpSessions.erase(it);
+                }
+            }
+            _mcpCv.notify_all();
+        }
+        res.status = 204;
+    });
+
+    // Legacy MCP GET /sse endpoint announcement
+    _server->Get("/sse", [this, setMcpCorsHeaders](const httplib::Request &req, httplib::Response &res) {
+        setMcpCorsHeaders(res);
+        if (!isAllowedMcpRequest(req)) {
+            res.status = 403;
+            res.set_content(safeJsonDump(json{{"error", "Forbidden"}}), "application/json");
+            return;
+        }
+        res.set_header("Content-Type", "text/event-stream");
+        res.set_header("Cache-Control", "no-cache");
+        res.set_header("Connection", "keep-alive");
+        res.set_content("event: endpoint\ndata: /message\n\n", "text/event-stream");
+    });
+
     // Enable CORS for API routes
     _server->set_default_headers({
         {"Access-Control-Allow-Origin", "*"},
-        {"Access-Control-Allow-Methods", "GET, POST, OPTIONS"},
+        {"Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS"},
         {"Access-Control-Allow-Headers", "Content-Type, Authorization, X-Auth-Token, X-UI-Session"}
     });
 

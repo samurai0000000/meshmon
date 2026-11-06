@@ -13,6 +13,7 @@
 #include <atomic>
 #include <mutex>
 #include <vector>
+#include <nlohmann/json.hpp>
 
 class MeshMon;
 class MeshMonDb;
@@ -41,6 +42,9 @@ public:
     std::string buildRegistrationJson(void) const;
     static std::string getRegistrationJsonSchema(uint16_t webPort = 16880);
 
+    std::string dispatchJsonRpc(const std::string &rawBody,
+                                const std::string &defaultProtocolVersion = "2025-03-26");
+
 protected:
 
     void run(void);
@@ -48,6 +52,8 @@ protected:
     bool sendRegistration(void);
     void processIncoming(void);
 
+    std::string dispatchSingleJsonRpc(const nlohmann::json &req,
+                                      const std::string &defaultProtocolVersion);
     void handleRequest(const std::string &line);
     void sendResponse(const std::string &jsonResponse);
 

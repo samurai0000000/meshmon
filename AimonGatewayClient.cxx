@@ -8,7 +8,16 @@
 #include "MeshMon.hxx"
 #include "MeshMonDb.hxx"
 #include "MeshMonShell.hxx"
+#include "version.h"
 #include <nlohmann/json.hpp>
+
+#ifndef MESHMON_VERSION_STRING
+#ifdef MYPROJECT_VERSION_STRING
+#define MESHMON_VERSION_STRING MYPROJECT_VERSION_STRING
+#else
+#define MESHMON_VERSION_STRING "2.1.22"
+#endif
+#endif
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -386,27 +395,133 @@ void AimonGatewayClient::processIncoming(void)
     }
 }
 
-void AimonGatewayClient::handleRequest(const string &line)
+string AimonGatewayClient::dispatchSingleJsonRpc(const json &req, const string &defaultProtocolVersion)
 {
-    try {
-        json req = json::parse(line);
-        if (!req.contains("id")) {
-            return;
+    if (!req.is_object()) {
+        json err = {
+            {"jsonrpc", "2.0"},
+            {"id", nullptr},
+            {"error", {
+                {"code", -32600},
+                {"message", "Invalid Request"}
+            }}
+        };
+        return err.dump(-1, ' ', false, json::error_handler_t::replace);
+    }
+
+    if (req.contains("result") || req.contains("error")) {
+        return "";
+    }
+
+    string method = req.value("method", "");
+    bool isNotification = !req.contains("id") ||
+                          (req["id"].is_null() && method.rfind("notifications/", 0) == 0) ||
+                          (method.rfind("notifications/", 0) == 0);
+    if (isNotification) {
+        return "";
+    }
+
+    auto reqId = req.value("id", json(nullptr));
+
+    if (method.empty()) {
+        json err = {
+            {"jsonrpc", "2.0"},
+            {"id", reqId},
+            {"error", {
+                {"code", -32600},
+                {"message", "Invalid Request"}
+            }}
+        };
+        return err.dump(-1, ' ', false, json::error_handler_t::replace);
+    }
+
+    if (method == "initialize") {
+        string clientVersion;
+        if (req.contains("params") && req["params"].is_object() &&
+            req["params"].contains("protocolVersion") && req["params"]["protocolVersion"].is_string()) {
+            clientVersion = req["params"]["protocolVersion"].get<string>();
+        }
+        string chosenVersion = defaultProtocolVersion;
+        if (clientVersion == "2024-11-05" || clientVersion == "2025-03-26" || clientVersion == "2025-11-25") {
+            chosenVersion = clientVersion;
         }
 
-        if (req.contains("result") || req.contains("error")) {
-            return;
+        json resp = {
+            {"jsonrpc", "2.0"},
+            {"id", reqId},
+            {"result", {
+                {"protocolVersion", chosenVersion},
+                {"capabilities", {
+                    {"tools", json::object()},
+                    {"resources", json::object()},
+                    {"prompts", json::object()}
+                }},
+                {"serverInfo", {
+                    {"name", "meshmon"},
+                    {"version", MESHMON_VERSION_STRING}
+                }}
+            }}
+        };
+        return resp.dump(-1, ' ', false, json::error_handler_t::replace);
+    }
+
+    if (method == "ping") {
+        json resp = {
+            {"jsonrpc", "2.0"},
+            {"id", reqId},
+            {"result", json::object()}
+        };
+        return resp.dump(-1, ' ', false, json::error_handler_t::replace);
+    }
+
+    if (method == "tools/list") {
+        json toolsArray = json::array();
+        try {
+            json reg = json::parse(getRegistrationJsonSchema(_webPort > 0 ? _webPort : 16880));
+            if (reg.contains("params") && reg["params"].contains("tools")) {
+                toolsArray = reg["params"]["tools"];
+            }
+        } catch (...) {
         }
+        json resp = {
+            {"jsonrpc", "2.0"},
+            {"id", reqId},
+            {"result", {
+                {"tools", toolsArray}
+            }}
+        };
+        return resp.dump(-1, ' ', false, json::error_handler_t::replace);
+    }
 
-        auto reqId = req["id"];
-        string method = req.value("method", "");
+    if (method == "resources/list") {
+        json resp = {
+            {"jsonrpc", "2.0"},
+            {"id", reqId},
+            {"result", {
+                {"resources", json::array()}
+            }}
+        };
+        return resp.dump(-1, ' ', false, json::error_handler_t::replace);
+    }
 
-        if (method == "tools/call") {
-            json params = req.value("params", json::object());
-            string toolName = params.value("name", "");
-            json args = params.value("arguments", json::object());
+    if (method == "prompts/list") {
+        json resp = {
+            {"jsonrpc", "2.0"},
+            {"id", reqId},
+            {"result", {
+                {"prompts", json::array()}
+            }}
+        };
+        return resp.dump(-1, ' ', false, json::error_handler_t::replace);
+    }
 
-            string resultText;
+    if (method == "tools/call") {
+        json params = req.value("params", json::object());
+        string toolName = params.value("name", "");
+        json args = params.value("arguments", json::object());
+
+        string resultText;
+        try {
             if (toolName == "meshmon_get_node_status") {
                 string nodeId = args.value("node_id", "");
                 resultText = toolGetNodeStatus(nodeId);
@@ -441,33 +556,125 @@ void AimonGatewayClient::handleRequest(const string &line)
                         {"message", "Unknown tool: " + toolName}
                     }}
                 };
-                sendResponse(errResp.dump(-1, ' ', false, json::error_handler_t::replace));
-                return;
+                return errResp.dump(-1, ' ', false, json::error_handler_t::replace);
             }
-
-            json resp = {
-                {"jsonrpc", "2.0"},
-                {"id", reqId},
-                {"result", {
-                    {"content", json::array({
-                        {
-                            {"type", "text"},
-                            {"text", resultText}
-                        }
-                    })}
-                }}
-            };
-            sendResponse(resp.dump(-1, ' ', false, json::error_handler_t::replace));
-        } else {
+        } catch (const exception &e) {
             json errResp = {
                 {"jsonrpc", "2.0"},
                 {"id", reqId},
                 {"error", {
-                    {"code", -32601},
-                    {"message", "Unsupported method: " + method}
+                    {"code", -32603},
+                    {"message", string("Internal tool error: ") + e.what()}
                 }}
             };
-            sendResponse(errResp.dump(-1, ' ', false, json::error_handler_t::replace));
+            return errResp.dump(-1, ' ', false, json::error_handler_t::replace);
+        }
+
+        json resp = {
+            {"jsonrpc", "2.0"},
+            {"id", reqId},
+            {"result", {
+                {"content", json::array({
+                    {
+                        {"type", "text"},
+                        {"text", resultText}
+                    }
+                })}
+            }}
+        };
+        return resp.dump(-1, ' ', false, json::error_handler_t::replace);
+    }
+
+    json errResp = {
+        {"jsonrpc", "2.0"},
+        {"id", reqId},
+        {"error", {
+            {"code", -32601},
+            {"message", "Unknown method: " + method}
+        }}
+    };
+    return errResp.dump(-1, ' ', false, json::error_handler_t::replace);
+}
+
+string AimonGatewayClient::dispatchJsonRpc(const string &rawBody,
+                                           const string &defaultProtocolVersion)
+{
+    json req;
+    try {
+        req = json::parse(rawBody);
+    } catch (...) {
+        json err = {
+            {"jsonrpc", "2.0"},
+            {"id", nullptr},
+            {"error", {
+                {"code", -32700},
+                {"message", "Parse error"}
+            }}
+        };
+        return err.dump(-1, ' ', false, json::error_handler_t::replace);
+    }
+
+    if (req.is_array()) {
+        if (req.empty()) {
+            json err = {
+                {"jsonrpc", "2.0"},
+                {"id", nullptr},
+                {"error", {
+                    {"code", -32600},
+                    {"message", "Invalid Request"}
+                }}
+            };
+            return err.dump(-1, ' ', false, json::error_handler_t::replace);
+        }
+        json batchResp = json::array();
+        for (const auto &item : req) {
+            if (!item.is_object()) {
+                json err = {
+                    {"jsonrpc", "2.0"},
+                    {"id", nullptr},
+                    {"error", {
+                        {"code", -32600},
+                        {"message", "Invalid Request"}
+                    }}
+                };
+                batchResp.push_back(err);
+            } else {
+                string singleResp = dispatchSingleJsonRpc(item, defaultProtocolVersion);
+                if (!singleResp.empty()) {
+                    try {
+                        batchResp.push_back(json::parse(singleResp));
+                    } catch (...) {
+                    }
+                }
+            }
+        }
+        if (batchResp.empty()) {
+            return "";
+        }
+        return batchResp.dump(-1, ' ', false, json::error_handler_t::replace);
+    }
+
+    if (!req.is_object()) {
+        json err = {
+            {"jsonrpc", "2.0"},
+            {"id", nullptr},
+            {"error", {
+                {"code", -32600},
+                {"message", "Invalid Request"}
+            }}
+        };
+        return err.dump(-1, ' ', false, json::error_handler_t::replace);
+    }
+
+    return dispatchSingleJsonRpc(req, defaultProtocolVersion);
+}
+
+void AimonGatewayClient::handleRequest(const string &line)
+{
+    try {
+        string resp = dispatchJsonRpc(line, "2025-03-26");
+        if (!resp.empty()) {
+            sendResponse(resp);
         }
     } catch (const exception &e) {
         cerr << "[AimonGatewayClient] Error processing request: " << e.what() << endl;

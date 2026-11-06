@@ -29,6 +29,7 @@ class Response;
 class MeshMon;
 class MeshMonDb;
 class SpatialAnalytics;
+class AimonGatewayClient;
 
 struct WebConfig {
     bool enabled = true;
@@ -36,6 +37,7 @@ struct WebConfig {
     std::string host = "0.0.0.0";
     std::string password = "admin";
     bool endpointsEnabled = false;
+    std::string gatewayHost = "127.0.0.1";
 };
 
 struct PacketLogEntry {
@@ -97,6 +99,9 @@ public:
     void onPacketReceived(const meshtastic_MeshPacket &packet, time_t meshmonTime);
     void broadcastSseEvent(const std::string &eventType, const std::string &jsonData);
 
+    bool isAllowedMcpRequest(const httplib::Request &req) const;
+    std::string createMcpSession(void);
+
     const WebConfig &getConfig(void) const {
         return _config;
     }
@@ -150,6 +155,13 @@ private:
                                    const std::string &contentType,
                                    httplib::Response &res);
 
+    struct McpSessionState {
+        std::string sessionId;
+        time_t lastActivity = 0;
+        std::vector<std::string> pendingMessages;
+        bool closed = false;
+    };
+
     std::shared_ptr<MeshMon> _mon;
     std::shared_ptr<MeshMonDb> _db;
     std::shared_ptr<SpatialAnalytics> _spatial;
@@ -159,6 +171,13 @@ private:
     std::unique_ptr<std::thread> _thread;
     std::atomic<bool> _running{false};
     time_t _startTime = 0;
+
+    std::unique_ptr<AimonGatewayClient> _mcpDispatcher;
+
+    // MCP Streamable HTTP session registry
+    mutable std::mutex _mcpMutex;
+    std::condition_variable _mcpCv;
+    std::map<std::string, McpSessionState> _mcpSessions;
 
     // SSE session registry
     mutable std::mutex _sseMutex;
